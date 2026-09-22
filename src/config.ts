@@ -12,6 +12,12 @@ const schema = z
     FREESTYLE_API_TOKEN: z.string().min(1),
     FREESTYLE_SNAPSHOT_ID: z.string().min(1),
     FREESTYLE_VPC: z.string().optional(),
+    SWARMFORGE_WORKER_DOMAIN_SUFFIX: z
+      .string()
+      .min(1)
+      .max(253)
+      .regex(/^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$/)
+      .optional(),
     SWARMFORGE_INSTANCE_ID: z
       .string()
       .regex(/^[a-z0-9]{1,16}$/)
@@ -79,6 +85,11 @@ export function loadConfig(
     );
   return r.data;
 }
+export function gitTree(raw: string): { clone: boolean; target: string } {
+  if (raw === "none") return { clone: false, target: "" };
+  if (raw.startsWith("none:")) return { clone: false, target: raw.slice(5) };
+  return { clone: true, target: raw };
+}
 export function workerEnvironment(
   c: Config,
   w: { worker_id: string; team_id: string; task_id: string },
@@ -87,7 +98,7 @@ export function workerEnvironment(
     SWARMFORGE_WORKER_ID: w.worker_id,
     SWARMFORGE_TEAM_ID: w.team_id,
     SWARMFORGE_TASK_ID: w.task_id,
-    SWARMFORGE_GIT_TREE: c.SWARMFORGE_GIT_TREE,
+    SWARMFORGE_GIT_TREE: gitTree(c.SWARMFORGE_GIT_TREE).target,
     SWARMFORGE_WORKSPACE: c.SWARMFORGE_WORKSPACE,
     SWARMFORGE_MODEL_API_KEY: c.SWARMFORGE_MODEL_API_KEY,
     OPENCODE_PORT: String(c.OPENCODE_PORT),

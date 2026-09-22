@@ -12,7 +12,68 @@ import {
 } from "node:fs";
 import { dirname } from "node:path";
 import type { Coordinator } from "./coordinator";
+import type { WorkerEvent } from "./domain";
 import { redactorFor } from "./security";
+
+type Color = "green" | "blue" | "yellow" | "red" | "magenta" | "cyan" | "gray";
+const ansi: Record<Color, string> = {
+  green: "32",
+  blue: "34",
+  yellow: "33",
+  red: "31",
+  magenta: "35",
+  cyan: "36",
+  gray: "90",
+};
+const colorEnabled = !process.env.NO_COLOR && Boolean(process.stdout.isTTY);
+export function colorForEvent(type: string): Color {
+  if (type === "worker.destroyed") return "magenta";
+  if (["worker.failed", "worker.recovery_required"].includes(type))
+    return "red";
+  if (
+    ["worker.requested", "worker.completed", "result.received"].includes(type)
+  )
+    return "cyan";
+  if (["worker.waiting", "worker.paused", "worker.cancelled"].includes(type))
+    return "yellow";
+  if (["worker.running", "worker.resumed"].includes(type)) return "blue";
+  return "green";
+}
+export function renderEvent(
+  event: Pick<WorkerEvent, "type" | "at" | "data">,
+  worker: {
+    worker_id: string;
+    team_id?: string;
+    task_id?: string;
+    vm_id?: string | null;
+    error?: string | null;
+  },
+  color = colorEnabled,
+): string {
+  const paint = (c: Color, t: string) =>
+    color ? `\u001b[${ansi[c]}m${t}\u001b[0m` : t;
+  const time = new Date(event.at).toISOString().slice(11, 19);
+  const where =
+    worker.team_id && worker.task_id
+      ? `${worker.team_id}/${worker.task_id}`
+      : "";
+  let detail = event.data;
+  try {
+    const data = JSON.parse(event.data) as Record<string, unknown>;
+    detail = Object.keys(data).length ? JSON.stringify(data) : "";
+  } catch {}
+  if (worker.error) detail = `${detail} ${worker.error}`.trim();
+  return [
+    paint("gray", time),
+    paint(colorForEvent(event.type), event.type.replace(/^worker\./, "")),
+    worker.worker_id,
+    where,
+    worker.vm_id ? `vm=${worker.vm_id}` : "",
+    detail,
+  ]
+    .filter(Boolean)
+    .join("  ");
+}
 export function acquireProcessLock(path: string) {
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   const claim = () => {
@@ -49,13 +110,28 @@ export function eventLogger(c: Coordinator, path: string) {
   return () => {
     for (const event of c.store.events(undefined, after, 100)) {
       const w = c.store.get(event.worker_id);
+      const meta = {
+        team_id: w.team_id,
+        task_id: w.task_id,
+        vm_id: w.vm_id,
+        session_id: w.opencode_session_id,
+      };
+      const safe = redactor.value({
+        ...meta,
+        worker_id: event.worker_id,
+        error: w.error,
+      }) as {
+        worker_id: string;
+        team_id?: string;
+        task_id?: string;
+        vm_id?: string | null;
+        error?: string | null;
+      };
+      console.log(renderEvent(event, safe));
       const line = JSON.stringify(
         redactor.value({
           ...event,
-          team_id: w.team_id,
-          task_id: w.task_id,
-          vm_id: w.vm_id,
-          session_id: w.opencode_session_id,
+          ...meta,
         }),
       );
       if (

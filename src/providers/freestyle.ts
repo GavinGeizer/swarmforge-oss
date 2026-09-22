@@ -1,6 +1,6 @@
 import { Freestyle, FreestyleApiError, type VmData } from "freestyle";
 import type { Config } from "../config";
-import { workerEnvironment } from "../config";
+import { gitTree, workerEnvironment } from "../config";
 import type { VmInfo, Worker, WorkerProvider } from "../domain";
 import { openCodeConfig } from "./opencode";
 export const quote = (s: string) => `'${s.replaceAll("'", "'\\''")}'`;
@@ -24,6 +24,12 @@ export class FreestyleProvider implements WorkerProvider {
   }
   slug(w: Worker) {
     return `sf-${this.config.SWARMFORGE_INSTANCE_ID}-${w.worker_id.slice(2)}`;
+  }
+  domain(w: Worker) {
+    const slug = this.slug(w);
+    return this.config.SWARMFORGE_WORKER_DOMAIN_SUFFIX
+      ? `${slug}.${this.config.SWARMFORGE_WORKER_DOMAIN_SUFFIX}`
+      : `${slug}.style.dev`;
   }
   info(v: VmData): VmInfo {
     return {
@@ -68,7 +74,7 @@ export class FreestyleProvider implements WorkerProvider {
         rules: [
           {
             action: "allow",
-            domain: `${slug}.style.dev`,
+            domain: this.domain(w),
             source: { public: true },
             destination: { port: this.config.OPENCODE_PORT },
           },
@@ -112,6 +118,18 @@ export class FreestyleProvider implements WorkerProvider {
       throw new Error(
         "Snapshot must provide opencode, python3, git, systemd and writable workspace",
       );
+    const tree = gitTree(this.config.SWARMFORGE_GIT_TREE);
+    if (tree.clone) {
+      const clone = await vm.exec({
+        command: `git clone -- ${quote(tree.target)} ${quote(`${workspace}/repo`)}`,
+        linuxUser: "root",
+        timeoutMs: 120000,
+      });
+      if (clone.statusCode !== 0)
+        throw new Error(
+          "Failed to clone SWARMFORGE_GIT_TREE into workspace/repo",
+        );
+    }
     const env = {
       ...workerEnvironment(this.config, w),
       OPENCODE_SERVER_USERNAME: "opencode",
@@ -146,7 +164,7 @@ export class FreestyleProvider implements WorkerProvider {
     });
     if (start.statusCode !== 0)
       throw new Error("OpenCode service failed to start");
-    return `https://${this.slug(w)}.style.dev`;
+    return `https://${this.domain(w)}`;
   }
   async pauseWorker(id: string) {
     await this.client.vms.ref(id).pause();

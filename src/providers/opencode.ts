@@ -2,8 +2,7 @@ import {
   createOpencodeClient,
   type Config as OpenCodeConfig,
 } from "@opencode-ai/sdk/v2";
-import { z } from "zod";
-import type { Config } from "../config";
+import { type Config, gitTree } from "../config";
 import {
   type AgentSnapshot,
   type CodingAgent,
@@ -34,10 +33,15 @@ export function openCodeConfig(c: Config): OpenCodeConfig {
   };
 }
 export function bootstrap(c: Config, w: Worker, d: Dispatch) {
+  const tree = gitTree(c.SWARMFORGE_GIT_TREE);
+  const source = tree.clone
+    ? `The source repository was cloned to ${c.SWARMFORGE_WORKSPACE}/repo; work there and persist changes back to that remote.`
+    : `SWARMFORGE_GIT_TREE identifies the externally managed source tree; inspect that environment variable and use the existing tools to access it. It may be a mount, repository URL, or prepared tree. SwarmForge does not clone it.`;
   return `Worker ${w.worker_id}, task ${w.task_id}, role ${w.role}. Run ID: ${d.run_id}.
-Your starting workspace is ${c.SWARMFORGE_WORKSPACE}. SWARMFORGE_GIT_TREE identifies the externally managed source tree; inspect that environment variable and use the existing tools to access it. It may be a mount, repository URL, or prepared tree. SwarmForge does not clone or host it.
+Your starting workspace is ${c.SWARMFORGE_WORKSPACE}. ${source}
 Run relevant tests and report failures honestly. Persist source changes to the supplied durable Git location before declaring coding work complete; a local commit alone may not be durable. Report git.workspace if you work elsewhere, branch/commit/dirty/persisted when known. Never report credentials.
 Return the requested structured result with worker_id=${w.worker_id}, task_id=${w.task_id}, run_id=${d.run_id}. Also atomically write the same JSON to ${c.SWARMFORGE_WORKSPACE}/.swarmforge/result.json before your final response. Put non-source artifacts under .swarmforge/artifacts and task logs under .swarmforge/logs. Preserve failures and warnings; don't claim tests you didn't run.
+Respond with exactly one JSON object and no markdown. It must match this JSON Schema: ${JSON.stringify(resultSchema.toJSONSchema())}
 The team lead's task follows.`;
 }
 export class OpenCodeAgent implements CodingAgent {
@@ -88,11 +92,6 @@ export class OpenCodeAgent implements CodingAgent {
         modelID: this.config.SWARMFORGE_MODEL_NAME,
       },
       system: bootstrap(this.config, w, d),
-      format: {
-        type: "json_schema",
-        schema: z.toJSONSchema(resultSchema),
-        retryCount: 2,
-      },
       parts: [{ type: "text", text: d.message }],
     });
   }
@@ -121,14 +120,21 @@ export class OpenCodeAgent implements CodingAgent {
       page = older.data;
       all.unshift(...page);
     }
-    const mapped = all.map(({ info }) =>
+    const mapped = all.map(({ info, parts }) =>
       info.role === "assistant"
         ? {
             id: info.id,
             parent_id: info.parentID,
             role: info.role,
             completed: !!info.time.completed,
-            result: info.structured,
+            result:
+              info.structured ??
+              parseJsonText(
+                parts
+                  .filter((part) => part.type === "text")
+                  .map((part) => part.text)
+                  .join("\n"),
+              ),
             error: info.error?.name,
             model: info.modelID,
             input: info.tokens.input,
@@ -161,5 +167,14 @@ export class OpenCodeAgent implements CodingAgent {
   async abort(w: Worker) {
     if (w.opencode_session_id)
       await this.client(w).session.abort({ sessionID: w.opencode_session_id });
+  }
+}
+
+function parseJsonText(text: string): unknown {
+  if (!text.trim()) return undefined;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return undefined;
   }
 }

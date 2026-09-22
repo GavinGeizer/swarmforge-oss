@@ -2,11 +2,11 @@
 
 The external snapshot supplies the OS, OpenCode, Git, Python 3, Bash, systemd, repository access and task tools. SwarmForge creates metadata directories, a root-only launcher/configuration under `/opt/swarmforge`, and an OpenCode systemd service. A unique password protects the provider TLS endpoint.
 
-The bootstrap identifies the worker/task/run and starting workspace, points to `SWARMFORGE_GIT_TREE`, requests relevant tests, and asks the worker to persist code and report failures honestly. The lead's prompt remains the task. Workers may clone or use mounts themselves; SwarmForge treats the configured tree as opaque.
+The bootstrap identifies the worker/task/run and starting workspace. Unless `SWARMFORGE_GIT_TREE` is prefixed with `none`, SwarmForge clones it to `$SWARMFORGE_WORKSPACE/repo` before OpenCode starts and the bootstrap points there. With the `none` prefix the value is passed through as an opaque mount/prepared tree and workers may clone or use mounts themselves. The lead's prompt remains the task.
 
 The model is configured as `swarmforge/<SWARMFORGE_MODEL_NAME>` using OpenCode's `@ai-sdk/openai-compatible` provider. The service passes `SWARMFORGE_MODEL_API_KEY` to OpenCode via environment interpolation. Provider credentials, MCP access tokens and other workers' secrets are not supplied. Snapshot contents must uphold this same boundary.
 
-OpenCode receives `format: {type: "json_schema", schema, retryCount: 2}`. Completion is read from the installed SDK's `AssistantMessage.structured`. Workers must also atomically write `/workspace/.swarmforge/result.json` (or the configured workspace equivalent):
+OpenCode is asked to return exactly one JSON object matching the result schema in its system prompt. SwarmForge parses the completed assistant text and also accepts `AssistantMessage.structured` when available. It avoids OpenCode's JSON Schema output-format field because OpenCode 1.18.31 rejects that field when serializing session history, even after successful generation. Workers must also atomically write `/workspace/.swarmforge/result.json` (or the configured workspace equivalent):
 
 ```json
 {

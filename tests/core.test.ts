@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import { loadConfig, workerEnvironment } from "../src/config";
+import { gitTree, loadConfig, workerEnvironment } from "../src/config";
 import { resultSchema } from "../src/domain";
+import { colorForEvent, renderEvent } from "../src/runtime";
 import { Store } from "../src/store";
 
 export const env = {
@@ -32,6 +33,22 @@ describe("configuration and credential boundary", () => {
     expect(values.SWARMFORGE_MODEL_API_KEY).toBe("model-secret");
     expect(JSON.stringify(values)).not.toContain("infra-secret");
     expect(values.FREESTYLE_API_TOKEN).toBeUndefined();
+  });
+  test("none prefix skips clone and strips the marker from the guest tree", () => {
+    expect(gitTree("https://example.com/a.git")).toEqual({
+      clone: true,
+      target: "https://example.com/a.git",
+    });
+    expect(gitTree("none")).toEqual({ clone: false, target: "" });
+    expect(gitTree("none:/mnt/prepared")).toEqual({
+      clone: false,
+      target: "/mnt/prepared",
+    });
+    const values = workerEnvironment(
+      loadConfig({ ...env, SWARMFORGE_GIT_TREE: "none:/mnt/prepared" }),
+      { worker_id: "w", team_id: "t", task_id: "task" },
+    );
+    expect(values.SWARMFORGE_GIT_TREE).toBe("/mnt/prepared");
   });
 });
 describe("persistent domain", () => {
@@ -113,5 +130,31 @@ describe("persistent domain", () => {
         summary: "x".repeat(10000),
       }).success,
     ).toBe(false);
+  });
+});
+describe("colorful console event rendering", () => {
+  const event = {
+    type: "worker.booting" as const,
+    at: 0,
+    data: JSON.stringify({ vm_id: "vm-1" }),
+  };
+  const worker = {
+    worker_id: "w-1",
+    team_id: "backend",
+    task_id: "auth",
+    vm_id: "vm-1",
+    error: null,
+  };
+  test("renders plain text without color codes when color is off", () => {
+    const line = renderEvent(event, worker, false);
+    expect(line).not.toContain("\u001b[");
+    for (const part of ["booting", "w-1", "backend/auth", "vm=vm-1", "vm-1"])
+      expect(line).toContain(part);
+  });
+  test("adds ANSI codes and picks red for failures", () => {
+    expect(renderEvent(event, worker, true)).toContain("\u001b[");
+    expect(colorForEvent("worker.destroyed")).toBe("magenta");
+    expect(colorForEvent("worker.failed")).toBe("red");
+    expect(colorForEvent("worker.recovery_required")).toBe("red");
   });
 });

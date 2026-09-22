@@ -8,10 +8,11 @@ Bun loads `.env`. Empty optional entries use their defaults. Required configurat
 | `FREESTYLE_SNAPSHOT_ID` | Required | External prepared snapshot ID or provider-supported snapshot slug. |
 | `FREESTYLE_API_URL` | `https://api.freestyle.sh` | Freestyle SDK base URL; no `/v5` suffix. |
 | `FREESTYLE_VPC` | Unset | Existing private network for external Git/inference access. |
+| `SWARMFORGE_WORKER_DOMAIN_SUFFIX` | Unset | Verified wildcard domain suffix for worker endpoints. A worker uses `<worker-slug>.<suffix>`; configure matching wildcard DNS and certificate in Freestyle. Defaults to a unique `style.dev` name. |
 | `SWARMFORGE_MODEL_BASE_URL` | Required | OpenAI-compatible chat-completions base URL, normally ending `/v1`. |
 | `SWARMFORGE_MODEL_API_KEY` | Required | Worker-scoped inference credential. Use a nonempty placeholder for an unauthenticated endpoint. |
 | `SWARMFORGE_MODEL_NAME` | Required | Exact external model ID, e.g. your deployed Qwen ID. |
-| `SWARMFORGE_GIT_TREE` | Required | Opaque Git location, passed unchanged to the guest environment. No cloning/hosting/authentication management. |
+| `SWARMFORGE_GIT_TREE` | Required | Git URL or local Git path; SwarmForge clones it to `$SWARMFORGE_WORKSPACE/repo` on each worker. Prefix with `none:` (or set `none`) to skip cloning and pass the remainder through as an opaque mount/prepared tree. Credentials stay external. |
 | `SWARMFORGE_INSTANCE_ID` | `default` | Stable ownership namespace, 1–16 lowercase alphanumeric characters. Unique per independent database in an account. Do not change after deployment. |
 | `SWARMFORGE_WORKSPACE` | `/workspace` | Absolute guest directory; safe path characters only. Snapshot/mount provider prepares it. |
 | `OPENCODE_PORT` | `4096` | Guest server port, 1–65535. |
