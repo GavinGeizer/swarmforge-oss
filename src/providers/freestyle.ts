@@ -120,8 +120,10 @@ export class FreestyleProvider implements WorkerProvider {
       );
     const tree = gitTree(this.config.SWARMFORGE_GIT_TREE);
     if (tree.clone) {
+      const repository = `${workspace}/repo`;
+      const staging = `${workspace}/.swarmforge/repo-clone-${w.worker_id}`;
       const clone = await vm.exec({
-        command: `git clone -- ${quote(tree.target)} ${quote(`${workspace}/repo`)}`,
+        command: `if [ -d ${quote(`${repository}/.git`)} ]; then exit 0; fi; if [ -e ${quote(repository)} ]; then echo 'Repository destination already exists and is not a Git checkout' >&2; exit 1; fi; rm -rf ${quote(staging)} && git clone -- ${quote(tree.target)} ${quote(staging)} && mv ${quote(staging)} ${quote(repository)}`,
         linuxUser: "root",
         timeoutMs: 120000,
       });

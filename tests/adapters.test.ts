@@ -155,6 +155,12 @@ test("Freestyle clones the configured tree into workspace/repo unless none is se
   await p.prepare(worker());
   expect(execs.some((cmd) => cmd.includes("git clone"))).toBe(true);
   expect(execs.some((cmd) => cmd.includes("opaque-tree"))).toBe(true);
+  expect(
+    execs.some((cmd) => cmd.includes("repo/.git") && cmd.includes("rm -rf")),
+  ).toBe(true);
+  execs.length = 0;
+  await p.prepare(worker());
+  expect(execs.every((cmd) => !cmd.startsWith("git clone"))).toBe(true);
   const none = new FreestyleProvider(
     loadConfig({
       ...Object.fromEntries(Object.entries(c).map(([k, v]) => [k, String(v)])),
