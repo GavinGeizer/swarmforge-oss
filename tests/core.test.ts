@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { gitTree, loadConfig, workerEnvironment } from "../src/config";
 import { resultSchema } from "../src/domain";
-import { colorForEvent, renderEvent } from "../src/runtime";
+import { colorForEvent, renderEvent, renderStartup } from "../src/runtime";
 import { Store } from "../src/store";
 
 export const env = {
@@ -156,5 +156,24 @@ describe("colorful console event rendering", () => {
     expect(colorForEvent("worker.destroyed")).toBe("magenta");
     expect(colorForEvent("worker.failed")).toBe("red");
     expect(colorForEvent("worker.recovery_required")).toBe("red");
+  });
+});
+
+test("startup output is readable in a terminal and structured when piped", () => {
+  const info = {
+    host: "127.0.0.1",
+    port: 8787,
+    metricsEnabled: true,
+    metricsPort: 9090,
+  };
+  const terminal = renderStartup(info, true);
+  expect(terminal).toContain("SwarmForge  ● listening");
+  expect(terminal).toContain("http://127.0.0.1:8787/mcp");
+  expect(terminal).toContain("bun run status");
+  expect(JSON.parse(renderStartup(info, false))).toMatchObject({
+    level: "info",
+    message: "SwarmForge listening",
+    host: "127.0.0.1",
+    port: 8787,
   });
 });

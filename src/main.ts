@@ -4,7 +4,7 @@ import { createHttpHandler } from "./http";
 import { Metrics } from "./metrics";
 import { FreestyleProvider } from "./providers/freestyle";
 import { OpenCodeAgent } from "./providers/opencode";
-import { acquireProcessLock, eventLogger } from "./runtime";
+import { acquireProcessLock, eventLogger, renderStartup } from "./runtime";
 import { Store } from "./store";
 
 const config = loadConfig();
@@ -61,12 +61,15 @@ const metricsServer = config.SWARMFORGE_METRICS_ENABLED
 const flush = eventLogger(coordinator, `${config.SWARMFORGE_DB_PATH}.log`);
 const logTimer = setInterval(flush, 1000);
 console.log(
-  JSON.stringify({
-    level: "info",
-    message: "SwarmForge listening",
-    host: config.SWARMFORGE_HOST,
-    port: app.port,
-  }),
+  renderStartup(
+    {
+      host: config.SWARMFORGE_HOST,
+      port: app.port ?? config.SWARMFORGE_PORT,
+      metricsEnabled: config.SWARMFORGE_METRICS_ENABLED,
+      metricsPort: config.SWARMFORGE_METRICS_PORT,
+    },
+    Boolean(process.stdout.isTTY),
+  ),
 );
 let closing = false;
 async function shutdown() {

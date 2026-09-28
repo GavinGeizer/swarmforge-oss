@@ -280,6 +280,10 @@ export function createMcpServer(c: Coordinator) {
         workers: c.config.SWARMFORGE_MAX_WORKERS,
         provisioning: c.config.SWARMFORGE_MAX_PROVISIONING,
       },
+      metrics: {
+        enabled: c.config.SWARMFORGE_METRICS_ENABLED,
+        port: c.config.SWARMFORGE_METRICS_PORT,
+      },
       inference_requests_active: [...c.inference.values()].reduce(
         (a, b) => a + b,
         0,

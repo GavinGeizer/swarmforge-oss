@@ -10,6 +10,7 @@ import {
   resultSchema,
   type Worker,
 } from "../domain";
+import { branchFor } from "../git-handoff";
 export function openCodeConfig(c: Config): OpenCodeConfig {
   return {
     model: `swarmforge/${c.SWARMFORGE_MODEL_NAME}`,
@@ -35,11 +36,17 @@ export function openCodeConfig(c: Config): OpenCodeConfig {
 export function bootstrap(c: Config, w: Worker, d: Dispatch) {
   const tree = gitTree(c.SWARMFORGE_GIT_TREE);
   const source = tree.clone
-    ? `The source repository was cloned to ${c.SWARMFORGE_WORKSPACE}/repo; work there and persist changes back to that remote.`
+    ? c.SWARMFORGE_GIT_PUSH_MODE !== "none"
+      ? `The source repository was cloned to ${c.SWARMFORGE_WORKSPACE}/repo on branch ${branchFor(w)}. Work there, run tests, and commit all source changes on that branch. SwarmForge will push and verify the branch after your result. Report persisted=false until SwarmForge verifies the push. Do not put credentials in Git remotes or result output.`
+      : `The source repository was cloned to ${c.SWARMFORGE_WORKSPACE}/repo; work there and persist changes back to that remote.`
     : `SWARMFORGE_GIT_TREE identifies the externally managed source tree; inspect that environment variable and use the existing tools to access it. It may be a mount, repository URL, or prepared tree. SwarmForge does not clone it.`;
+  const persistence =
+    c.SWARMFORGE_GIT_PUSH_MODE === "none"
+      ? "Persist source changes to the supplied durable Git location before declaring coding work complete; a local commit alone may not be durable."
+      : "Commit source changes locally before declaring coding work complete; SwarmForge handles remote persistence.";
   return `Worker ${w.worker_id}, task ${w.task_id}, role ${w.role}. Run ID: ${d.run_id}.
 Your starting workspace is ${c.SWARMFORGE_WORKSPACE}. ${source}
-Run relevant tests and report failures honestly. Persist source changes to the supplied durable Git location before declaring coding work complete; a local commit alone may not be durable. Report git.workspace if you work elsewhere, branch/commit/dirty/persisted when known. Never report credentials.
+Run relevant tests and report failures honestly. ${persistence} Report git.workspace if you work elsewhere, branch/commit/dirty/persisted when known. Never report credentials.
 Return the requested structured result with worker_id=${w.worker_id}, task_id=${w.task_id}, run_id=${d.run_id}. Also atomically write the same JSON to ${c.SWARMFORGE_WORKSPACE}/.swarmforge/result.json before your final response. Put non-source artifacts under .swarmforge/artifacts and task logs under .swarmforge/logs. Preserve failures and warnings; don't claim tests you didn't run.
 Respond with exactly one JSON object and no markdown. It must match this JSON Schema: ${JSON.stringify(resultSchema.toJSONSchema())}
 The team lead's task follows.`;

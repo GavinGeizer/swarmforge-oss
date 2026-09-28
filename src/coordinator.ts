@@ -9,6 +9,7 @@ import {
   type WorkerProvider,
   type WorkerResult,
 } from "./domain";
+import { GitHandoffError } from "./git-handoff";
 import { inspectPersistence } from "./safety";
 import { redactorFor } from "./security";
 import type { Store } from "./store";
@@ -25,7 +26,10 @@ export class Coordinator {
     readonly provider: WorkerProvider,
     readonly agent: CodingAgent,
   ) {}
-  async bounded<T>(operation: Promise<T>): Promise<T> {
+  async bounded<T>(
+    operation: Promise<T>,
+    timeoutMs = this.config.SWARMFORGE_API_TIMEOUT_MS,
+  ): Promise<T> {
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       return await Promise.race([
@@ -33,7 +37,7 @@ export class Coordinator {
         new Promise<never>((_, reject) => {
           timer = setTimeout(
             () => reject(new Error("External operation timed out")),
-            this.config.SWARMFORGE_API_TIMEOUT_MS,
+            timeoutMs,
           );
         }),
       ]);
@@ -289,7 +293,11 @@ export class Coordinator {
         return;
       }
       if (w.state === "booting") {
-        const endpoint = await this.bounded(this.provider.prepare(w));
+        const endpoint = await this.bounded(
+          this.provider.prepare(w),
+          this.config.SWARMFORGE_GIT_PUSH_TIMEOUT_MS +
+            this.config.SWARMFORGE_API_TIMEOUT_MS,
+        );
         w = this.store.patch(id, { endpoint });
         const session = await this.bounded(this.agent.ensureSession(w));
         this.store.transition(id, "ready", {
@@ -333,12 +341,15 @@ export class Coordinator {
         }
         await this.monitor(w);
       }
-    } catch {
+    } catch (error) {
       w = this.store.get(id);
       this.store.patch(id, {
         error:
-          "Provider or OpenCode operation failed; retrying within deadline",
+          error instanceof GitHandoffError
+            ? "Git branch push or verification failed; retrying within deadline"
+            : "Provider or OpenCode operation failed; retrying within deadline",
       });
+      if (error instanceof GitHandoffError) return;
       if (w.state === "running" || w.state === "waiting") {
         const d = this.store.dispatch(id);
         if (d) {
@@ -460,6 +471,18 @@ export class Coordinator {
     }
   }
   private async complete(w: Worker, d: Dispatch, r: WorkerResult) {
+    if (this.config.SWARMFORGE_GIT_PUSH_MODE !== "none") {
+      let pushed: Awaited<ReturnType<WorkerProvider["pushBranch"]>>;
+      try {
+        pushed = await this.bounded(
+          this.provider.pushBranch(w),
+          this.config.SWARMFORGE_GIT_PUSH_TIMEOUT_MS,
+        );
+      } catch {
+        throw new GitHandoffError("Git branch push or verification failed");
+      }
+      r = { ...r, git: { ...r.git, ...pushed, persisted: true, dirty: false } };
+    }
     this.inference.delete(w.worker_id);
     r = resultSchema.parse(redactorFor(this).value(r));
     this.store.finish(w.worker_id, d, r);
@@ -595,6 +618,20 @@ export class Coordinator {
                 deadline_at: null,
                 error:
                   "VM paused because OpenCode could not be stopped; inspect before destruction",
+              });
+              return;
+            }
+            if (
+              this.config.SWARMFORGE_GIT_PUSH_MODE !== "none" &&
+              (this.store.dispatch(id) ||
+                !this.store.result(id)?.git?.persisted)
+            ) {
+              this.store.cancelDispatches(id);
+              this.store.transition(id, "recovery_required", {
+                intent: null,
+                deadline_at: null,
+                error:
+                  "No verified branch handoff for this worker; inspect before destruction",
               });
               return;
             }

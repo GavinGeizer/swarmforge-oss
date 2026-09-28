@@ -85,10 +85,14 @@ test("MCP client can create, observe, message, query team/task and collect a str
         })
       ).isError,
     ).not.toBe(true);
-  expect(
-    (await client.callTool({ name: "get_swarm_status", arguments: {} }))
-      .isError,
-  ).not.toBe(true);
+  const swarm = await client.callTool({
+    name: "get_swarm_status",
+    arguments: {},
+  });
+  expect(swarm.isError).not.toBe(true);
+  expect(swarm.structuredContent).toMatchObject({
+    metrics: { enabled: true, port: 9090 },
+  });
   await client.close();
   await server.close();
   h.store.close();

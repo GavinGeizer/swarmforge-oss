@@ -1,7 +1,9 @@
+import { readFileSync } from "node:fs";
 import { Freestyle, FreestyleApiError, type VmData } from "freestyle";
 import type { Config } from "../config";
 import { gitTree, workerEnvironment } from "../config";
 import type { VmInfo, Worker, WorkerProvider } from "../domain";
+import { branchFor, githubInstallationToken } from "../git-handoff";
 import { openCodeConfig } from "./opencode";
 export const quote = (s: string) => `'${s.replaceAll("'", "'\\''")}'`;
 export class FreestyleProvider implements WorkerProvider {
@@ -122,15 +124,28 @@ export class FreestyleProvider implements WorkerProvider {
     if (tree.clone) {
       const repository = `${workspace}/repo`;
       const staging = `${workspace}/.swarmforge/repo-clone-${w.worker_id}`;
-      const clone = await vm.exec({
-        command: `if [ -d ${quote(`${repository}/.git`)} ]; then exit 0; fi; if [ -e ${quote(repository)} ]; then echo 'Repository destination already exists and is not a Git checkout' >&2; exit 1; fi; rm -rf ${quote(staging)} && git clone -- ${quote(tree.target)} ${quote(staging)} && mv ${quote(staging)} ${quote(repository)}`,
-        linuxUser: "root",
-        timeoutMs: 120000,
-      });
+      const clone = await this.withGitAuth(w.vm_id, async (auth) =>
+        vm.exec({
+          command: `if [ -d ${quote(`${repository}/.git`)} ]; then exit 0; fi; if [ -e ${quote(repository)} ]; then echo 'Repository destination already exists and is not a Git checkout' >&2; exit 1; fi; rm -rf ${quote(staging)} && ${auth} git clone -- ${quote(tree.target)} ${quote(staging)} && mv ${quote(staging)} ${quote(repository)}`,
+          linuxUser: "root",
+          timeoutMs: this.config.SWARMFORGE_GIT_PUSH_TIMEOUT_MS,
+        }),
+      );
       if (clone.statusCode !== 0)
         throw new Error(
           "Failed to clone SWARMFORGE_GIT_TREE into workspace/repo",
         );
+      if (this.config.SWARMFORGE_GIT_PUSH_MODE !== "none") {
+        const branch = branchFor(w);
+        const baseFile = `${workspace}/.swarmforge/git-base`;
+        const checkout = await vm.exec({
+          command: `set -eu; cd ${quote(repository)}; if [ -f ${quote(baseFile)} ]; then test "$(git branch --show-current)" = ${quote(branch)}; else base=$(git rev-parse HEAD); if git show-ref --verify --quiet ${quote(`refs/heads/${branch}`)}; then git checkout ${quote(branch)}; else git checkout -b ${quote(branch)}; fi; printf '%s\n' "$base" > ${quote(baseFile)}; fi; git config user.name ${quote(this.config.SWARMFORGE_GIT_AUTHOR_NAME)}; git config user.email ${quote(this.config.SWARMFORGE_GIT_AUTHOR_EMAIL)}`,
+          linuxUser: "root",
+          timeoutMs: 30000,
+        });
+        if (checkout.statusCode !== 0)
+          throw new Error("Failed to prepare worker Git branch");
+      }
     }
     const env = {
       ...workerEnvironment(this.config, w),
@@ -167,6 +182,99 @@ export class FreestyleProvider implements WorkerProvider {
     if (start.statusCode !== 0)
       throw new Error("OpenCode service failed to start");
     return `https://${this.domain(w)}`;
+  }
+  private async withGitAuth<T>(
+    id: string,
+    action: (prefix: string) => Promise<T>,
+  ): Promise<T> {
+    const mode = this.config.SWARMFORGE_GIT_PUSH_MODE;
+    if (mode === "none") return action("");
+    const vm = this.client.vms.ref(id);
+    const paths = ["/opt/swarmforge/git-auth", "/opt/swarmforge/git-secret"];
+    let value: T | undefined;
+    let failure: unknown;
+    let failed = false;
+    try {
+      if (mode === "github-app") {
+        const token = await githubInstallationToken(this.config);
+        await vm.fs.writeTextFile(paths[1]!, token, { mode: 0o600 });
+        await vm.fs.writeTextFile(
+          paths[0]!,
+          '#!/bin/sh\ncase "$1" in *Username*) printf x-access-token;; *) cat /opt/swarmforge/git-secret;; esac\n',
+          { mode: 0o700 },
+        );
+        value = await action(
+          `env GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=${quote(paths[0]!)}`,
+        );
+      } else {
+        const key = readFileSync(
+          this.config.SWARMFORGE_GIT_SSH_KEY_PATH!,
+          "utf8",
+        );
+        const hosts = readFileSync(
+          this.config.SWARMFORGE_GIT_SSH_KNOWN_HOSTS_PATH!,
+          "utf8",
+        );
+        await vm.fs.writeTextFile(paths[1]!, key, { mode: 0o600 });
+        await vm.fs.writeTextFile(paths[0]!, hosts, { mode: 0o600 });
+        const ssh = `ssh -i ${paths[1]} -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=${paths[0]}`;
+        value = await action(
+          `env GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND=${quote(ssh)}`,
+        );
+      }
+    } catch (error) {
+      failed = true;
+      failure = error;
+    }
+    let cleaned = false;
+    try {
+      const result = await vm.exec({
+        command: `rm -f ${paths.map(quote).join(" ")}`,
+        linuxUser: "root",
+        timeoutMs: 30000,
+      });
+      cleaned = result.statusCode === 0;
+    } catch {}
+    if (!cleaned)
+      throw new Error("Failed to remove temporary Git credential from worker");
+    if (failed) throw failure;
+    return value as T;
+  }
+  async pushBranch(w: Worker) {
+    if (!w.vm_id || this.config.SWARMFORGE_GIT_PUSH_MODE === "none")
+      throw new Error("Git push unavailable");
+    const vm = this.client.vms.ref(w.vm_id);
+    const repo = `${this.config.SWARMFORGE_WORKSPACE}/repo`;
+    const branch = branchFor(w);
+    const target =
+      this.config.SWARMFORGE_GIT_PUSH_MODE === "github-app"
+        ? this.config.SWARMFORGE_GIT_TREE
+        : this.config.SWARMFORGE_GIT_PUSH_URL!;
+    const result = await this.withGitAuth(w.vm_id, async (auth) =>
+      vm.exec({
+        command: `set -eu; cd ${quote(repo)}; test "$(git branch --show-current)" = ${quote(branch)}; test -z "$(git status --porcelain --untracked-files=all)"; base=$(cat ${quote(`${this.config.SWARMFORGE_WORKSPACE}/.swarmforge/git-base`)}); commit=$(git rev-parse HEAD); git merge-base --is-ancestor "$base" "$commit"; ${auth} git push -- ${quote(target)} ${quote(`HEAD:refs/heads/${branch}`)} >&2; remote=$(${auth} git ls-remote -- ${quote(target)} ${quote(`refs/heads/${branch}`)}); remote_sha=$(printf '%s\n' "$remote" | cut -f1); test "$remote_sha" = "$commit"; git update-ref ${quote(`refs/remotes/origin/${branch}`)} "$commit"; printf '%s\n%s\n' "$base" "$commit"`,
+        linuxUser: "root",
+        timeoutMs: this.config.SWARMFORGE_GIT_PUSH_TIMEOUT_MS,
+      }),
+    );
+    if (result.statusCode !== 0)
+      throw new Error("Git push or remote commit verification failed");
+    const [base_commit, commit] = (result.stdout ?? "").trim().split("\n");
+    if (
+      !/^[0-9a-f]{40,64}$/.test(base_commit ?? "") ||
+      !/^[0-9a-f]{40,64}$/.test(commit ?? "")
+    )
+      throw new Error("Git push verification returned invalid commit IDs");
+    const review_url =
+      this.config.SWARMFORGE_GIT_PUSH_MODE === "github-app"
+        ? `https://github.com/${this.config.SWARMFORGE_GITHUB_REPOSITORY}/compare/${base_commit}...${encodeURIComponent(branch)}`
+        : undefined;
+    return {
+      branch,
+      base_commit: base_commit!,
+      commit: commit!,
+      ...(review_url ? { review_url } : {}),
+    };
   }
   async pauseWorker(id: string) {
     await this.client.vms.ref(id).pause();

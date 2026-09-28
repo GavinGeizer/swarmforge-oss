@@ -26,6 +26,7 @@ export class FakeProvider implements WorkerProvider {
   failure = false;
   dirty = false;
   destroyFailure = false;
+  pushFailure = false;
   created = 0;
   async createWorker(w: Worker) {
     if (this.failure) throw new Error("provider unavailable");
@@ -48,6 +49,14 @@ export class FakeProvider implements WorkerProvider {
   async prepare(w: Worker) {
     if (this.failure) throw new Error("boot failure");
     return `https://${w.vm_id}.example`;
+  }
+  async pushBranch(w: Worker) {
+    if (this.pushFailure) throw new Error("push failed");
+    return {
+      branch: `swarmforge/${w.team_id}/${w.task_id}/${w.worker_id}`,
+      commit: "a".repeat(40),
+      base_commit: "b".repeat(40),
+    };
   }
   async pauseWorker(id: string) {
     const vm = this.vms.get(id);

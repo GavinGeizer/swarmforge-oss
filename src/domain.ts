@@ -58,6 +58,8 @@ export const resultSchema = z
         workspace: z.string().max(2048).optional(),
         branch: z.string().max(512).optional(),
         commit: z.string().max(128).optional(),
+        base_commit: z.string().max(128).optional(),
+        review_url: z.string().max(2048).optional(),
         dirty: z.boolean().optional(),
         persisted: z.boolean().optional(),
       })
@@ -139,6 +141,12 @@ export interface WorkerProvider {
   getWorker(id: string): Promise<VmInfo | null>;
   listWorkers(): Promise<VmInfo[]>;
   prepare(w: Worker): Promise<string>;
+  pushBranch(w: Worker): Promise<{
+    branch: string;
+    commit: string;
+    base_commit: string;
+    review_url?: string;
+  }>;
   pauseWorker(id: string): Promise<void>;
   resumeWorker(id: string): Promise<void>;
   destroyWorker(id: string): Promise<void>;

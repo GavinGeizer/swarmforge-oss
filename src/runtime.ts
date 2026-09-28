@@ -26,6 +26,32 @@ const ansi: Record<Color, string> = {
   gray: "90",
 };
 const colorEnabled = !process.env.NO_COLOR && Boolean(process.stdout.isTTY);
+export function renderStartup(
+  info: {
+    host: string;
+    port: number;
+    metricsEnabled: boolean;
+    metricsPort: number;
+  },
+  terminal: boolean,
+) {
+  if (!terminal)
+    return JSON.stringify({
+      level: "info",
+      message: "SwarmForge listening",
+      host: info.host,
+      port: info.port,
+      metrics_enabled: info.metricsEnabled,
+      metrics_port: info.metricsEnabled ? info.metricsPort : null,
+    });
+  const host = info.host === "0.0.0.0" ? "127.0.0.1" : info.host;
+  return [
+    "SwarmForge  ● listening",
+    `MCP       http://${host}:${info.port}/mcp`,
+    `Metrics   ${info.metricsEnabled ? `enabled :${info.metricsPort}` : "disabled"}`,
+    "Overview  bun run status",
+  ].join("\n");
+}
 export function colorForEvent(type: string): Color {
   if (type === "worker.destroyed") return "magenta";
   if (["worker.failed", "worker.recovery_required"].includes(type))

@@ -19,7 +19,7 @@ Streamable HTTP: `POST /mcp`. Supply the configured bearer token. Standard MCP S
 | `get_task` | `task_id`, optional `team_id="default"` | Worker state counts and token usage for that task. |
 | `list_tasks` | Optional `team_id`, `offset=0`, `limit=20` | Persistent task ownership metadata. |
 | `get_team_status` | `team_id` | Aggregate state counts and usage. |
-| `get_swarm_status` | None | Aggregate states, tokens, configured capacity, inference estimate. |
+| `get_swarm_status` | None | Aggregate states, tokens, configured capacity, metrics listener status, inference estimate. |
 
 IDs accept alphanumerics, `_ . : -`, up to 128 characters. Prompts/messages are at most 32,000 characters. Per-spawn timeout is 1–604,800 seconds. Lists allow at most 100 entries; worker message queues allow 100 pending turns. Timestamps are Unix epoch milliseconds. Tool failures set `isError`; provider failures during asynchronous work appear in worker metadata.
 

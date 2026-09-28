@@ -31,6 +31,28 @@ const schema = z
     SWARMFORGE_MODEL_API_KEY: z.string().min(1),
     SWARMFORGE_MODEL_NAME: z.string().min(1),
     SWARMFORGE_GIT_TREE: z.string().min(1).max(2048),
+    SWARMFORGE_GIT_PUSH_MODE: z
+      .enum(["none", "github-app", "ssh"])
+      .default("none"),
+    SWARMFORGE_GIT_PUSH_TIMEOUT_MS: positive(120000),
+    SWARMFORGE_GIT_AUTHOR_NAME: z
+      .string()
+      .min(1)
+      .max(128)
+      .default("SwarmForge Worker"),
+    SWARMFORGE_GIT_AUTHOR_EMAIL: z
+      .email()
+      .default("swarmforge-worker@example.invalid"),
+    SWARMFORGE_GIT_PUSH_URL: z.string().min(1).max(2048).optional(),
+    SWARMFORGE_GIT_SSH_KEY_PATH: z.string().startsWith("/").optional(),
+    SWARMFORGE_GIT_SSH_KNOWN_HOSTS_PATH: z.string().startsWith("/").optional(),
+    SWARMFORGE_GITHUB_APP_ID: z.string().regex(/^\d+$/).optional(),
+    SWARMFORGE_GITHUB_INSTALLATION_ID: z.string().regex(/^\d+$/).optional(),
+    SWARMFORGE_GITHUB_PRIVATE_KEY_PATH: z.string().startsWith("/").optional(),
+    SWARMFORGE_GITHUB_REPOSITORY: z
+      .string()
+      .regex(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/)
+      .optional(),
     SWARMFORGE_WORKSPACE: z
       .string()
       .regex(/^\/(?:[a-zA-Z0-9_.-]+\/?)*$/)
@@ -53,6 +75,46 @@ const schema = z
     SWARMFORGE_METRICS_TEAMS: z.string().default("default"),
   })
   .superRefine((v, ctx) => {
+    const required = (field: keyof typeof v) => {
+      if (!v[field])
+        ctx.addIssue({
+          code: "custom",
+          path: [field],
+          message: "Required for Git push mode",
+        });
+    };
+    if (
+      v.SWARMFORGE_GIT_PUSH_MODE !== "none" &&
+      !gitTree(v.SWARMFORGE_GIT_TREE).clone
+    )
+      ctx.addIssue({
+        code: "custom",
+        path: ["SWARMFORGE_GIT_TREE"],
+        message: "Automatic push requires a cloned Git tree",
+      });
+    if (v.SWARMFORGE_GIT_PUSH_MODE === "github-app") {
+      required("SWARMFORGE_GITHUB_APP_ID");
+      required("SWARMFORGE_GITHUB_INSTALLATION_ID");
+      required("SWARMFORGE_GITHUB_PRIVATE_KEY_PATH");
+      required("SWARMFORGE_GITHUB_REPOSITORY");
+      if (
+        v.SWARMFORGE_GITHUB_REPOSITORY &&
+        ![
+          `https://github.com/${v.SWARMFORGE_GITHUB_REPOSITORY}`,
+          `https://github.com/${v.SWARMFORGE_GITHUB_REPOSITORY}.git`,
+        ].includes(v.SWARMFORGE_GIT_TREE)
+      )
+        ctx.addIssue({
+          code: "custom",
+          path: ["SWARMFORGE_GIT_TREE"],
+          message: "Must be the configured GitHub repository over HTTPS",
+        });
+    }
+    if (v.SWARMFORGE_GIT_PUSH_MODE === "ssh") {
+      required("SWARMFORGE_GIT_PUSH_URL");
+      required("SWARMFORGE_GIT_SSH_KEY_PATH");
+      required("SWARMFORGE_GIT_SSH_KNOWN_HOSTS_PATH");
+    }
     if (
       !["127.0.0.1", "localhost", "::1"].includes(v.SWARMFORGE_HOST) &&
       !v.SWARMFORGE_API_TOKEN
