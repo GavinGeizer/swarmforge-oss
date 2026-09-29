@@ -429,6 +429,62 @@ test("cancel settles when the VM vanished while execution was being stopped", as
   h.store.close();
 });
 
+test("cancel settles when a paused worker's VM was deleted out of band", async () => {
+  const h = harness();
+  const a = h.coordinator.spawn({ ...task, task_id: "a" });
+  const b = h.coordinator.spawn({ ...task, task_id: "b" });
+  await runToRunning(h, a.worker_id);
+  await runToRunning(h, b.worker_id);
+  const lost = h.store.get(a.worker_id).vm_id!;
+  await h.coordinator.control(a.worker_id, "pause");
+  // The guest is deleted out of band while paused, so the resume before the stop 404s.
+  h.provider.vms.delete(lost);
+  h.provider.resumeWorker = async (id) => {
+    if (!h.provider.vms.has(id)) throw new Error("VM not found");
+  };
+  await h.coordinator.control(a.worker_id, "cancel");
+  const cancelled = h.store.get(a.worker_id);
+  // A confirmed absence settles the cancel and records the lost VM, as reconciliation does.
+  expect(cancelled.state).toBe("cancelled");
+  expect(cancelled.intent).toBeNull();
+  expect(cancelled.vm_missing).toBe(true);
+  expect(cancelled.error).toBe("VM disappeared; local workspace is lost");
+  // The lost guest no longer counts against the worker limit.
+  const next = h.coordinator.spawn({ ...task, task_id: "next" });
+  await h.coordinator.tick();
+  expect(h.store.get(next.worker_id).state).not.toBe("queued");
+  // A cancel intent left pending would refuse destroy outright, so resolution must be final.
+  await h.coordinator.control(a.worker_id, "destroy");
+  expect(h.store.get(a.worker_id).state).toBe("destroyed");
+  h.store.close();
+});
+
+test("an ambiguous resume failure keeps the VM and the pending cancel intent", async () => {
+  const h = harness();
+  const w = h.coordinator.spawn(task);
+  await runToRunning(h, w.worker_id);
+  const vm = h.store.get(w.worker_id).vm_id!;
+  await h.coordinator.control(w.worker_id, "pause");
+  const resume = h.provider.resumeWorker.bind(h.provider);
+  h.provider.resumeWorker = async () => {
+    throw new Error("provider unavailable");
+  };
+  await h.coordinator.control(w.worker_id, "cancel");
+  const pending = h.store.get(w.worker_id);
+  // The guest may still be running, so nothing is settled or lost: retry it instead.
+  expect(pending.state).toBe("paused");
+  expect(pending.intent).toBe("cancel");
+  expect(pending.vm_missing).toBe(false);
+  expect(h.provider.vms.has(vm)).toBe(true);
+  h.provider.resumeWorker = resume;
+  await h.coordinator.tick();
+  const settled = h.store.get(w.worker_id);
+  expect(settled.state).toBe("cancelled");
+  expect(settled.intent).toBeNull();
+  expect(settled.vm_missing).toBe(false);
+  h.store.close();
+});
+
 test("destroy completes in one call when the VM vanishes during quiesce", async () => {
   const h = harness();
   const w = h.coordinator.spawn(task);

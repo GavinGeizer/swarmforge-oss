@@ -685,11 +685,16 @@ export class Coordinator {
       await this.bounded(this.provider.pauseWorker(w.vm_id));
       return "paused";
     } catch {}
-    // Stopping races with the guest being deleted or a provider outage.
-    const probe = await this.bounded(this.provider.getWorker(w.vm_id)).catch(
+    return (await this.vmMissing(w.vm_id)) ? "missing" : "paused";
+  }
+  // A guest can be deleted out of band between any two provider calls. Only the provider's
+  // confirmed absence (getWorker answering null for a 404) is proof; a probe that throws or
+  // that still finds the VM is ambiguous, so the VM is kept and the operation retried.
+  private async vmMissing(id: string): Promise<boolean> {
+    const probe = await this.bounded(this.provider.getWorker(id)).catch(
       () => undefined,
     );
-    return probe === null ? "missing" : "paused";
+    return probe === null;
   }
   // Teardown cancels every queued dispatch, so the worker is held for the whole window,
   // provider round-trips included, and send_worker_message rejects instead of racing it.
@@ -804,10 +809,20 @@ export class Coordinator {
     }
     if (w.intent === "cancel") {
       await this.teardown(id, async () => {
+        let missing = false;
         if (w.vm_id) {
-          if (w.state === "paused")
-            await this.bounded(this.provider.resumeWorker(w.vm_id));
-          await this.quiesce(w);
+          // A paused guest has to run again before it can be stopped, and it may have been
+          // deleted out of band. Only a confirmed absence settles the cancellation here; an
+          // ambiguous resume keeps the VM and the intent for the next attempt.
+          if (w.state === "paused") {
+            try {
+              await this.bounded(this.provider.resumeWorker(w.vm_id));
+            } catch (error) {
+              if (!(await this.vmMissing(w.vm_id))) throw error;
+              missing = true;
+            }
+          }
+          if (!missing && (await this.quiesce(w)) === "missing") missing = true;
         }
         this.inference.delete(id);
         this.excerpts.delete(id);
@@ -816,6 +831,12 @@ export class Coordinator {
           deadline_at: null,
           completed_at: Date.now(),
           intent: null,
+          ...(missing
+            ? {
+                vm_missing: true,
+                error: "VM disappeared; local workspace is lost",
+              }
+            : {}),
         });
       });
       return;
