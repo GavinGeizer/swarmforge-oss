@@ -96,8 +96,8 @@ export interface Worker {
   deadline_at: number | null;
   paused_at: number | null;
   previous_state: WorkerState | null;
-  token_progress_at: number | null;
-  token_progress_total: number;
+  token_progress_at?: number | null;
+  token_progress_total?: number;
   error: string | null;
   intent: "pause" | "resume" | "cancel" | "destroy" | null;
   force_destroy: boolean;

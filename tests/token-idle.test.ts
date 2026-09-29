@@ -218,6 +218,44 @@ test("a reopened database keeps the idle clock instead of restarting it", async 
   }
 });
 
+test("an active worker saved before the idle fields existed starts a fresh clock", async () => {
+  const h = harness();
+  const w = h.coordinator.spawn(task);
+  await runToRunning(h, w.worker_id);
+  const legacy = h.store.get(w.worker_id);
+  delete legacy.token_progress_at;
+  delete legacy.token_progress_total;
+  h.store.db
+    .query("UPDATE workers SET body=? WHERE worker_id=?")
+    .run(JSON.stringify(legacy), w.worker_id);
+  const restarted = new Coordinator(config, h.store, h.provider, h.agent);
+  await restarted.tick();
+  const after = h.store.get(w.worker_id);
+  expect(after.state).toBe("running");
+  expect(after.token_progress_at).toBeGreaterThan(0);
+  expect(after.token_progress_total).toBe(0);
+  h.store.close();
+});
+
+test("Git push retries do not trigger the token idle stop", async () => {
+  const h = harness();
+  const w = h.coordinator.spawn(task);
+  await runToRunning(h, w.worker_id);
+  const withGit = new Coordinator(
+    { ...config, SWARMFORGE_GIT_PUSH_MODE: "github-app" },
+    h.store,
+    h.provider,
+    h.agent,
+  );
+  h.provider.pushFailure = true;
+  h.agent.complete(h.store.get(w.worker_id));
+  aged(h, w.worker_id, 20 * idle);
+  await withGit.tick();
+  expect(h.store.get(w.worker_id).state).toBe("running");
+  expect(h.store.get(w.worker_id).error).toContain("Git branch push");
+  h.store.close();
+});
+
 test("zero disables the idle stop", async () => {
   const h = harness();
   const w = h.coordinator.spawn(task);
