@@ -393,17 +393,24 @@ test("deadline failure settles when the VM vanished between abort and stop", asy
   h.store.patch(w.worker_id, { deadline_at: Date.now() - 1 });
   await h.coordinator.tick();
   const failed = h.store.get(w.worker_id);
-  // Generation is provably stopped, but nothing can verify persistence on a lost guest.
-  expect(failed.state).toBe("recovery_required");
+  // A confirmed-absent guest is reconciled, not retained: it fails, records the lost VM
+  // and releases the capacity it was holding.
+  expect(failed.state).toBe("failed");
+  expect(failed.vm_missing).toBe(true);
+  expect(failed.error).toBe("VM disappeared; local workspace is lost");
   expect(failed.intent).toBeNull();
   expect(failed.deadline_at).toBeNull();
   expect(h.store.dispatch(w.worker_id)).toBeUndefined();
   expect(h.provider.vms.has(vm)).toBe(false);
-  // A confirmed-absent guest is quiesced, so persistence is still inspected once.
-  expect(stop.checks).toBe(1);
-  // A settled failure is never retried on later passes.
+  // Nothing survives to inspect, so persistence is never claimed as unverifiable.
+  expect(stop.checks).toBe(0);
+  expect(() => h.coordinator.message(w.worker_id, "revive")).toThrow(
+    "cannot receive messages",
+  );
+  // The freed capacity lets the next task provision on the next pass.
+  const next = h.coordinator.spawn({ ...task, task_id: "next" });
   await h.coordinator.tick();
-  expect(h.store.get(w.worker_id).state).toBe("recovery_required");
+  expect(h.store.get(next.worker_id).state).not.toBe("queued");
   h.store.close();
 });
 
@@ -422,19 +429,20 @@ test("cancel settles when the VM vanished while execution was being stopped", as
   h.store.close();
 });
 
-test("destroy settles and clears its intent when the VM vanishes during quiesce", async () => {
+test("destroy completes in one call when the VM vanishes during quiesce", async () => {
   const h = harness();
   const w = h.coordinator.spawn(task);
   await runToRunning(h, w.worker_id);
   vanishDuringStop(h);
   await h.coordinator.control(w.worker_id, "destroy");
-  const stopped = h.store.get(w.worker_id);
-  expect(stopped.state).toBe("recovery_required");
-  expect(stopped.intent).toBeNull();
-  expect(stopped.deadline_at).toBeNull();
-  // Without a cleared intent the destroy would be replayed on every pass, forever.
+  const destroyed = h.store.get(w.worker_id);
+  // A guest that no longer exists has nothing left to preserve, so destruction settles
+  // instead of stranding the worker in recovery_required for a second call.
+  expect(destroyed.state).toBe("destroyed");
+  expect(destroyed.intent).toBeNull();
+  expect(destroyed.deadline_at).toBeNull();
   await h.coordinator.tick();
-  expect(h.store.get(w.worker_id).intent).toBeNull();
+  expect(h.store.get(w.worker_id).state).toBe("destroyed");
   h.store.close();
 });
 
@@ -492,6 +500,95 @@ test("a message sent while a failure is in flight is rejected instead of acknowl
   await failing;
   expect(h.store.get(w.worker_id).state).toBe("failed");
   expect(h.store.dispatch(w.worker_id)).toBeUndefined();
+  h.store.close();
+});
+
+test("a message is rejected while a cancel intent is recorded but its step has not started", async () => {
+  const h = harness();
+  const w = h.coordinator.spawn(task);
+  await runToRunning(h, w.worker_id);
+  let release: () => void = () => {};
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let entered: () => void = () => {};
+  const inside = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  const inspect = h.agent.inspect.bind(h.agent);
+  h.agent.inspect = async (worker) => {
+    entered();
+    await gate;
+    return inspect(worker);
+  };
+  // A step already owns the worker lock, so control() records the intent durably and
+  // waits for the in-flight step instead of starting the cancel itself.
+  const ticking = h.coordinator.tick();
+  await inside;
+  const cancelling = h.coordinator.control(w.worker_id, "cancel");
+  expect(h.store.get(w.worker_id).intent).toBe("cancel");
+  const queued = h.store.dispatches(w.worker_id).length;
+  expect(() =>
+    h.coordinator.message(w.worker_id, "before cancel runs"),
+  ).toThrow("lifecycle operation in progress");
+  expect(h.store.dispatches(w.worker_id)).toHaveLength(queued);
+  release();
+  await ticking;
+  await cancelling;
+  await h.coordinator.tick();
+  expect(h.store.get(w.worker_id).state).toBe("cancelled");
+  expect(h.store.get(w.worker_id).intent).toBeNull();
+  h.store.close();
+});
+
+test("a message is rejected after a cancel attempt failed with its intent still pending", async () => {
+  const h = harness();
+  const w = h.coordinator.spawn(task);
+  await runToRunning(h, w.worker_id);
+  await h.coordinator.control(w.worker_id, "pause");
+  const resume = h.provider.resumeWorker.bind(h.provider);
+  h.provider.resumeWorker = async () => {
+    throw new Error("provider unavailable");
+  };
+  // The teardown body throws before it reaches its transition, so the hold is released
+  // while the cancel intent stays recorded for the next pass. A message must still be
+  // refused: that retry would cancel it after acknowledging it.
+  await h.coordinator.control(w.worker_id, "cancel");
+  expect(h.store.get(w.worker_id).intent).toBe("cancel");
+  const queued = h.store.dispatches(w.worker_id).length;
+  expect(() =>
+    h.coordinator.message(w.worker_id, "after failed cancel"),
+  ).toThrow("lifecycle operation in progress");
+  expect(h.store.dispatches(w.worker_id)).toHaveLength(queued);
+  h.provider.resumeWorker = resume;
+  await h.coordinator.tick();
+  const retried = h.store.get(w.worker_id);
+  expect(retried.intent).toBeNull();
+  expect(retried.state).toBe("cancelled");
+  h.store.close();
+});
+
+test("a pending destroy intent also refuses messages while its teardown is not applied", async () => {
+  const h = harness();
+  const w = h.coordinator.spawn(task);
+  await runToRunning(h, w.worker_id);
+  await h.coordinator.control(w.worker_id, "pause");
+  const resume = h.provider.resumeWorker.bind(h.provider);
+  h.provider.resumeWorker = async () => {
+    throw new Error("provider unavailable");
+  };
+  await h.coordinator.control(w.worker_id, "destroy");
+  expect(h.store.get(w.worker_id).intent).toBe("destroy");
+  const queued = h.store.dispatches(w.worker_id).length;
+  expect(() =>
+    h.coordinator.message(w.worker_id, "after failed destroy"),
+  ).toThrow();
+  expect(h.store.dispatches(w.worker_id)).toHaveLength(queued);
+  h.provider.resumeWorker = resume;
+  await h.coordinator.tick();
+  const retried = h.store.get(w.worker_id);
+  expect(retried.intent).toBeNull();
+  expect(["destroyed", "recovery_required"]).toContain(retried.state);
   h.store.close();
 });
 
