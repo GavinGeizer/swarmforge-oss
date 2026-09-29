@@ -1,14 +1,17 @@
+import { dlopen, FFIType } from "bun:ffi";
 import {
   appendFileSync,
   closeSync,
+  constants,
   existsSync,
+  fstatSync,
+  ftruncateSync,
   mkdirSync,
   openSync,
-  readFileSync,
   renameSync,
   statSync,
   unlinkSync,
-  writeFileSync,
+  writeSync,
 } from "node:fs";
 import { dirname } from "node:path";
 import type { Coordinator } from "./coordinator";
@@ -100,33 +103,70 @@ export function renderEvent(
     .filter(Boolean)
     .join("  ");
 }
+const LOCK_EX = 2;
+const LOCK_NB = 4;
+const LOCK_UN = 8;
+const LIBC = [
+  "libc.so.6",
+  "/lib/x86_64-linux-gnu/libc.so.6",
+  "/usr/lib/x86_64-linux-gnu/libc.so.6",
+  "libc.musl-x86_64.so.1",
+  "/lib/ld-musl-x86_64.so.1",
+  "libSystem.B.dylib",
+];
+let flockBinding: ((fd: number, operation: number) => number) | undefined;
+function flock(fd: number, operation: number) {
+  if (!flockBinding) {
+    for (const library of LIBC) {
+      try {
+        const binding = dlopen(library, {
+          flock: { args: [FFIType.i32, FFIType.i32], returns: FFIType.i32 },
+        }).symbols.flock;
+        if (typeof binding === "function") {
+          flockBinding = binding as (fd: number, operation: number) => number;
+          break;
+        }
+      } catch {}
+    }
+    if (!flockBinding)
+      throw new Error("Advisory file locking is unavailable on this platform");
+  }
+  return flockBinding(fd, operation);
+}
+function namedHandle(fd: number, path: string) {
+  try {
+    const held = fstatSync(fd);
+    const named = statSync(path);
+    return held.ino === named.ino && held.dev === named.dev;
+  } catch {
+    return false;
+  }
+}
 export function acquireProcessLock(path: string) {
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  const claim = () => {
-    const fd = openSync(path, "wx", 0o600);
-    writeFileSync(fd, String(process.pid));
-    closeSync(fd);
-  };
-  try {
-    claim();
-  } catch (e) {
-    if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
-    const pid = Number(readFileSync(path, "utf8"));
-    if (!Number.isSafeInteger(pid) || pid <= 0)
-      throw new Error("Invalid database lock; inspect it before removing");
-    let alive = true;
-    try {
-      process.kill(pid, 0);
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code === "ESRCH") alive = false;
+  const mode = constants.O_RDWR | constants.O_CREAT | constants.O_NOFOLLOW;
+  let fd = -1;
+  for (let attempt = 0; attempt < 8 && fd < 0; attempt++) {
+    const candidate = openSync(path, mode, 0o600);
+    if (flock(candidate, LOCK_EX | LOCK_NB) !== 0) {
+      closeSync(candidate);
+      throw new Error("Another SwarmForge process owns this database");
     }
-    if (alive) throw new Error("Another SwarmForge process owns this database");
-    unlinkSync(path);
-    claim();
+    if (namedHandle(candidate, path)) fd = candidate;
+    else closeSync(candidate);
   }
+  if (fd < 0) throw new Error("Could not claim a stable database lock");
+  ftruncateSync(fd, 0);
+  writeSync(fd, `${process.pid}\n`);
+  let released = false;
   return () => {
-    if (existsSync(path) && readFileSync(path, "utf8") === String(process.pid))
-      unlinkSync(path);
+    if (released) return;
+    released = true;
+    try {
+      if (namedHandle(fd, path)) unlinkSync(path);
+    } catch {}
+    flock(fd, LOCK_UN);
+    closeSync(fd);
   };
 }
 export function eventLogger(c: Coordinator, path: string) {
