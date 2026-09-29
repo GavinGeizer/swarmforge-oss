@@ -143,7 +143,14 @@ export class WorkerFiles {
       throw new Error(
         "Artifact contains credentials; remove them inside the worker before retrieval",
       );
-    return bytes.slice(offset - start, offset - start + length);
+    const screened = bytes.slice(offset - start, offset - start + length);
+    // These are the bytes the caller keeps, so they are screened on their own:
+    // a fragment the wider window does not show can still sit inside them.
+    if (redactor.discloses(screened))
+      throw new Error(
+        "Artifact contains credentials; remove them inside the worker before retrieval",
+      );
+    return screened;
   }
   async logs(id: string, after = 0, limit = 50) {
     const w = this.c.store.get(id);

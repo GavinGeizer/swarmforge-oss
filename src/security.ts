@@ -1,8 +1,12 @@
 import type { Coordinator } from "./coordinator";
 import { excerptLimit } from "./domain";
 
-// Shortest piece of a credential a window edge may keep without screening it.
+// Shortest piece of a credential a read may hand over without screening it: too
+// short to be matched or extended on its own, so it discloses too little to matter.
 const minFragment = 8;
+// Filler tolerated between the pieces of a credential a reader could otherwise
+// put back together inside one window.
+const maxReassembly = 8;
 export class Redactor {
   constructor(readonly secrets: () => string[]) {}
   private variants() {
@@ -59,11 +63,71 @@ export class Redactor {
       longest = Math.max(longest, variant.length);
     return longest;
   }
+  // The bytes a bounded read hands over are screened whole, not only where they
+  // meet a window edge: filler, visible or invisible, moves a piece of a
+  // credential anywhere inside the window, so an edge check alone can be walked
+  // around by keeping the piece away from the edge. Filler on its own is not a
+  // reason to refuse a read, and both rules below cost the window plus the
+  // credentials once, never their product.
+  discloses(bytes: Uint8Array) {
+    const text = Buffer.from(bytes).toString("utf8");
+    const folded = sanitizeText(text);
+    const variants = this.variants();
+    if (this.fragment(text, variants) || this.reassembled(text, variants))
+      return true;
+    return (
+      folded !== text &&
+      (this.fragment(folded, variants) || this.reassembled(folded, variants))
+    );
+  }
+  // A run of minFragment credential characters is a piece worth taking on its
+  // own: it can be matched against what a caller already holds, and that many
+  // characters of a real credential leave nothing worth guessing. Index every
+  // window of that length a credential contains, then sweep the text against
+  // the index, which covers longer runs as well because they contain one.
+  private fragment(text: string, variants: string[]) {
+    if (text.length < minFragment) return false;
+    const windows = new Set<string>();
+    for (const variant of variants)
+      for (let at = 0; at + minFragment <= variant.length; at++)
+        windows.add(variant.slice(at, at + minFragment));
+    if (!windows.size) return false;
+    for (let at = 0; at + minFragment <= text.length; at++)
+      if (windows.has(text.slice(at, at + minFragment))) return true;
+    return false;
+  }
+  // A credential cut into pieces is handed over just as surely once the pieces
+  // can be joined, so every character of one may not appear in order either,
+  // except within a bounded amount of filler between them. Taking each character
+  // as early as it appears spends the least filler of any placement, so a greedy
+  // match is exact here: if any placement fits the budget, this one finds it.
+  private reassembled(text: string, variants: string[]) {
+    for (const variant of variants) {
+      // The first character is free wherever it appears: only the filler between
+      // characters is charged, because the text around a credential is not part
+      // of it.
+      let at = text.indexOf(variant[0]!);
+      if (at < 0) continue;
+      let budget = maxReassembly;
+      let matched = 1;
+      while (matched < variant.length) {
+        const limit = Math.min(text.length, at + budget + 1);
+        let found = at;
+        while (found < limit && text[found] !== variant[matched]) found++;
+        if (found >= limit) break;
+        budget -= found - at;
+        at = found + 1;
+        matched++;
+      }
+      if (matched === variant.length) return true;
+    }
+    return false;
+  }
   // A window whose edge cuts a credential in half cannot be screened: the missing
   // half is outside the window, so no amount of looking at these bytes finds it.
   // Invisible filler makes that reachable, because folding the window away can
-  // move a visible fragment next to the edge. Block instead of handing out a
-  // fragment long enough to be useful; shorter ones disclose too little to matter.
+  // move a visible fragment next to the edge. This is the edge-shaped case alone;
+  // discloses() covers the same fragment once it has been moved off the edge.
   clippedAtEdge(bytes: Uint8Array) {
     // A window can also open inside a multi-byte character or a whitespace run;
     // the fragment still sits at the edge once those are trimmed.
