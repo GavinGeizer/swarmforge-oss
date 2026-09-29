@@ -38,6 +38,7 @@ Bun loads `.env`. Empty optional entries use their defaults. Required configurat
 | `SWARMFORGE_MAX_QUEUE` | `1000` | Creation queue bound; above it callers receive an error. |
 | `SWARMFORGE_DEFAULT_TIMEOUT_SECONDS` | `3600` | Per-turn wall-clock budget, overridable by spawn. Explicit pause suspends the budget. |
 | `SWARMFORGE_PROVISION_TIMEOUT_SECONDS` | `300` | Budget for provisioning and OpenCode startup. |
+| `SWARMFORGE_TOKEN_IDLE_TIMEOUT_SECONDS` | `300` | Quiesce an active, incomplete dispatch that records no increase in cumulative token usage for this long; `0` disables the stop. |
 | `SWARMFORGE_POLL_INTERVAL_MS` | `2000` | Worker polling interval; owned-VM reconciliation also runs periodically. |
 | `SWARMFORGE_API_TIMEOUT_MS` | `30000` | Bound on external operations. A timed-out provider operation may still finish remotely and is reconciled. |
 | `SWARMFORGE_METRICS_ENABLED` | `true` | Exactly `true` or `false`. |
@@ -46,6 +47,10 @@ Bun loads `.env`. Empty optional entries use their defaults. Required configurat
 | `SWARMFORGE_RUN_SMOKE` | `false` | Script-only explicit opt-in for a real billable smoke VM. |
 
 Worker environment includes worker/team/task IDs, Git location, workspace, model API key, and the OpenCode port/config/authentication settings. The model URL/name live in the guest OpenCode configuration. Each server receives an independent random password, retained privately in SQLite. Freestyle credentials and the MCP bearer token are never deliberately copied into the guest.
+
+## Token idle stop
+
+A dispatched turn can stall without any provider or task error, so SwarmForge also bounds recorded token progress. Each worker keeps a durable progress timestamp and cumulative token total. The clock starts when a dispatch is claimed, which also bounds turns that never record a token; it restarts on every recorded increase, restarts for each follow-up, and shifts by the time the worker was paused. A restart reuses the stored timestamp instead of restarting the budget. Only an active, incomplete dispatch is eligible: a completed or resolvable turn, and any Git push or branch verification, are never interrupted by this check, and a failed status poll leaves the clock untouched. When the budget expires, SwarmForge stops the guest OpenCode service through the same safe path used for task timeouts, keeps the VM, and records `failed`, or `recovery_required` when the workspace holds uncommitted or unpushed work. Raise the value for slow models or long tool phases, and use `0` only where a stalled dispatch should be left to the task deadline.
 
 For branch handoff, SwarmForge creates `swarmforge/<team>/<task>/<worker-id>` from the cloned default branch before OpenCode starts. The worker commits its source changes. SwarmForge then supplies the configured credential only for Git operations, pushes `HEAD` to that branch, checks the remote SHA, and removes the temporary guest credential. The result records `git.branch`, `git.commit`, `git.base_commit`, `git.persisted=true`, and a GitHub compare URL in GitHub App mode. If a push or verification fails, completion is retried until the task deadline; the VM stays available for recovery. GitHub Apps need repository Contents write permission; the token request is restricted to the configured repository. A local machine remote needs an SSH server reachable from the worker VM and a bare repository or a server configured to accept branch updates.
 

@@ -434,6 +434,23 @@ export class Coordinator {
         return;
       }
     }
+    // Only a fresh inspect reaches this point, and only an unresolved dispatch.
+    // A raised token total is the sole proven liveness signal; usage is max-upserted.
+    const timeout = this.config.SWARMFORGE_TOKEN_IDLE_TIMEOUT_SECONDS;
+    if (timeout > 0) {
+      const current = this.store.recordProgress(
+        w.worker_id,
+        this.store.tokens({ worker_id: w.worker_id }).total,
+      );
+      const idle = Date.now() - (current.token_progress_at ?? Date.now());
+      if (idle >= timeout * 1000) {
+        await this.fail(
+          current,
+          `No token progress for ${Math.floor(idle / 1000)}s; worker quiesced`,
+        );
+        return;
+      }
+    }
     this.store.transition(
       w.worker_id,
       snapshot.status === "busy" ? "running" : "waiting",
@@ -583,6 +600,9 @@ export class Coordinator {
         deadline_at: w.deadline_at ? w.deadline_at + elapsed : null,
         provision_started_at: w.provision_started_at
           ? w.provision_started_at + elapsed
+          : null,
+        token_progress_at: w.token_progress_at
+          ? w.token_progress_at + elapsed
           : null,
         paused_at: null,
         intent: null,

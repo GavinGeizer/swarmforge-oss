@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 const positive = (n: number) => z.coerce.number().int().positive().default(n);
+const nonNegative = (n: number) => z.coerce.number().int().min(0).default(n);
 const bool = (n: boolean) =>
   z
     .enum(["true", "false"])
@@ -68,6 +69,7 @@ const schema = z
     SWARMFORGE_MAX_QUEUE: positive(1000),
     SWARMFORGE_DEFAULT_TIMEOUT_SECONDS: positive(3600),
     SWARMFORGE_PROVISION_TIMEOUT_SECONDS: positive(300),
+    SWARMFORGE_TOKEN_IDLE_TIMEOUT_SECONDS: nonNegative(300),
     SWARMFORGE_POLL_INTERVAL_MS: positive(2000),
     SWARMFORGE_API_TIMEOUT_MS: positive(30000),
     SWARMFORGE_METRICS_ENABLED: bool(true),

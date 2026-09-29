@@ -81,6 +81,8 @@ export class Store {
         deadline_at: null,
         paused_at: null,
         previous_state: null,
+        token_progress_at: null,
+        token_progress_total: 0,
         error: null,
         intent: null,
         force_destroy: false,
@@ -202,8 +204,23 @@ export class Store {
         deadline_at: Date.now() + w.timeout_seconds * 1000,
         completed_at: null,
         error: null,
+        // The idle clock starts at claim so a zero-token turn is still bounded.
+        token_progress_at: Date.now(),
+        token_progress_total: this.tokens({ worker_id: w.worker_id }).total,
       });
     })();
+  }
+  // Recorded progress is durable per worker; a restart must not reset the idle clock.
+  recordProgress(id: string, total: number): Worker {
+    const w = this.get(id);
+    const seen = w.token_progress_at ?? null;
+    const baseline = w.token_progress_total ?? 0;
+    if (seen === null || total > baseline)
+      return this.patch(id, {
+        token_progress_at: Date.now(),
+        token_progress_total: Math.max(total, baseline),
+      });
+    return w;
   }
   finish(id: string, d: Dispatch, result: WorkerResult) {
     this.db.transaction(() => {
