@@ -7,6 +7,21 @@ const bool = (n: boolean) =>
     .enum(["true", "false"])
     .default(String(n) as "true" | "false")
     .transform((v) => v === "true");
+const loopbackHosts = new Set(["127.0.0.1", "localhost", "::1", "[::1]"]);
+const isLoopbackHost = (host: string) =>
+  loopbackHosts.has(host.trim().toLowerCase());
+// Every hostname the HTTP layer accepts must be considered: a loopback bind behind a
+// reverse proxy still serves a public hostname, and that request is unauthenticated
+// without a token.
+const acceptedHosts = (v: {
+  SWARMFORGE_HOST: string;
+  SWARMFORGE_ALLOWED_HOSTS: string;
+}) => [
+  v.SWARMFORGE_HOST,
+  ...v.SWARMFORGE_ALLOWED_HOSTS.split(",")
+    .map((s) => s.trim())
+    .filter(Boolean),
+];
 const schema = z
   .object({
     FREESTYLE_API_URL: z.url().default("https://api.freestyle.sh"),
@@ -117,14 +132,12 @@ const schema = z
       required("SWARMFORGE_GIT_SSH_KEY_PATH");
       required("SWARMFORGE_GIT_SSH_KNOWN_HOSTS_PATH");
     }
-    if (
-      !["127.0.0.1", "localhost", "::1"].includes(v.SWARMFORGE_HOST) &&
-      !v.SWARMFORGE_API_TOKEN
-    )
+    const exposed = acceptedHosts(v).filter((host) => !isLoopbackHost(host));
+    if (exposed.length > 0 && !v.SWARMFORGE_API_TOKEN)
       ctx.addIssue({
         code: "custom",
         path: ["SWARMFORGE_API_TOKEN"],
-        message: "Required when binding beyond loopback",
+        message: `Required for a non-loopback accepted hostname: ${exposed.join(", ")}`,
       });
     if (
       v.SWARMFORGE_METRICS_ENABLED &&

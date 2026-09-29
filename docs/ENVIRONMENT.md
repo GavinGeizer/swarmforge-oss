@@ -30,9 +30,9 @@ Bun loads `.env`. Empty optional entries use their defaults. Required configurat
 | `OPENCODE_START_COMMAND` | `opencode serve --hostname 0.0.0.0 --port "$OPENCODE_PORT"` | Administrator-supplied command run by the guest systemd service. Keep it compatible with the configured port. |
 | `SWARMFORGE_DB_PATH` | `./data/swarmforge.sqlite` | Persistent local SQLite file. Server disallows `:memory:`. Parent directory is created. |
 | `SWARMFORGE_HOST` | `127.0.0.1` | MCP and metrics listen interface. |
-| `SWARMFORGE_ALLOWED_HOSTS` | Empty | Comma-separated public hostnames/IPs accepted in addition to loopback and the bind address. Set for a reverse proxy or wildcard bind; host validation prevents DNS rebinding. |
+| `SWARMFORGE_ALLOWED_HOSTS` | Empty | Comma-separated public hostnames/IPs accepted in addition to loopback and the bind address. Set for a reverse proxy or wildcard bind; host validation prevents DNS rebinding. Any non-loopback entry here also requires `SWARMFORGE_API_TOKEN`, even when `SWARMFORGE_HOST` stays on loopback. |
 | `SWARMFORGE_PORT` | `8787` | MCP HTTP port. |
-| `SWARMFORGE_API_TOKEN` | Unset on loopback | Shared trusted-lead bearer token, minimum 24 characters. Required off loopback. No per-team authorization. |
+| `SWARMFORGE_API_TOKEN` | Unset on loopback | Shared trusted-lead bearer token, minimum 24 characters. Required whenever any accepted hostname is non-loopback, which includes a public entry in `SWARMFORGE_ALLOWED_HOSTS` and a non-loopback `SWARMFORGE_HOST`. When it is set, every accepted hostname requires the token, so a loopback-only deployment cannot reach a proxied hostname anonymously. No per-team authorization. |
 | `SWARMFORGE_MAX_WORKERS` | `50` | Retained VMs plus provisioning reservations; completed/paused/failed VMs consume capacity until destroyed or confirmed lost. |
 | `SWARMFORGE_MAX_PROVISIONING` | `4` | Concurrent provisioning/booting workers. |
 | `SWARMFORGE_MAX_QUEUE` | `1000` | Creation queue bound; above it callers receive an error. |

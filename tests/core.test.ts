@@ -22,6 +22,38 @@ describe("configuration and credential boundary", () => {
     ).toThrow();
     expect(() => loadConfig({ ...env, SWARMFORGE_HOST: "0.0.0.0" })).toThrow();
   });
+  test("requires a bearer token for any accepted non-loopback hostname", () => {
+    expect(loadConfig(env).SWARMFORGE_API_TOKEN).toBeUndefined();
+    expect(
+      loadConfig({ ...env, SWARMFORGE_HOST: "::1" }).SWARMFORGE_API_TOKEN,
+    ).toBeUndefined();
+    expect(
+      loadConfig({
+        ...env,
+        SWARMFORGE_ALLOWED_HOSTS: " localhost , ::1 ",
+      }).SWARMFORGE_ALLOWED_HOSTS,
+    ).toBe(" localhost , ::1 ");
+    expect(() =>
+      loadConfig({ ...env, SWARMFORGE_ALLOWED_HOSTS: "mcp.example.com" }),
+    ).toThrow(/SWARMFORGE_API_TOKEN: Required/);
+    expect(() =>
+      loadConfig({
+        ...env,
+        SWARMFORGE_HOST: "127.0.0.1",
+        SWARMFORGE_ALLOWED_HOSTS: "localhost,mcp.example.com",
+      }),
+    ).toThrow(/SWARMFORGE_API_TOKEN: Required/);
+    expect(() =>
+      loadConfig({ ...env, SWARMFORGE_ALLOWED_HOSTS: "10.0.0.5" }),
+    ).toThrow(/SWARMFORGE_API_TOKEN: Required/);
+    expect(
+      loadConfig({
+        ...env,
+        SWARMFORGE_ALLOWED_HOSTS: "mcp.example.com",
+        SWARMFORGE_API_TOKEN: "a-test-token-with-enough-characters",
+      }).SWARMFORGE_API_TOKEN,
+    ).toBe("a-test-token-with-enough-characters");
+  });
   test("passes the opaque tree and model access but no host infrastructure secrets", () => {
     const c = loadConfig(env);
     const values = workerEnvironment(c, {
