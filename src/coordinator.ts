@@ -358,6 +358,14 @@ export class Coordinator {
               this.inference.delete(w.worker_id);
               this.excerpts.delete(w.worker_id);
               this.store.cancelDispatches(w.worker_id);
+              // A record that already reached a terminal state keeps that outcome: the guest
+              // is still confirmed gone, but settling again would emit a second terminal
+              // event and rewrite history, for example a cancelled record failing here.
+              if (terminal.has(w.state)) {
+                if (!w.vm_missing)
+                  this.store.patch(w.worker_id, { vm_missing: true });
+                return;
+              }
               this.store.transition(w.worker_id, "failed", {
                 error: "VM disappeared; local workspace is lost",
                 vm_missing: true,
@@ -696,6 +704,22 @@ export class Coordinator {
     );
     return probe === null;
   }
+  // A guest can be deleted out of band between any two provider calls, so an intent that
+  // needs the VM may find it gone. A confirmed absence settles the record exactly as
+  // reconciliation would: nothing runs, no workspace survives, the VM id is kept for
+  // diagnosis, capacity is released and the lost guest refuses messages and still destroys.
+  private lostGuest(w: Worker) {
+    this.inference.delete(w.worker_id);
+    this.excerpts.delete(w.worker_id);
+    this.store.cancelDispatches(w.worker_id);
+    this.store.transition(w.worker_id, "failed", {
+      error: "VM disappeared; local workspace is lost",
+      vm_missing: true,
+      completed_at: Date.now(),
+      deadline_at: null,
+      intent: null,
+    });
+  }
   // Teardown cancels every queued dispatch, so the worker is held for the whole window,
   // provider round-trips included, and send_worker_message rejects instead of racing it.
   private async teardown<T>(id: string, fn: () => Promise<T>): Promise<T> {
@@ -716,14 +740,7 @@ export class Coordinator {
       if (outcome === "missing") {
         // The guest is gone, so retention protects nothing and reconciliation already owns
         // this outcome: fail the worker, record the lost VM and release its capacity.
-        this.store.cancelDispatches(w.worker_id);
-        this.store.transition(w.worker_id, "failed", {
-          error: "VM disappeared; local workspace is lost",
-          vm_missing: true,
-          completed_at: Date.now(),
-          deadline_at: null,
-          intent: null,
-        });
+        this.lostGuest(w);
         return;
       }
       const safety =
@@ -780,7 +797,18 @@ export class Coordinator {
         });
         return;
       }
-      await this.bounded(this.provider.pauseWorker(w.vm_id));
+      // The guest may have been deleted out of band, and an intent left pending would hold
+      // capacity, refuse destroy and keep accepting undeliverable messages. Only a confirmed
+      // absence settles the pause; an ambiguous failure keeps the VM and the intent.
+      try {
+        await this.bounded(this.provider.pauseWorker(w.vm_id));
+      } catch (error) {
+        if (!(await this.vmMissing(w.vm_id))) throw error;
+        // Held like any teardown: it cancels dispatches, so a message must not be
+        // acknowledged and then dropped by the settle.
+        await this.teardown(id, async () => this.lostGuest(w));
+        return;
+      }
       this.inference.delete(id);
       this.excerpts.delete(id);
       this.store.transition(id, "paused", {
@@ -791,7 +819,17 @@ export class Coordinator {
       return;
     }
     if (w.intent === "resume") {
-      if (w.vm_id) await this.bounded(this.provider.resumeWorker(w.vm_id));
+      // Same rule as pause: only a confirmed absence ends the intent, and it ends it the
+      // same way, so a lost guest cannot strand the worker in paused with a pending resume.
+      if (w.vm_id) {
+        try {
+          await this.bounded(this.provider.resumeWorker(w.vm_id));
+        } catch (error) {
+          if (!(await this.vmMissing(w.vm_id))) throw error;
+          await this.teardown(id, async () => this.lostGuest(w));
+          return;
+        }
+      }
       const elapsed = Date.now() - (w.paused_at ?? Date.now());
       this.store.transition(id, w.previous_state ?? "ready", {
         deadline_at: w.deadline_at ? w.deadline_at + elapsed : null,

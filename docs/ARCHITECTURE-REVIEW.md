@@ -10,6 +10,7 @@ Material issues found and fixed:
 - Destruction inspects source persistence only after quiescing execution. Real Git tests cover dirty, untracked and local-only committed work.
 - Reconciliation shares per-worker serialization with controls, re-reads pending intent after provider responses, and queries retained VMs concurrently to avoid linear timeout delays.
 - Late-created VMs and owned orphans remain discoverable. Confirmed missing VMs preserve diagnostic IDs while releasing capacity.
+- Every control intent follows the same confirmed-absence rule: a guest deleted out of band settles the intent as a lost VM, while an ambiguous provider failure keeps the VM and the retryable intent. Reconciliation never settles a record that already reached a terminal state.
 - A follow-up accepted while a completed worker is paused becomes runnable on resume.
 - OpenCode history is paginated for usage recovery beyond 100 messages; matching assistant parent IDs also establish accepted dispatches.
 - Creation request retries remain idempotent even when the queue is full.

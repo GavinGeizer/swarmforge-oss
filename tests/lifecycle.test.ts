@@ -485,6 +485,196 @@ test("an ambiguous resume failure keeps the VM and the pending cancel intent", a
   h.store.close();
 });
 
+// The guest is deleted out of band while a lifecycle intent is being applied: the provider
+// reports the missing VM, so the probe confirms the absence the same way for every intent.
+function requireLiveVm(h: ReturnType<typeof harness>, calls: string[]) {
+  h.provider.pauseWorker = async (id) => {
+    calls.push(`pause:${id}`);
+    if (!h.provider.vms.has(id)) throw new Error("VM not found");
+    const vm = h.provider.vms.get(id)!;
+    vm.state = "paused";
+  };
+  h.provider.resumeWorker = async (id) => {
+    calls.push(`resume:${id}`);
+    if (!h.provider.vms.has(id)) throw new Error("VM not found");
+    const vm = h.provider.vms.get(id)!;
+    vm.state = "running";
+  };
+}
+
+test("pause settles as a lost VM when the guest is deleted out of band", async () => {
+  const h = harness();
+  const a = h.coordinator.spawn({ ...task, task_id: "a" });
+  const b = h.coordinator.spawn({ ...task, task_id: "b" });
+  await runToRunning(h, a.worker_id);
+  await runToRunning(h, b.worker_id);
+  const lost = h.store.get(a.worker_id).vm_id!;
+  requireLiveVm(h, []);
+  h.provider.vms.delete(lost);
+  await h.coordinator.control(a.worker_id, "pause");
+  const settled = h.store.get(a.worker_id);
+  // A guest that no longer exists cannot be paused, so the pause settles exactly as
+  // reconciliation would: failed, the lost VM recorded, and no intent left pending.
+  expect(settled.state).toBe("failed");
+  expect(settled.vm_missing).toBe(true);
+  expect(settled.error).toBe("VM disappeared; local workspace is lost");
+  expect(settled.intent).toBeNull();
+  expect(settled.deadline_at).toBeNull();
+  // The id is kept for diagnosis, and nothing stays queued for a guest that cannot answer.
+  expect(settled.vm_id).toBe(lost);
+  expect(h.store.dispatch(a.worker_id)).toBeUndefined();
+  // The freed capacity lets the next task provision instead of waiting on a lost guest.
+  const next = h.coordinator.spawn({ ...task, task_id: "next" });
+  await h.coordinator.tick();
+  expect(h.store.get(next.worker_id).state).not.toBe("queued");
+  // A lost guest cannot take a message, and a pending pause intent would refuse destroy
+  // and keep holding capacity, so both must be resolved by the settle.
+  expect(() => h.coordinator.message(a.worker_id, "revive")).toThrow(
+    "cannot receive messages",
+  );
+  await h.coordinator.control(a.worker_id, "destroy");
+  expect(h.store.get(a.worker_id).state).toBe("destroyed");
+  h.store.close();
+});
+
+test("resume settles as a lost VM when the guest is deleted out of band", async () => {
+  const h = harness();
+  const a = h.coordinator.spawn({ ...task, task_id: "a" });
+  const b = h.coordinator.spawn({ ...task, task_id: "b" });
+  await runToRunning(h, a.worker_id);
+  await runToRunning(h, b.worker_id);
+  const lost = h.store.get(a.worker_id).vm_id!;
+  await h.coordinator.control(a.worker_id, "pause");
+  requireLiveVm(h, []);
+  // The guest is deleted while paused, so the resume that releases the task 404s.
+  h.provider.vms.delete(lost);
+  await h.coordinator.control(a.worker_id, "resume");
+  const settled = h.store.get(a.worker_id);
+  expect(settled.state).toBe("failed");
+  expect(settled.vm_missing).toBe(true);
+  expect(settled.error).toBe("VM disappeared; local workspace is lost");
+  expect(settled.intent).toBeNull();
+  expect(settled.vm_id).toBe(lost);
+  expect(h.store.dispatch(a.worker_id)).toBeUndefined();
+  const next = h.coordinator.spawn({ ...task, task_id: "next" });
+  await h.coordinator.tick();
+  expect(h.store.get(next.worker_id).state).not.toBe("queued");
+  expect(() => h.coordinator.message(a.worker_id, "revive")).toThrow(
+    "cannot receive messages",
+  );
+  await h.coordinator.control(a.worker_id, "destroy");
+  expect(h.store.get(a.worker_id).state).toBe("destroyed");
+  h.store.close();
+});
+
+test("an ambiguous pause failure keeps the VM and the pending pause intent", async () => {
+  const h = harness();
+  const w = h.coordinator.spawn(task);
+  await runToRunning(h, w.worker_id);
+  const vm = h.store.get(w.worker_id).vm_id!;
+  const pause = h.provider.pauseWorker.bind(h.provider);
+  h.provider.pauseWorker = async () => {
+    throw new Error("provider unavailable");
+  };
+  await h.coordinator.control(w.worker_id, "pause");
+  const pending = h.store.get(w.worker_id);
+  // The guest may still be running, so it is neither settled nor recorded as lost.
+  expect(pending.state).toBe("running");
+  expect(pending.intent).toBe("pause");
+  expect(pending.vm_missing).toBe(false);
+  expect(pending.vm_id).toBe(vm);
+  expect(h.provider.vms.has(vm)).toBe(true);
+  h.provider.pauseWorker = pause;
+  await h.coordinator.tick();
+  const retried = h.store.get(w.worker_id);
+  expect(retried.state).toBe("paused");
+  expect(retried.intent).toBeNull();
+  expect(retried.vm_missing).toBe(false);
+  h.store.close();
+});
+
+test("an ambiguous resume failure keeps the VM and the pending resume intent", async () => {
+  const h = harness();
+  const w = h.coordinator.spawn(task);
+  await runToRunning(h, w.worker_id);
+  const vm = h.store.get(w.worker_id).vm_id!;
+  await h.coordinator.control(w.worker_id, "pause");
+  const resume = h.provider.resumeWorker.bind(h.provider);
+  h.provider.resumeWorker = async () => {
+    throw new Error("provider unavailable");
+  };
+  await h.coordinator.control(w.worker_id, "resume");
+  const pending = h.store.get(w.worker_id);
+  // The guest still exists, so the paused budget stays suspended and the intent is retried.
+  expect(pending.state).toBe("paused");
+  expect(pending.intent).toBe("resume");
+  expect(pending.vm_missing).toBe(false);
+  expect(pending.vm_id).toBe(vm);
+  expect(h.provider.vms.has(vm)).toBe(true);
+  h.provider.resumeWorker = resume;
+  await h.coordinator.tick();
+  const retried = h.store.get(w.worker_id);
+  expect(retried.state).toBe("running");
+  expect(retried.intent).toBeNull();
+  expect(retried.vm_missing).toBe(false);
+  h.store.close();
+});
+
+test("a pause intent left durable by a crash still settles after a restart", async () => {
+  const h = harness();
+  const w = h.coordinator.spawn(task);
+  await runToRunning(h, w.worker_id);
+  const lost = h.store.get(w.worker_id).vm_id!;
+  requireLiveVm(h, []);
+  h.provider.vms.delete(lost);
+  // The intent is durable but was never applied, so the wedge outlives the process.
+  h.store.patch(w.worker_id, { intent: "pause" });
+  const fresh = new Coordinator(config, h.store, h.provider, h.agent);
+  await fresh.tick();
+  const settled = fresh.store.get(w.worker_id);
+  expect(settled.state).toBe("failed");
+  expect(settled.vm_missing).toBe(true);
+  expect(settled.intent).toBeNull();
+  expect(settled.vm_id).toBe(lost);
+  expect(() => fresh.message(w.worker_id, "revive")).toThrow(
+    "cannot receive messages",
+  );
+  h.store.close();
+});
+
+test("a confirmed absence is recorded once and never settles the worker twice", async () => {
+  const h = harness();
+  const a = h.coordinator.spawn({ ...task, task_id: "a" });
+  const b = h.coordinator.spawn({ ...task, task_id: "b" });
+  await runToRunning(h, a.worker_id);
+  await runToRunning(h, b.worker_id);
+  const lost = h.store.get(a.worker_id).vm_id!;
+  await h.coordinator.control(a.worker_id, "pause");
+  requireLiveVm(h, []);
+  h.provider.vms.delete(lost);
+  await h.coordinator.control(a.worker_id, "cancel");
+  expect(h.store.get(a.worker_id).state).toBe("cancelled");
+  // Reconciliation still sees the absent guest, but a record that already reached a
+  // terminal state keeps that outcome instead of emitting a second terminal event.
+  await h.coordinator.recover();
+  await h.coordinator.recover();
+  const reconciled = h.store.get(a.worker_id);
+  expect(reconciled.state).toBe("cancelled");
+  expect(reconciled.vm_missing).toBe(true);
+  expect(h.store.get(a.worker_id).error).toBe(
+    "VM disappeared; local workspace is lost",
+  );
+  expect(
+    h.store
+      .events(a.worker_id)
+      .map((e) => e.type)
+      .filter((type) => ["worker.failed", "worker.cancelled"].includes(type)),
+  ).toEqual(["worker.cancelled"]);
+  // The other worker is untouched by its neighbour's confirmed absence.
+  expect(h.store.get(b.worker_id).state).toBe("running");
+  h.store.close();
+});
+
 test("destroy completes in one call when the VM vanishes during quiesce", async () => {
   const h = harness();
   const w = h.coordinator.spawn(task);
