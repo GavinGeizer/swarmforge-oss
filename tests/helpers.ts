@@ -28,8 +28,11 @@ export class FakeProvider implements WorkerProvider {
   links = new Map<string, string>();
   stats = 0;
   reads = 0;
+  contained = 0;
   /** Runs after each stat resolves, so tests can swap a path mid-request. */
   onStat: ((path: string) => void) | null = null;
+  /** Runs once, at the next read, just before the name is resolved again. */
+  beforeRead: (() => void) | null = null;
   failure = false;
   dirty = false;
   destroyFailure = false;
@@ -91,11 +94,10 @@ export class FakeProvider implements WorkerProvider {
   }
   async readFile(id: string, path: string, offset = 0, length = 65536) {
     this.reads++;
-    // A plain path-based read: it re-resolves the name and follows symlinks.
-    let target = `${id}:${path}`;
-    for (let hop = 0; hop < 8 && this.links.has(target); hop++)
-      target = `${id}:${this.links.get(target)!}`;
-    const data = this.files.get(target);
+    // A plain path-based read: it re-resolves the name at read time, so a path
+    // swapped after the checks were made resolves to whatever it points at now.
+    this.swap();
+    const data = this.files.get(this.resolve(id, path));
     if (data === undefined) throw new Error("missing file");
     return new TextEncoder().encode(data).slice(offset, offset + length);
   }
@@ -105,6 +107,8 @@ export class FakeProvider implements WorkerProvider {
     offset = 0,
     length = 65536,
   ) {
+    this.contained++;
+    this.swap();
     // One descriptor for the whole walk: no component may be a symlink.
     let current = "";
     for (const part of path.split("/").filter(Boolean)) {
@@ -122,8 +126,11 @@ export class FakeProvider implements WorkerProvider {
   }
   async listFiles(id: string, path: string) {
     return [...this.files.keys()]
-      .filter((k) => k.startsWith(`${id}:${path}/`))
-      .map((k) => ({ name: k.slice(`${id}:${path}/`.length), kind: "file" }));
+      .filter((k) => k.startsWith(`${this.resolve(id, path)}/`))
+      .map((k) => ({
+        name: k.slice(`${this.resolve(id, path)}/`.length),
+        kind: "file",
+      }));
   }
   async stat(id: string, path: string) {
     this.stats++;
@@ -131,10 +138,36 @@ export class FakeProvider implements WorkerProvider {
     this.onStat?.(path);
     return result;
   }
+  private swap() {
+    const hook = this.beforeRead;
+    this.beforeRead = null;
+    hook?.();
+  }
+  // Follows every symlinked component, the way a guest stat, listing or read does.
+  private resolve(id: string, path: string) {
+    let current = path;
+    for (let hop = 0; hop < 8; hop++) {
+      let walked = "";
+      let linked = false;
+      for (const part of current.split("/")) {
+        if (!part) continue;
+        const next = `${walked}/${part}`;
+        const target = this.links.get(`${id}:${next}`);
+        if (target) {
+          current = `${target}${current.slice(next.length)}`;
+          linked = true;
+          break;
+        }
+        walked = next;
+      }
+      if (!linked) return `${id}:${current}`;
+    }
+    return `${id}:${current}`;
+  }
   private statOf(id: string, path: string) {
     if (this.links.has(`${id}:${path}`))
       return { size: 0, isFile: false, isSymlink: true };
-    const data = this.files.get(`${id}:${path}`);
+    const data = this.files.get(this.resolve(id, path));
     if (data === undefined) {
       if (
         [

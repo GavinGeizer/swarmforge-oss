@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { Freestyle, FreestyleApiError, type VmData } from "freestyle";
 import type { Config } from "../config";
@@ -8,11 +9,13 @@ import { openCodeConfig } from "./opencode";
 export const quote = (s: string) => `'${s.replaceAll("'", "'\\''")}'`;
 // Walks the path one component at a time with O_NOFOLLOW, so no component can be
 // a symlink at the instant the descriptor is opened, checks the opened descriptor
-// is a regular file and copies the requested window from it into a staging file
-// that only this command created. Bytes come back over the file API rather than
-// command output, so provider output limits cannot truncate a read.
+// is a regular file and copies the requested window into <stage>/chunk, a file
+// this call named and can therefore remove whatever the response turns out to be.
+// Bytes come back over the file API rather than command output, so provider output
+// limits cannot truncate a read. The only thing the guest is believed about is the
+// size of the file it opened.
 const containedRead = `# SWARMFORGE_CONTAINED_READ
-import json,os,secrets,stat,sys
+import json,os,stat,sys
 path,stage,offset,length=sys.argv[1],sys.argv[2],int(sys.argv[3]),int(sys.argv[4])
 parts=[p for p in path.split('/') if p]
 if not parts or any(p in ('.','..') for p in parts): sys.exit(2)
@@ -29,10 +32,11 @@ info=os.fstat(fd)
 if not stat.S_ISREG(info.st_mode): sys.exit(3)
 data=os.pread(fd,length,offset)
 os.close(fd)
-os.makedirs(stage,mode=0o700,exist_ok=True)
+parent=os.path.dirname(stage)
+if os.path.lexists(parent) and not stat.S_ISDIR(os.lstat(parent).st_mode): sys.exit(4)
+os.makedirs(stage,mode=0o700)
 if not stat.S_ISDIR(os.lstat(stage).st_mode): sys.exit(4)
-target=os.path.join(stage,secrets.token_hex(16))
-out=os.open(target,os.O_WRONLY|os.O_CREAT|os.O_EXCL|NOFOLLOW,0o600)
+out=os.open(os.path.join(stage,'chunk'),os.O_WRONLY|os.O_CREAT|os.O_EXCL|NOFOLLOW,0o600)
 view=memoryview(data)
 try:
  while view:
@@ -41,7 +45,7 @@ try:
   view=view[written:]
 finally:
  os.close(out)
-print(json.dumps({'size':info.st_size,'path':target}))`;
+print(json.dumps({'size':info.st_size}))`;
 const stageRoot = "/run/swarmforge-read";
 export class FreestyleProvider implements WorkerProvider {
   readonly client: Freestyle;
@@ -346,42 +350,34 @@ export class FreestyleProvider implements WorkerProvider {
     length = 65536,
   ) {
     const vm = this.client.vms.ref(id);
-    const opened = await vm.exec({
-      command: `python3 -c ${quote(containedRead)} ${quote(path)} ${quote(stageRoot)} ${Math.max(0, Math.trunc(offset))} ${Math.max(0, Math.trunc(length))}`,
-      linuxUser: "root",
-      timeoutMs: 30000,
-    });
-    if (opened.statusCode !== 0)
-      throw new Error("Artifact is not a file inside the artifacts root");
-    let staged: { size: unknown; path: unknown };
+    // The staging directory is named here, so it is known before the guest runs
+    // and the copy is removed even when the response cannot be read back.
+    const stage = `${stageRoot}/${randomBytes(16).toString("hex")}`;
     try {
-      staged = JSON.parse(opened.stdout ?? "");
-    } catch {
-      throw new Error("Contained artifact read returned an invalid response");
-    }
-    const stagedPath =
-      typeof staged.path === "string" &&
-      staged.path.startsWith(`${stageRoot}/`) &&
-      !staged.path.slice(stageRoot.length + 1).includes("/")
-        ? staged.path
-        : null;
-    if (
-      !stagedPath ||
-      typeof staged.size !== "number" ||
-      !Number.isSafeInteger(staged.size) ||
-      staged.size < 0
-    )
-      throw new Error("Contained artifact read returned an invalid response");
-    try {
+      const opened = await vm.exec({
+        command: `python3 -c ${quote(containedRead)} ${quote(path)} ${quote(stage)} ${Math.max(0, Math.trunc(offset))} ${Math.max(0, Math.trunc(length))}`,
+        linuxUser: "root",
+        timeoutMs: 30000,
+      });
+      if (opened.statusCode !== 0)
+        throw new Error("Artifact is not a file inside the artifacts root");
+      let size: unknown;
+      try {
+        size = (JSON.parse(opened.stdout ?? "") as { size?: unknown }).size;
+      } catch {
+        throw new Error("Contained artifact read returned an invalid response");
+      }
+      if (typeof size !== "number" || !Number.isSafeInteger(size) || size < 0)
+        throw new Error("Contained artifact read returned an invalid response");
       return {
-        size: staged.size,
-        bytes: await vm.fs.readFile(stagedPath, { offset: 0, length }),
+        size,
+        bytes: await vm.fs.readFile(`${stage}/chunk`, { offset: 0, length }),
       };
     } finally {
-      // Best effort: the staging file is a tmpfs copy this command just created.
+      // Best effort: the staged copy is a tmpfs file this call named and created.
       await vm
         .exec({
-          command: `rm -rf -- ${quote(stagedPath)}`,
+          command: `rm -rf -- ${quote(stage)}`,
           linuxUser: "root",
           timeoutMs: 30000,
         })

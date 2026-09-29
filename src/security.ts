@@ -1,5 +1,8 @@
 import type { Coordinator } from "./coordinator";
 import { excerptLimit } from "./domain";
+
+// Shortest piece of a credential a window edge may keep without screening it.
+const minFragment = 8;
 export class Redactor {
   constructor(readonly secrets: () => string[]) {}
   private variants() {
@@ -55,6 +58,32 @@ export class Redactor {
     for (const variant of this.variants())
       longest = Math.max(longest, variant.length);
     return longest;
+  }
+  // A window whose edge cuts a credential in half cannot be screened: the missing
+  // half is outside the window, so no amount of looking at these bytes finds it.
+  // Invisible filler makes that reachable, because folding the window away can
+  // move a visible fragment next to the edge. Block instead of handing out a
+  // fragment long enough to be useful; shorter ones disclose too little to matter.
+  clippedAtEdge(bytes: Uint8Array) {
+    // A window can also open inside a multi-byte character or a whitespace run;
+    // the fragment still sits at the edge once those are trimmed.
+    const folded = sanitizeText(Buffer.from(bytes).toString("utf8")).replace(
+      /^[\s\uFFFD]+|[\s\uFFFD]+$/g,
+      "",
+    );
+    for (const variant of this.variants()) {
+      if (variant.length <= minFragment) continue;
+      for (let taken = minFragment; taken < variant.length; taken++) {
+        // folded starts with a proper suffix of the credential, or ends with a
+        // proper prefix of it: the rest of it is outside the window.
+        if (
+          folded.startsWith(variant.slice(variant.length - taken)) ||
+          folded.endsWith(variant.slice(0, taken))
+        )
+          return true;
+      }
+    }
+    return false;
   }
 }
 export function redactorFor(c: Coordinator) {

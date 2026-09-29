@@ -1,5 +1,8 @@
 import { expect, test } from "bun:test";
+import type { Freestyle } from "freestyle";
+import { loadConfig } from "../src/config";
 import { WorkerFiles } from "../src/files";
+import { FreestyleProvider } from "../src/providers/freestyle";
 import { excerptText, Redactor } from "../src/security";
 import { baseEnv, harness, runToRunning, task } from "./helpers";
 
@@ -11,32 +14,68 @@ async function running(h: ReturnType<typeof harness>) {
   return { id: w.worker_id, vm: h.store.get(w.worker_id).vm_id! };
 }
 
-test("an artifact swapped to a symlink after the check never leaks outside-root content", async () => {
+test("a symlink swapped in after the path checks cannot leak outside-root content", async () => {
   const h = harness();
   const { id, vm } = await running(h);
+  const marker = "outside-root-marker";
   const files = new WorkerFiles(h.coordinator);
   await h.provider.writeFile(vm, `${root}/report.txt`, "safe artifact body\n");
   await h.provider.writeFile(
     vm,
     "/etc/shadow",
-    "root:$6$outside:19000:0:99999:7:::",
+    `root:${marker}:19000:0:99999:7:::`,
   );
   const clean = await files.readArtifact(id, "report.txt", 0, 64);
   expect(new TextDecoder().decode(clean)).toContain("safe artifact body");
-  // Swap the checked path for a symlink the instant the check completes.
-  h.provider.links.set(`${vm}:${root}/report.txt`, "/etc/shadow");
-  h.provider.onStat = (path) => {
-    if (path !== `${root}/report.txt`) return;
-    h.provider.onStat = null;
-    h.provider.links.delete(`${vm}:${root}/report.txt`);
+  // Every check has already run at this point. The name becomes a symlink before
+  // the read resolves it a second time, which is the window a stat-then-read pair
+  // leaves open: a by-name read returns outside-root bytes, a contained open refuses.
+  h.provider.beforeRead = () => {
+    h.provider.links.set(`${vm}:${root}/report.txt`, "/etc/shadow");
+    h.provider.files.delete(`${vm}:${root}/report.txt`);
   };
-  // The old path-based read follows the name again and yields outside-root bytes.
-  h.provider.readFile = async () => {
-    h.provider.reads++;
-    return new TextEncoder().encode("root:$6$outside:19000:0:99999:7:::");
-  };
-  await expect(files.readArtifact(id, "report.txt", 0, 64)).rejects.toThrow();
+  h.provider.reads = 0;
+  h.provider.contained = 0;
+  const outcome = await files.readArtifact(id, "report.txt", 0, 64).then(
+    (bytes) => new TextDecoder().decode(bytes),
+    (error) => `rejected: ${error.message}`,
+  );
+  expect(outcome).not.toContain(marker);
+  expect(outcome.startsWith("rejected:")).toBe(true);
+  expect(h.provider.contained).toBe(1);
   expect(h.provider.reads).toBe(0);
+  h.store.close();
+});
+
+test("a symlinked trusted prefix cannot disclose outside-root names or sizes", async () => {
+  const h = harness();
+  const { id, vm } = await running(h);
+  const files = new WorkerFiles(h.coordinator);
+  await h.provider.writeFile(
+    vm,
+    "/outside/artifacts/secret-name.txt",
+    "outside content",
+  );
+  // The worker owns its workspace, so it can replace the .swarmforge directory
+  // holding the artifacts root with a symlink of its own.
+  h.provider.links.set(`${vm}:/workspace/.swarmforge`, "/outside");
+  const rejected = "rejected: Symlink artifact paths are not allowed";
+  const listing = await files.artifacts(id).then(
+    (result) => result.entries.map((e) => e.name),
+    () => rejected,
+  );
+  expect(listing).toBe(rejected);
+  const handle = await files.artifact(id, "secret-name.txt").then(
+    (result) => `size ${result.size}`,
+    () => rejected,
+  );
+  expect(handle).toBe(rejected);
+  // With the prefix intact the listing names only entries inside the root.
+  h.provider.links.delete(`${vm}:/workspace/.swarmforge`);
+  await h.provider.writeFile(vm, `${root}/real.txt`, "in root");
+  expect((await files.artifacts(id)).entries.map((e) => e.name)).toEqual([
+    "real.txt",
+  ]);
   h.store.close();
 });
 
@@ -158,6 +197,165 @@ test("deep artifact paths are rejected before any provider call", async () => {
   h.provider.stats = 0;
   const bytes = await files.readArtifact(id, allowed, 0, 64);
   expect(new TextDecoder().decode(bytes)).toContain("deep artifact body");
-  expect(h.provider.stats).toBeLessThanOrEqual(17);
+  // Trusted workspace components, the root, and one stat per supplied segment.
+  expect(h.provider.stats).toBeLessThanOrEqual(4 + 16);
   h.store.close();
+});
+
+test("a credential cut off by the window edge cannot be disclosed by invisible filler", async () => {
+  const h = harness();
+  const { id, vm } = await running(h);
+  // "model-secret" is written with zero-width characters between its halves, so
+  // no screen can match it literally. The invisible run also crosses the byte
+  // where the scanned window opens, so the chunk on offer would carry "el-secret",
+  // the tail of a credential whose head is outside the window. Each filler
+  // character is three bytes on disk, so the split lands on the 50001st byte.
+  const filler = "\u200b".repeat(6666);
+  await h.provider.writeFile(
+    vm,
+    `${root}/filler.txt`,
+    `${"P".repeat(30000)}mod${filler}el-secret${"Q".repeat(70000)}`,
+  );
+  const files = new WorkerFiles(h.coordinator);
+  await expect(
+    files.readArtifact(id, "filler.txt", 50001, 32768),
+  ).rejects.toThrow();
+  // Shorter than the fragment floor, so the same shape is released: a piece this
+  // small is not usable without the rest of the credential.
+  await h.provider.writeFile(
+    vm,
+    `${root}/piece.txt`,
+    `${"P".repeat(30000)}mod${filler}el-secr${"Q".repeat(70000)}`,
+  );
+  const bytes = await files.readArtifact(id, "piece.txt", 50001, 32768);
+  expect(bytes.length).toBe(32768);
+  // The same cut at the far end of the window: nothing of the credential is on
+  // offer there, but the fragment is still screened rather than reasoned about.
+  await h.provider.writeFile(
+    vm,
+    `${root}/tail.txt`,
+    `${"X".repeat(20000)}model-sec${"\u200b".repeat(20000)}ret${"Y".repeat(70000)}`,
+  );
+  await expect(
+    files.readArtifact(id, "tail.txt", 24096, 32768),
+  ).rejects.toThrow();
+  h.store.close();
+});
+
+test("the Freestyle contained read opens without following links and always clears its staging copy", async () => {
+  const execs: string[] = [];
+  const reads: { path: string; offset: number; length: number }[] = [];
+  const reply = (command: string) => ({
+    statusCode: 0,
+    stdout: `{"size": 19}`,
+    stderr: "",
+    stage: command.match(/'(\/run\/[^']+)'/)?.[1] ?? "",
+  });
+  const client = {
+    vms: {
+      ref: () => ({
+        exec: async ({ command }: { command: string }) => {
+          execs.push(command);
+          return reply(command);
+        },
+        fs: {
+          readFile: async (
+            path: string,
+            opts: { offset: number; length: number },
+          ) => {
+            reads.push({ path, ...opts });
+            return new TextEncoder().encode("safe artifact body\n");
+          },
+        },
+      }),
+    },
+  } as unknown as Freestyle;
+  const provider = new FreestyleProvider(loadConfig(baseEnv), client);
+  const out = await provider.readFileContained(
+    "vm-1",
+    `${root}/report.txt`,
+    16,
+    64,
+  );
+  expect(out.size).toBe(19);
+  expect(new TextDecoder().decode(out.bytes)).toContain("safe artifact body");
+  const stage = reply(execs[0]!).stage;
+  const [open, ...rest] = execs;
+  expect(open).toContain("O_NOFOLLOW");
+  expect(open).toContain("dir_fd=");
+  expect(open).toContain(`'${root}/report.txt'`);
+  expect(open).toContain(" 16 64");
+  expect(stage.startsWith("/run/swarmforge-read/")).toBe(true);
+  // The staging directory is created fresh for this call, never reused.
+  expect(open).not.toContain("exist_ok");
+  // Only the staging directory this call chose is ever read or removed.
+  expect(reads).toEqual([{ path: `${stage}/chunk`, offset: 0, length: 64 }]);
+  expect(rest).toEqual([`rm -rf -- '${stage}'`]);
+
+  // A guest that reports a different file is ignored: the copy this call made is
+  // the only path it will read or delete.
+  execs.length = 0;
+  reads.length = 0;
+  const lying = new FreestyleProvider(loadConfig(baseEnv), {
+    vms: {
+      ref: () => ({
+        exec: async ({ command }: { command: string }) => {
+          execs.push(command);
+          return {
+            ...reply(command),
+            stdout: '{"size": 4, "path": "/etc/passwd"}',
+          };
+        },
+        fs: {
+          readFile: async (path: string) => {
+            reads.push({ path, offset: 0, length: 64 });
+            return new TextEncoder().encode("junk");
+          },
+        },
+      }),
+    },
+  } as unknown as Freestyle);
+  const lied = await lying.readFileContained(
+    "vm-1",
+    `${root}/report.txt`,
+    0,
+    64,
+  );
+  expect(lied.size).toBe(4);
+  expect(reads.map((r) => r.path)).toEqual([`${reply(execs[0]!).stage}/chunk`]);
+  expect(execs[1]).not.toContain("/etc/passwd");
+
+  // A refusal inside the guest, and a response that cannot be trusted, both fail
+  // the read and still remove whatever the guest may have staged.
+  for (const failure of [
+    { statusCode: 1, stdout: "" },
+    { statusCode: 0, stdout: "not json" },
+    { statusCode: 0, stdout: '{"size": -1}' },
+    { statusCode: 0, stdout: '{"size": 1.5}' },
+  ]) {
+    execs.length = 0;
+    reads.length = 0;
+    const failing = new FreestyleProvider(loadConfig(baseEnv), {
+      vms: {
+        ref: () => ({
+          exec: async ({ command }: { command: string }) => {
+            execs.push(command);
+            return { ...reply(command), ...failure };
+          },
+          fs: {
+            readFile: async (path: string) => {
+              reads.push({ path, offset: 0, length: 64 });
+              return new Uint8Array();
+            },
+          },
+        }),
+      },
+    } as unknown as Freestyle);
+    await expect(
+      failing.readFileContained("vm-1", `${root}/report.txt`, 0, 64),
+    ).rejects.toThrow();
+    expect(reads).toEqual([]);
+    expect(execs).toHaveLength(2);
+    expect(execs[1]?.startsWith("rm -rf -- '/run/swarmforge-read/")).toBe(true);
+  }
 });

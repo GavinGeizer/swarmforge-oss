@@ -20,6 +20,9 @@ export class WorkerFiles {
   private root() {
     return `${this.c.config.SWARMFORGE_WORKSPACE}/.swarmforge/artifacts`;
   }
+  private rootSegments() {
+    return this.root().split("/").filter(Boolean);
+  }
   private segments(path: string) {
     const parts = path.split("/");
     if (
@@ -45,19 +48,18 @@ export class WorkerFiles {
     if (!stat.isFile) throw new Error("Artifact is not a file");
     return { w, full, stat };
   }
-  // Walk only the untrusted part below the artifacts root: one stat per segment,
-  // so the depth cap also bounds the provider work a single request can cause.
+  // Walk the whole path from the workspace down, not just the part below the
+  // artifacts root: the worker owns its workspace, so a component that looks
+  // trusted, such as .swarmforge, can itself be replaced with a symlink while
+  // provider.stat only ever reports the leaf. The depth cap keeps the number of
+  // remote calls a single request can cause fixed.
   private async noSymlinks(vm: string, parts: string[]) {
-    let path = this.root();
-    const linked = async (target: string) => {
-      const stat = await this.c.bounded(this.c.provider.stat(vm, target));
+    let path = "";
+    for (const segment of [...this.rootSegments(), ...parts]) {
+      path += `/${segment}`;
+      const stat = await this.c.bounded(this.c.provider.stat(vm, path));
       if (stat.isSymlink)
         throw new Error("Symlink artifact paths are not allowed");
-    };
-    await linked(path);
-    for (const segment of parts) {
-      path += `/${segment}`;
-      await linked(path);
     }
   }
   async artifacts(id: string, directory = "", offset = 0, limit = 50) {
@@ -137,7 +139,7 @@ export class WorkerFiles {
         length + 2 * overlap,
       ),
     );
-    if (redactor.contains(bytes))
+    if (redactor.contains(bytes) || redactor.clippedAtEdge(bytes))
       throw new Error(
         "Artifact contains credentials; remove them inside the worker before retrieval",
       );
