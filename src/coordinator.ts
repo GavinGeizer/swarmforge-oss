@@ -179,15 +179,13 @@ export class Coordinator {
   }
   private queueMessage(id: string, message: string) {
     const w = this.store.get(id);
-    // Teardown cancels every dispatch it can see, so a message is refused both while one
-    // runs and while its intent is already durable but not yet applied. This keeps
-    // send_worker_message linearized: no run is ever acknowledged as "queued" and then
-    // silently removed by a cancel, destroy or failure the caller did not order after it.
-    if (
-      this.tearingDown.has(id) ||
-      w.intent === "cancel" ||
-      w.intent === "destroy"
-    )
+    // Teardown cancels every dispatch it can see, and every control intent can end in one,
+    // a cancel, a destroy or a guest lost out of band. A message is therefore refused both
+    // while a teardown runs, provider round-trips and absence probes included, and while an
+    // intent is already durable but not yet applied. This keeps send_worker_message
+    // linearized: no run is ever acknowledged as "queued" and then silently removed by a
+    // cancel, destroy or failure the caller did not order after it.
+    if (this.tearingDown.has(id) || w.intent)
       throw new Error(
         "Worker lifecycle operation in progress; retry the message",
       );
@@ -708,10 +706,18 @@ export class Coordinator {
   // needs the VM may find it gone. A confirmed absence settles the record exactly as
   // reconciliation would: nothing runs, no workspace survives, the VM id is kept for
   // diagnosis, capacity is released and the lost guest refuses messages and still destroys.
+  // A record whose outcome is already settled keeps it, whether that outcome is the current
+  // state or the one a pause is holding for resumption: settling again would emit a second
+  // terminal event and count the same turn twice, for example a completed worker failing.
   private lostGuest(w: Worker) {
     this.inference.delete(w.worker_id);
     this.excerpts.delete(w.worker_id);
     this.store.cancelDispatches(w.worker_id);
+    const outcome = w.state === "paused" ? w.previous_state : w.state;
+    if (outcome && terminal.has(outcome)) {
+      this.store.patch(w.worker_id, { vm_missing: true, intent: null });
+      return;
+    }
     this.store.transition(w.worker_id, "failed", {
       error: "VM disappeared; local workspace is lost",
       vm_missing: true,
@@ -799,37 +805,47 @@ export class Coordinator {
       }
       // The guest may have been deleted out of band, and an intent left pending would hold
       // capacity, refuse destroy and keep accepting undeliverable messages. Only a confirmed
-      // absence settles the pause; an ambiguous failure keeps the VM and the intent.
-      try {
-        await this.bounded(this.provider.pauseWorker(w.vm_id));
-      } catch (error) {
-        if (!(await this.vmMissing(w.vm_id))) throw error;
-        // Held like any teardown: it cancels dispatches, so a message must not be
-        // acknowledged and then dropped by the settle.
-        await this.teardown(id, async () => this.lostGuest(w));
-        return;
-      }
-      this.inference.delete(id);
-      this.excerpts.delete(id);
-      this.store.transition(id, "paused", {
-        previous_state: w.state,
-        paused_at: Date.now(),
-        intent: null,
+      // absence settles the pause; an ambiguous failure keeps the VM and the intent. The hold
+      // spans the round-trip and its probe because a confirmed absence ends in a settle that
+      // cancels dispatches: a message must not be acknowledged and then dropped by it, not
+      // even while the provider call is still outstanding.
+      const vm = w.vm_id;
+      await this.teardown(id, async () => {
+        try {
+          await this.bounded(this.provider.pauseWorker(vm));
+        } catch (error) {
+          if (!(await this.vmMissing(vm))) throw error;
+          this.lostGuest(w);
+          return;
+        }
+        this.inference.delete(id);
+        this.excerpts.delete(id);
+        this.store.transition(id, "paused", {
+          previous_state: w.state,
+          paused_at: Date.now(),
+          intent: null,
+        });
       });
       return;
     }
     if (w.intent === "resume") {
-      // Same rule as pause: only a confirmed absence ends the intent, and it ends it the
-      // same way, so a lost guest cannot strand the worker in paused with a pending resume.
-      if (w.vm_id) {
-        try {
-          await this.bounded(this.provider.resumeWorker(w.vm_id));
-        } catch (error) {
-          if (!(await this.vmMissing(w.vm_id))) throw error;
-          await this.teardown(id, async () => this.lostGuest(w));
-          return;
-        }
-      }
+      // Same rule as pause: only a confirmed absence ends the intent, it ends it the same
+      // way, and the refusal is held for the same window so a message cannot slip in ahead
+      // of a lost guest and be acknowledged as queued for a task that can never run.
+      const vm = w.vm_id;
+      const lost = vm
+        ? await this.teardown(id, async () => {
+            try {
+              await this.bounded(this.provider.resumeWorker(vm));
+              return false;
+            } catch (error) {
+              if (!(await this.vmMissing(vm))) throw error;
+              this.lostGuest(w);
+              return true;
+            }
+          })
+        : false;
+      if (lost) return;
       const elapsed = Date.now() - (w.paused_at ?? Date.now());
       this.store.transition(id, w.previous_state ?? "ready", {
         deadline_at: w.deadline_at ? w.deadline_at + elapsed : null,

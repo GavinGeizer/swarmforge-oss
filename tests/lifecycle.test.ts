@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { Coordinator } from "../src/coordinator";
+import { Metrics } from "../src/metrics";
 import { config, harness, runToRunning, task } from "./helpers";
 
 test("creation retries retain idempotency when the queue is full", () => {
@@ -675,6 +676,123 @@ test("a confirmed absence is recorded once and never settles the worker twice", 
   h.store.close();
 });
 
+// A control intent that finds its guest gone settles it as a lost VM, but a record that
+// already reached a terminal state keeps that outcome: settling again would emit a second
+// terminal event and count the same turn twice in the metrics derived from those events.
+const terminalOutcomes: {
+  outcome: "completed" | "failed" | "recovery_required";
+  reach: (h: ReturnType<typeof harness>, id: string) => Promise<void>;
+}[] = [
+  {
+    outcome: "completed",
+    reach: async (h, id) => {
+      h.agent.complete(h.store.get(id), {
+        status: "completed",
+        summary: "shipped",
+      });
+      await h.coordinator.tick();
+    },
+  },
+  {
+    outcome: "failed",
+    reach: async (h, id) => {
+      // A malformed result with nothing to fall back to fails a worker whose guest is
+      // still live, so its record is settled but its VM is still there to be lost.
+      h.agent.complete(h.store.get(id), null);
+      await h.coordinator.tick();
+    },
+  },
+  {
+    outcome: "recovery_required",
+    reach: async (h, id) => {
+      h.provider.dirty = true;
+      h.store.patch(id, { deadline_at: Date.now() - 1 });
+      await h.coordinator.tick();
+    },
+  },
+];
+
+for (const { outcome, reach } of terminalOutcomes)
+  test(`a ${outcome} record keeps its outcome when a control intent finds the guest gone`, async () => {
+    const h = harness();
+    const w = h.coordinator.spawn(task);
+    await runToRunning(h, w.worker_id);
+    await reach(h, w.worker_id);
+    expect(h.store.get(w.worker_id).state).toBe(outcome);
+    const lost = h.store.get(w.worker_id).vm_id!;
+    const settledBefore = h.store.get(w.worker_id);
+    const before = h.store.events(w.worker_id).map((e) => e.type);
+    requireLiveVm(h, []);
+    h.provider.vms.delete(lost);
+    await h.coordinator.control(w.worker_id, "pause");
+    const settled = h.store.get(w.worker_id);
+    // The absence is confirmed, so it is recorded and the capacity the guest held is
+    // released, but the outcome the record already reached is left standing.
+    expect(settled.state).toBe(outcome);
+    expect(settled.vm_missing).toBe(true);
+    expect(settled.intent).toBeNull();
+    expect(settled.deadline_at).toBeNull();
+    expect(settled.vm_id).toBe(lost);
+    // A settle that reused the same terminal state would still overwrite the recorded
+    // reason for it, so the record keeps the outcome and the reason it settled with.
+    expect(settled.error).toBe(settledBefore.error);
+    expect(settled.completed_at).toBe(settledBefore.completed_at);
+    // The settle records the absence without emitting an event, so no second terminal
+    // event is added and the lifecycle counters still count the turn exactly once.
+    const events = h.store.events(w.worker_id).map((e) => e.type);
+    expect(events.slice(before.length)).toEqual([]);
+    expect(events.filter((type) => type === `worker.${outcome}`)).toHaveLength(
+      1,
+    );
+    // A lost guest still refuses messages and still destroys.
+    expect(() => h.coordinator.message(w.worker_id, "revive")).toThrow(
+      "cannot receive messages",
+    );
+    await h.coordinator.control(w.worker_id, "destroy");
+    expect(h.store.get(w.worker_id).state).toBe("destroyed");
+    h.store.close();
+  });
+
+test("a completed worker paused for inspection keeps its completion when its guest is deleted out of band", async () => {
+  const h = harness();
+  const w = h.coordinator.spawn(task);
+  await runToRunning(h, w.worker_id);
+  h.agent.complete(h.store.get(w.worker_id), {
+    status: "completed",
+    summary: "shipped",
+  });
+  await h.coordinator.tick();
+  await h.coordinator.control(w.worker_id, "pause");
+  const completedAt = h.store.get(w.worker_id).completed_at;
+  const lost = h.store.get(w.worker_id).vm_id!;
+  requireLiveVm(h, []);
+  // The guest is deleted while paused for inspection, so the resume 404s and settles it.
+  h.provider.vms.delete(lost);
+  await h.coordinator.control(w.worker_id, "resume");
+  const settled = h.store.get(w.worker_id);
+  // The completed turn is this record's outcome. A lost guest is recorded on top of it,
+  // never instead of it: no second terminal event, no rewritten completion, and the turn
+  // is counted once rather than once as completed and once as failed.
+  expect(settled.state).toBe("paused");
+  expect(settled.previous_state).toBe("completed");
+  expect(settled.completed_at).toBe(completedAt);
+  expect(settled.vm_missing).toBe(true);
+  expect(settled.intent).toBeNull();
+  expect(settled.vm_id).toBe(lost);
+  expect(h.store.result(w.worker_id)?.summary).toBe("shipped");
+  const events = h.store.events(w.worker_id).map((e) => e.type);
+  expect(events.filter((type) => type === "worker.completed")).toHaveLength(1);
+  expect(events).not.toContain("worker.failed");
+  const rendered = await new Metrics(h.coordinator).render();
+  // The lifecycle counters are derived from those events, so the turn is counted once as
+  // completed and never also as failed.
+  expect(rendered).toContain(
+    'swarmforge_workers_completed_total{team="other"} 1',
+  );
+  expect(rendered).not.toContain("swarmforge_workers_failed_total{");
+  h.store.close();
+});
+
 test("destroy completes in one call when the VM vanishes during quiesce", async () => {
   const h = harness();
   const w = h.coordinator.spawn(task);
@@ -746,6 +864,128 @@ test("a message sent while a failure is in flight is rejected instead of acknowl
   await failing;
   expect(h.store.get(w.worker_id).state).toBe("failed");
   expect(h.store.dispatch(w.worker_id)).toBeUndefined();
+  h.store.close();
+});
+
+test("a message sent while a lost-guest pause is in flight is rejected instead of acknowledged and dropped", async () => {
+  const h = harness();
+  const w = h.coordinator.spawn(task);
+  await runToRunning(h, w.worker_id);
+  const lost = h.store.get(w.worker_id).vm_id!;
+  let release: () => void = () => {};
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let entered: () => void = () => {};
+  const inside = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  h.provider.pauseWorker = async (id) => {
+    entered();
+    await gate;
+    if (!h.provider.vms.has(id)) throw new Error("VM not found");
+  };
+  h.provider.vms.delete(lost);
+  const pausing = h.coordinator.control(w.worker_id, "pause");
+  await inside;
+  const queued = h.store.dispatches(w.worker_id).length;
+  // The pause can still end in a settle that cancels every dispatch it can see, so the
+  // refusal is held across the whole window: a message may not be acknowledged with
+  // "queued" and then silently removed by that settle.
+  expect(() => h.coordinator.message(w.worker_id, "during pause")).toThrow(
+    "lifecycle operation in progress",
+  );
+  expect(h.store.dispatches(w.worker_id)).toHaveLength(queued);
+  release();
+  await pausing;
+  // The refusal is the caller's signal to retry, so the settle it was waiting for has to
+  // have happened by the time the control operation returns.
+  expect(h.store.get(w.worker_id).state).toBe("failed");
+  expect(h.store.get(w.worker_id).vm_missing).toBe(true);
+  expect(h.store.dispatch(w.worker_id)).toBeUndefined();
+  h.store.close();
+});
+
+test("a message sent while a lost-guest resume is in flight is rejected instead of acknowledged and dropped", async () => {
+  const h = harness();
+  const w = h.coordinator.spawn(task);
+  await runToRunning(h, w.worker_id);
+  h.agent.complete(h.store.get(w.worker_id));
+  await h.coordinator.tick();
+  await h.coordinator.control(w.worker_id, "pause");
+  const lost = h.store.get(w.worker_id).vm_id!;
+  let release: () => void = () => {};
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let entered: () => void = () => {};
+  const inside = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  h.provider.resumeWorker = async (id) => {
+    entered();
+    await gate;
+    if (!h.provider.vms.has(id)) throw new Error("VM not found");
+  };
+  h.provider.vms.delete(lost);
+  const resuming = h.coordinator.control(w.worker_id, "resume");
+  await inside;
+  const queued = h.store.dispatches(w.worker_id).length;
+  expect(() => h.coordinator.message(w.worker_id, "during resume")).toThrow(
+    "lifecycle operation in progress",
+  );
+  expect(h.store.dispatches(w.worker_id)).toHaveLength(queued);
+  // A message accepted in that window would also rewrite the retained outcome, making a
+  // completed record runnable again for a guest that can no longer answer.
+  expect(h.store.get(w.worker_id).previous_state).toBe("completed");
+  release();
+  await resuming;
+  const settled = h.store.get(w.worker_id);
+  expect(settled.state).toBe("paused");
+  expect(settled.vm_missing).toBe(true);
+  expect(settled.intent).toBeNull();
+  expect(settled.previous_state).toBe("completed");
+  expect(h.store.dispatch(w.worker_id)).toBeUndefined();
+  h.store.close();
+});
+
+test("a message is rejected while a pause intent is recorded but its step has not started", async () => {
+  const h = harness();
+  const w = h.coordinator.spawn(task);
+  await runToRunning(h, w.worker_id);
+  let release: () => void = () => {};
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let entered: () => void = () => {};
+  const inside = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  const inspect = h.agent.inspect.bind(h.agent);
+  h.agent.inspect = async (worker) => {
+    entered();
+    await gate;
+    return inspect(worker);
+  };
+  // A step already owns the worker lock, so control() records the intent durably and waits
+  // for the in-flight step instead of pausing the guest itself.
+  const ticking = h.coordinator.tick();
+  await inside;
+  const pausing = h.coordinator.control(w.worker_id, "pause");
+  expect(h.store.get(w.worker_id).intent).toBe("pause");
+  const queued = h.store.dispatches(w.worker_id).length;
+  // A pause that finds its guest gone settles it and cancels every dispatch it can see, so
+  // a message may not slip into the gap ahead of it and be acknowledged before the drop.
+  expect(() => h.coordinator.message(w.worker_id, "before pause runs")).toThrow(
+    "lifecycle operation in progress",
+  );
+  expect(h.store.dispatches(w.worker_id)).toHaveLength(queued);
+  release();
+  await ticking;
+  await pausing;
+  await h.coordinator.tick();
+  expect(h.store.get(w.worker_id).state).toBe("paused");
+  expect(h.store.get(w.worker_id).intent).toBeNull();
   h.store.close();
 });
 
