@@ -123,6 +123,38 @@ export interface WorkerEvent {
   at: number;
   data: string;
 }
+// A creation event carries no state name of its own; the record is always created queued.
+export function lifecycleState(type: string): WorkerState | null {
+  if (type === "worker.requested") return "queued";
+  const name = type.startsWith("worker.") ? type.slice(7) : "";
+  return (states as readonly string[]).includes(name)
+    ? (name as WorkerState)
+    : null;
+}
+export interface StateChangeFilter {
+  worker_id?: string;
+  team_id?: string;
+  task_id?: string;
+  states?: WorkerState[];
+  cursor?: number;
+}
+export interface StateChange {
+  event_id: number;
+  worker_id: string;
+  state: WorkerState;
+  at: number;
+}
+export interface StateChangeResult {
+  changed: boolean;
+  event_id: number | null;
+  next_cursor: number;
+  worker_id: string | null;
+  team_id: string | null;
+  task_id: string | null;
+  vm_id: string | null;
+  state: WorkerState | null;
+  at: number | null;
+}
 export interface VmInfo {
   id: string;
   slug: string;

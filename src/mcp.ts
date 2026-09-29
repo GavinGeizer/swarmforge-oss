@@ -8,7 +8,7 @@ import type { Coordinator } from "./coordinator";
 import { idSchema, spawnSchema, states } from "./domain";
 import { WorkerFiles } from "./files";
 import { publicWorker, redactorFor } from "./security";
-export function createMcpServer(c: Coordinator) {
+export function createMcpServer(c: Coordinator, signal?: AbortSignal) {
   const server = new McpServer({ name: "swarmforge", version: "0.1.0" });
   const files = new WorkerFiles(c);
   const redactor = redactorFor(c);
@@ -289,6 +289,30 @@ export function createMcpServer(c: Coordinator) {
         0,
       ),
     }),
+    true,
+  );
+  register(
+    "wait_for_state_change",
+    "Wait for the next worker lifecycle transition without polling. Filter by worker, team, task or target states. Omit cursor to wait for future changes, or pass the previous next_cursor to replay later ones. Returns changed=false when the wait times out.",
+    {
+      worker_id: idSchema.optional(),
+      team_id: idSchema.optional(),
+      task_id: idSchema.optional(),
+      states: z.array(z.enum(states)).max(states.length).optional(),
+      cursor: z.number().int().min(0).optional(),
+      timeout_ms: z.number().int().min(0).max(25000).default(10000),
+    },
+    (a) =>
+      c.waitForStateChange(
+        {
+          worker_id: a.worker_id,
+          team_id: a.team_id,
+          task_id: a.task_id,
+          states: a.states,
+          cursor: a.cursor,
+        },
+        { timeoutMs: a.timeout_ms, signal },
+      ),
     true,
   );
   server.registerResource(

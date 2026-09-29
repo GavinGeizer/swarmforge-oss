@@ -15,7 +15,7 @@ Metrics /metrics ← persisted usage and worker states
 
 An active dispatch may be paused/resumed, cancelled with the VM retained, or explicitly destroyed. Unsafe cleanup and ambiguous delivery become `recovery_required`. Follow-ups reuse the stored session and are queued until the current turn finishes. Failed workers with an existing session can receive a follow-up, restarting the service while keeping context.
 
-The database stores workers, team/task ownership, dispatches, results, transitions and message-level usage. Dispatch claim plus running state are atomic. Completion plus selection of the next queued turn are atomic. Duplicate completion does not duplicate events or tokens. Creation can be deduplicated with a caller-supplied `request_id` scoped to a team.
+The database stores workers, team/task ownership, dispatches, results, transitions and message-level usage. Dispatch claim plus running state are atomic. Completion plus selection of the next queued turn are atomic. Duplicate completion does not duplicate events or tokens. Creation can be deduplicated with a caller-supplied `request_id` scoped to a team. Every committed event also wakes in-memory waiters, so `wait_for_state_change` blocks on the same durable log the SSE replay serves without polling or holding a per-worker lock.
 
 ## Restart and partial failures
 

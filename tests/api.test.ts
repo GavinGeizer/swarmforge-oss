@@ -51,7 +51,8 @@ test("MCP client can create, observe, message, query team/task and collect a str
   await server.connect(a);
   await client.connect(b);
   const tools = await client.listTools();
-  expect(tools.tools).toHaveLength(16);
+  expect(tools.tools).toHaveLength(17);
+  expect(tools.tools.map((t) => t.name)).toContain("wait_for_state_change");
   const created = await client.callTool({
     name: "spawn_worker",
     arguments: task,

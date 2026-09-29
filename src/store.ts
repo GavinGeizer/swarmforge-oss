@@ -13,6 +13,7 @@ import type {
 } from "./domain";
 export class Store {
   readonly db: Database;
+  private watchers = new Set<() => void>();
   constructor(path: string) {
     if (path !== ":memory:")
       mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
@@ -31,7 +32,27 @@ export class Store {
     `);
   }
   close() {
+    this.watchers.clear();
     this.db.close();
+  }
+  get listenerCount() {
+    return this.watchers.size;
+  }
+  // Event-driven waiters attach here; the store owns the fan-out, not any single caller.
+  subscribe(listener: () => void) {
+    this.watchers.add(listener);
+    return () => {
+      this.watchers.delete(listener);
+    };
+  }
+  // Deferred so a waiter can never observe rows from the transaction still being written.
+  private notify() {
+    for (const listener of [...this.watchers])
+      queueMicrotask(() => {
+        try {
+          listener();
+        } catch {}
+      });
   }
   setting(key: string, value?: string): string | undefined {
     if (value !== undefined)
@@ -150,6 +171,7 @@ export class Store {
     this.db
       .query("INSERT INTO events(worker_id,type,at,data) VALUES(?,?,?,?)")
       .run(id, type, Date.now(), JSON.stringify(data));
+    this.notify();
   }
   events(id?: string, after = 0, limit = 100): WorkerEvent[] {
     return this.db
@@ -157,6 +179,36 @@ export class Store {
         "SELECT * FROM events WHERE (? IS NULL OR worker_id=?) AND id>? ORDER BY id LIMIT ?",
       )
       .all(id ?? null, id ?? null, after, limit) as WorkerEvent[];
+  }
+  latestEventId(): number {
+    return (
+      this.db.query("SELECT coalesce(max(id),0) id FROM events").get() as {
+        id: number;
+      }
+    ).id;
+  }
+  // Ownership lives on the worker record, so filtering joins it. Rows stay in event-id order.
+  lifecycleEvents(
+    after: number,
+    filter: { worker_id?: string; team_id?: string; task_id?: string },
+    limit: number,
+  ) {
+    return this.db
+      .query(
+        `SELECT events.id,events.worker_id,events.type,events.at FROM events JOIN workers ON workers.worker_id=events.worker_id
+        WHERE events.id>? AND (? IS NULL OR events.worker_id=?) AND (? IS NULL OR workers.team_id=?) AND (? IS NULL OR workers.task_id=?)
+        ORDER BY events.id LIMIT ?`,
+      )
+      .all(
+        after,
+        filter.worker_id ?? null,
+        filter.worker_id ?? null,
+        filter.team_id ?? null,
+        filter.team_id ?? null,
+        filter.task_id ?? null,
+        filter.task_id ?? null,
+        limit,
+      ) as { id: number; worker_id: string; type: EventType; at: number }[];
   }
   enqueue(id: string, message: string): Dispatch {
     const d: Dispatch = {

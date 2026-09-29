@@ -3,8 +3,12 @@ import {
   type AgentSnapshot,
   type CodingAgent,
   type Dispatch,
+  lifecycleState,
   type ResponseExcerpt,
   resultSchema,
+  type StateChange,
+  type StateChangeFilter,
+  type StateChangeResult,
   spawnSchema,
   terminal,
   type Worker,
@@ -50,6 +54,102 @@ export class Coordinator {
   }
   excerpt(id: string): ResponseExcerpt | null {
     return this.excerpts.get(id) ?? null;
+  }
+  // Waits on durable lifecycle events: no provider call, no polling and no worker lock,
+  // so several callers and the coordinator tick can run at the same time.
+  async waitForStateChange(
+    filter: StateChangeFilter,
+    options: { timeoutMs: number; signal?: AbortSignal },
+  ): Promise<StateChangeResult> {
+    const wanted = filter.states?.length ? new Set(filter.states) : null;
+    if (options.signal?.aborted)
+      throw new Error("Wait aborted before it started");
+    let cursor = filter.cursor ?? this.store.latestEventId();
+    let notify: (() => void) | undefined;
+    // Subscribe first, then scan: an event committed in between still reaches this waiter.
+    const unsubscribe = this.store.subscribe(() => notify?.());
+    let onAbort: (() => void) | undefined;
+    const aborted = new Promise<"aborted">((resolve) => {
+      if (!options.signal) return;
+      onAbort = () => resolve("aborted");
+      options.signal.addEventListener("abort", onAbort, { once: true });
+    });
+    const result = (change: StateChange | null): StateChangeResult => {
+      if (!change) {
+        return {
+          changed: false,
+          event_id: null,
+          next_cursor: cursor,
+          worker_id: null,
+          team_id: null,
+          task_id: null,
+          vm_id: null,
+          state: null,
+          at: null,
+        };
+      }
+      const w = this.store.get(change.worker_id);
+      return {
+        changed: true,
+        event_id: change.event_id,
+        next_cursor: change.event_id,
+        worker_id: w.worker_id,
+        team_id: w.team_id,
+        task_id: w.task_id,
+        vm_id: w.vm_id,
+        state: change.state,
+        at: change.at,
+      };
+    };
+    // Non-matching events are consumed by moving the cursor past them, never returned.
+    const next = (): StateChange | null => {
+      while (true) {
+        const events = this.store.lifecycleEvents(cursor, filter, 200);
+        if (!events.length) return null;
+        for (const event of events) {
+          cursor = event.id;
+          const state = lifecycleState(event.type);
+          if (!state || (wanted && !wanted.has(state))) continue;
+          return {
+            event_id: event.id,
+            worker_id: event.worker_id,
+            state,
+            at: event.at,
+          };
+        }
+      }
+    };
+    const deadline = options.timeoutMs > 0 ? Date.now() + options.timeoutMs : 0;
+    try {
+      while (true) {
+        const found = next();
+        if (found) return result(found);
+        if (deadline - Date.now() <= 0) return result(null);
+        const wake = new Promise<"wake">((resolve) => {
+          notify = () => resolve("wake");
+        });
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const expired = new Promise<"expired">((resolve) => {
+          timer = setTimeout(() => resolve("expired"), deadline - Date.now());
+        });
+        let outcome: "expired" | "aborted" | "wake";
+        try {
+          outcome = await Promise.race([wake, expired, aborted]);
+        } finally {
+          clearTimeout(timer);
+          notify = undefined;
+        }
+        // A timeout still reports the cursor reached, so the next wait resumes past it.
+        if (outcome === "aborted") throw new Error("Wait aborted");
+        if (outcome === "expired") {
+          const last = next();
+          return result(last);
+        }
+      }
+    } finally {
+      unsubscribe();
+      if (onAbort) options.signal?.removeEventListener("abort", onAbort);
+    }
   }
   spawn(input: unknown) {
     const parsed = spawnSchema.parse(input);

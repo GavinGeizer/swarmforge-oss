@@ -83,7 +83,8 @@ export function createHttpHandler(c: Coordinator) {
     } catch {
       return new Response("Invalid JSON", { status: 400 });
     }
-    const server = createMcpServer(c);
+    // A disconnected client aborts its wait instead of holding a listener open.
+    const server = createMcpServer(c, request.signal);
     const transport = new WebStandardStreamableHTTPServerTransport({
       sessionIdGenerator: undefined,
       enableJsonResponse: true,

@@ -32,3 +32,5 @@ Structured transition logs contain team/task/worker/VM/session identifiers and e
 Persisted events remain accessible through `get_worker_logs` after VM destruction and during provider outages. Its `opencode` field is null when the guest tail is unavailable, paused, or undergoing a control operation; observation does not intentionally resume a guest.
 
 The bounded `/events` SSE replay uses monotonically increasing event IDs and supports `Last-Event-ID`. Slow consumers can reconnect to retrieve subsequent batches. Monitor queued capacity, recovery-required workers, old pending control intents and external inference errors. No notification bus or metrics storage is embedded.
+
+`wait_for_state_change` is the in-process counterpart of that replay: each waiting caller holds one in-memory listener on the store and is woken by the same committed event, so a blocked call neither polls the provider nor holds a worker lock. A timeout or a dropped request releases the listener, and cursors are event IDs that remain valid after a restart. Waiting is bounded per call and reports no metric label, worker payload or guest power state.
