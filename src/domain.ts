@@ -170,6 +170,12 @@ export interface FileInfo {
   name: string;
   kind: string;
 }
+export interface ContainedRead {
+  /** Size of the whole file, from the same descriptor the bytes came from. */
+  size: number;
+  /** Bytes of the requested window, short only at end of file. */
+  bytes: Uint8Array;
+}
 export interface WorkerProvider {
   createWorker(w: Worker): Promise<VmInfo>;
   getWorker(id: string): Promise<VmInfo | null>;
@@ -191,6 +197,16 @@ export interface WorkerProvider {
     offset?: number,
     length?: number,
   ): Promise<Uint8Array>;
+  // Read without following a symlink anywhere in `path`: one descriptor, opened
+  // component by component and used for both the regular-file check and the read.
+  // Checking a path and reading it separately leaves a window for a swap, so
+  // artifact content is only ever released through a provider that can promise this.
+  readFileContained(
+    id: string,
+    path: string,
+    offset?: number,
+    length?: number,
+  ): Promise<ContainedRead>;
   writeFile(id: string, path: string, content: string): Promise<void>;
   listFiles(id: string, path: string): Promise<FileInfo[]>;
   stat(

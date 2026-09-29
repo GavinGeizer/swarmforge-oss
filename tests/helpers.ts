@@ -9,7 +9,7 @@ import type {
   WorkerProvider,
 } from "../src/domain";
 import { Store } from "../src/store";
-export const config = loadConfig({
+export const baseEnv = {
   FREESTYLE_API_TOKEN: "infra-secret",
   FREESTYLE_SNAPSHOT_ID: "snapshot",
   SWARMFORGE_MODEL_BASE_URL: "https://model.example/v1",
@@ -19,10 +19,17 @@ export const config = loadConfig({
   SWARMFORGE_DB_PATH: ":memory:",
   SWARMFORGE_MAX_WORKERS: "2",
   SWARMFORGE_MAX_PROVISIONING: "1",
-});
+};
+export const config = loadConfig(baseEnv);
 export class FakeProvider implements WorkerProvider {
   vms = new Map<string, VmInfo>();
   files = new Map<string, string>();
+  /** `${id}:${path}` of a symlink to an absolute target path. */
+  links = new Map<string, string>();
+  stats = 0;
+  reads = 0;
+  /** Runs after each stat resolves, so tests can swap a path mid-request. */
+  onStat: ((path: string) => void) | null = null;
   failure = false;
   dirty = false;
   destroyFailure = false;
@@ -83,9 +90,32 @@ export class FakeProvider implements WorkerProvider {
     return { stdout: "log output", stderr: "", code: 0 };
   }
   async readFile(id: string, path: string, offset = 0, length = 65536) {
-    const data = this.files.get(`${id}:${path}`);
+    this.reads++;
+    // A plain path-based read: it re-resolves the name and follows symlinks.
+    let target = `${id}:${path}`;
+    for (let hop = 0; hop < 8 && this.links.has(target); hop++)
+      target = `${id}:${this.links.get(target)!}`;
+    const data = this.files.get(target);
     if (data === undefined) throw new Error("missing file");
     return new TextEncoder().encode(data).slice(offset, offset + length);
+  }
+  async readFileContained(
+    id: string,
+    path: string,
+    offset = 0,
+    length = 65536,
+  ) {
+    // One descriptor for the whole walk: no component may be a symlink.
+    let current = "";
+    for (const part of path.split("/").filter(Boolean)) {
+      current += `/${part}`;
+      if (this.links.has(`${id}:${current}`))
+        throw new Error("artifact path resolves through a symlink");
+    }
+    const data = this.files.get(`${id}:${path}`);
+    if (data === undefined) throw new Error("missing file");
+    const bytes = new TextEncoder().encode(data);
+    return { size: bytes.length, bytes: bytes.slice(offset, offset + length) };
   }
   async writeFile(id: string, path: string, content: string) {
     this.files.set(`${id}:${path}`, content);
@@ -96,6 +126,14 @@ export class FakeProvider implements WorkerProvider {
       .map((k) => ({ name: k.slice(`${id}:${path}/`.length), kind: "file" }));
   }
   async stat(id: string, path: string) {
+    this.stats++;
+    const result = this.statOf(id, path);
+    this.onStat?.(path);
+    return result;
+  }
+  private statOf(id: string, path: string) {
+    if (this.links.has(`${id}:${path}`))
+      return { size: 0, isFile: false, isSymlink: true };
     const data = this.files.get(`${id}:${path}`);
     if (data === undefined) {
       if (
@@ -196,11 +234,16 @@ export class FakeAgent implements CodingAgent {
     });
   }
 }
-export function harness() {
+export function harness(env: Record<string, string> = {}) {
   const store = new Store(":memory:");
   const provider = new FakeProvider();
   const agent = new FakeAgent();
-  const coordinator = new Coordinator({ ...config }, store, provider, agent);
+  const coordinator = new Coordinator(
+    loadConfig({ ...baseEnv, ...env }),
+    store,
+    provider,
+    agent,
+  );
   return { store, provider, agent, coordinator };
 }
 export async function runToRunning(h: ReturnType<typeof harness>, id: string) {

@@ -2,18 +2,21 @@ import type { Coordinator } from "./coordinator";
 import { excerptLimit } from "./domain";
 export class Redactor {
   constructor(readonly secrets: () => string[]) {}
-  text(value: string) {
-    let text = value;
-    for (const secret of this.secrets()
-      .filter(Boolean)
-      .sort((a, b) => b.length - a.length)) {
-      for (const variant of new Set([
+  private variants() {
+    const all = new Set<string>();
+    for (const secret of this.secrets().filter(Boolean))
+      for (const variant of [
         secret,
         encodeURIComponent(secret),
         Buffer.from(secret).toString("base64"),
-      ]))
-        text = text.replaceAll(variant, "[REDACTED]");
-    }
+      ])
+        all.add(variant);
+    return [...all].sort((a, b) => b.length - a.length);
+  }
+  text(value: string) {
+    let text = value;
+    for (const variant of this.variants())
+      text = text.replaceAll(variant, "[REDACTED]");
     return text
       .replace(/(https?:\/\/)[^\s/@]+:[^\s/@]+@/g, "$1[REDACTED]@")
       .replace(
@@ -36,8 +39,22 @@ export class Redactor {
     return value;
   }
   contains(bytes: Uint8Array) {
-    const s = Buffer.from(bytes).toString("utf8");
-    return this.text(s) !== s;
+    const text = Buffer.from(bytes).toString("utf8");
+    if (this.text(text) !== text) return true;
+    // Escapes, terminal-invisible code points and whitespace runs are folded away
+    // by every renderer between here and the reader, so screen the folded text as
+    // well: a credential spelled only once those characters are dropped is still a
+    // credential. This catches that shape of splitting, not arbitrary obfuscation.
+    const folded = sanitizeText(text);
+    return folded !== text && this.text(folded) !== folded;
+  }
+  // Longest form the redactor screens for. A bounded read must overlap its window
+  // by at least this many bytes for a credential straddling the edge to be seen whole.
+  guardWidth() {
+    let longest = 0;
+    for (const variant of this.variants())
+      longest = Math.max(longest, variant.length);
+    return longest;
   }
 }
 export function redactorFor(c: Coordinator) {
@@ -92,9 +109,10 @@ function escapeLength(chars: string[], index: number) {
   }
   return Math.min(chars.length, index + 2);
 }
-// Model output is untrusted: redact before trimming so a secret split by truncation is never partially revealed.
-export function excerptText(value: string, redact: (text: string) => string) {
-  const chars = [...redact(value)];
+// Fold the characters every renderer drops: escapes, terminal-invisible code
+// points and whitespace runs. Used to screen untrusted text before it is shown.
+export function sanitizeText(value: string) {
+  const chars = [...value];
   let out = "";
   for (let index = 0; index < chars.length; ) {
     const code = chars[index]!.codePointAt(0)!;
@@ -107,7 +125,13 @@ export function excerptText(value: string, redact: (text: string) => string) {
     out += isSpace(code) ? " " : isInvisible(code) ? "" : chars[index];
     index++;
   }
-  const clean = out.replace(/\s+/g, " ").trim();
+  return out.replace(/\s+/g, " ").trim();
+}
+// Model output is untrusted: redact before trimming so a secret split by truncation is never partially revealed.
+export function excerptText(value: string, redact: (text: string) => string) {
+  // Redact again after folding: dropping the characters below can join the pieces
+  // of a credential that the first pass could not match.
+  const clean = redact(sanitizeText(redact(value)));
   if (!clean) return "";
   const tail = [...clean];
   if (tail.length <= excerptLimit) return clean;

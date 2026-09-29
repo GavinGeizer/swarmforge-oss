@@ -6,6 +6,43 @@ import type { VmInfo, Worker, WorkerProvider } from "../domain";
 import { branchFor, githubInstallationToken } from "../git-handoff";
 import { openCodeConfig } from "./opencode";
 export const quote = (s: string) => `'${s.replaceAll("'", "'\\''")}'`;
+// Walks the path one component at a time with O_NOFOLLOW, so no component can be
+// a symlink at the instant the descriptor is opened, checks the opened descriptor
+// is a regular file and copies the requested window from it into a staging file
+// that only this command created. Bytes come back over the file API rather than
+// command output, so provider output limits cannot truncate a read.
+const containedRead = `# SWARMFORGE_CONTAINED_READ
+import json,os,secrets,stat,sys
+path,stage,offset,length=sys.argv[1],sys.argv[2],int(sys.argv[3]),int(sys.argv[4])
+parts=[p for p in path.split('/') if p]
+if not parts or any(p in ('.','..') for p in parts): sys.exit(2)
+NOFOLLOW=os.O_NOFOLLOW
+dirfd=os.open('/',os.O_RDONLY|os.O_DIRECTORY|NOFOLLOW)
+try:
+ for part in parts[:-1]:
+  nextfd=os.open(part,os.O_RDONLY|os.O_DIRECTORY|NOFOLLOW,dir_fd=dirfd)
+  os.close(dirfd); dirfd=nextfd
+ fd=os.open(parts[-1],os.O_RDONLY|NOFOLLOW,dir_fd=dirfd)
+finally:
+ os.close(dirfd)
+info=os.fstat(fd)
+if not stat.S_ISREG(info.st_mode): sys.exit(3)
+data=os.pread(fd,length,offset)
+os.close(fd)
+os.makedirs(stage,mode=0o700,exist_ok=True)
+if not stat.S_ISDIR(os.lstat(stage).st_mode): sys.exit(4)
+target=os.path.join(stage,secrets.token_hex(16))
+out=os.open(target,os.O_WRONLY|os.O_CREAT|os.O_EXCL|NOFOLLOW,0o600)
+view=memoryview(data)
+try:
+ while view:
+  written=os.write(out,view)
+  if written<=0: sys.exit(5)
+  view=view[written:]
+finally:
+ os.close(out)
+print(json.dumps({'size':info.st_size,'path':target}))`;
+const stageRoot = "/run/swarmforge-read";
 export class FreestyleProvider implements WorkerProvider {
   readonly client: Freestyle;
   constructor(
@@ -301,6 +338,55 @@ export class FreestyleProvider implements WorkerProvider {
   }
   readFile(id: string, path: string, offset = 0, length = 65536) {
     return this.client.vms.ref(id).fs.readFile(path, { offset, length });
+  }
+  async readFileContained(
+    id: string,
+    path: string,
+    offset = 0,
+    length = 65536,
+  ) {
+    const vm = this.client.vms.ref(id);
+    const opened = await vm.exec({
+      command: `python3 -c ${quote(containedRead)} ${quote(path)} ${quote(stageRoot)} ${Math.max(0, Math.trunc(offset))} ${Math.max(0, Math.trunc(length))}`,
+      linuxUser: "root",
+      timeoutMs: 30000,
+    });
+    if (opened.statusCode !== 0)
+      throw new Error("Artifact is not a file inside the artifacts root");
+    let staged: { size: unknown; path: unknown };
+    try {
+      staged = JSON.parse(opened.stdout ?? "");
+    } catch {
+      throw new Error("Contained artifact read returned an invalid response");
+    }
+    const stagedPath =
+      typeof staged.path === "string" &&
+      staged.path.startsWith(`${stageRoot}/`) &&
+      !staged.path.slice(stageRoot.length + 1).includes("/")
+        ? staged.path
+        : null;
+    if (
+      !stagedPath ||
+      typeof staged.size !== "number" ||
+      !Number.isSafeInteger(staged.size) ||
+      staged.size < 0
+    )
+      throw new Error("Contained artifact read returned an invalid response");
+    try {
+      return {
+        size: staged.size,
+        bytes: await vm.fs.readFile(stagedPath, { offset: 0, length }),
+      };
+    } finally {
+      // Best effort: the staging file is a tmpfs copy this command just created.
+      await vm
+        .exec({
+          command: `rm -rf -- ${quote(stagedPath)}`,
+          linuxUser: "root",
+          timeoutMs: 30000,
+        })
+        .catch(() => {});
+    }
   }
   writeFile(id: string, path: string, content: string) {
     return this.client.vms.ref(id).fs.writeTextFile(path, content);
