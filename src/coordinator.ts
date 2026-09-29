@@ -494,6 +494,11 @@ export class Coordinator {
           m.cache_read,
           m.cache_write,
         );
+    // A turn settles only on a reported idle, which the adapter also produces for a session
+    // /session/status no longer lists. A status it could not interpret stays unknown and
+    // unsettled, and message history is an estimate, never a completion signal: a turn
+    // interrupted by a restart, an OOM or an abort leaves a message with no completion.
+    const settled = snapshot.status === "idle";
     if (d.state === "sending") {
       if (
         snapshot.messages.some(
@@ -502,7 +507,7 @@ export class Coordinator {
       ) {
         this.store.saveDispatch({ ...d, state: "sent" });
       } else if (
-        snapshot.status === "idle" &&
+        settled &&
         Date.now() - (d.sent_at ?? d.created_at) >
           this.config.SWARMFORGE_API_TIMEOUT_MS
       ) {
@@ -521,7 +526,7 @@ export class Coordinator {
     const reply =
       [...replies].reverse().find((m) => m.result !== undefined || m.error) ??
       replies.at(-1);
-    if (snapshot.status === "idle" && reply) {
+    if (settled && reply) {
       const parsed = resultSchema.safeParse(reply.result);
       const result = parsed.success
         ? this.identify(w, d, parsed.data)
@@ -536,7 +541,7 @@ export class Coordinator {
         );
       return;
     }
-    if (snapshot.status === "idle") {
+    if (settled) {
       const fallback = await this.fallback(w, d);
       if (fallback) {
         await this.complete(w, d, fallback);
