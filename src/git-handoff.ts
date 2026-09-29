@@ -1,8 +1,21 @@
 import { createSign } from "node:crypto";
-import { readFileSync } from "node:fs";
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { Config } from "./config";
 
 export class GitHandoffError extends Error {}
+// A thin bundle needs its base commit from the remote; the caller retries with a full one.
+export class BundlePrerequisiteError extends GitHandoffError {}
+export const quote = (s: string) => `'${s.replaceAll("'", "'\\''")}'`;
+export const maxBundleBytes = 64 * 1024 * 1024;
 
 export function branchFor(w: {
   team_id: string;
@@ -17,6 +30,7 @@ export function branchFor(w: {
 export async function githubInstallationToken(
   c: Config,
   fetcher: typeof fetch = fetch,
+  permission: "read" | "write" = "write",
 ): Promise<string> {
   if (
     !c.SWARMFORGE_GITHUB_APP_ID ||
@@ -55,7 +69,7 @@ export async function githubInstallationToken(
       },
       body: JSON.stringify({
         repositories: [c.SWARMFORGE_GITHUB_REPOSITORY.split("/")[1]],
-        permissions: { contents: "write" },
+        permissions: { contents: permission },
       }),
       signal: AbortSignal.timeout(c.SWARMFORGE_API_TIMEOUT_MS),
     },
@@ -72,4 +86,201 @@ export async function githubInstallationToken(
   )
     throw new Error("GitHub App token response is invalid");
   return body.token;
+}
+
+export interface BundleSpec {
+  repo: string;
+  branch: string;
+  base_file: string;
+  out: string;
+  self_contained?: boolean;
+}
+// Runs inside the worker, which the coding agent fully controls: no credential is placed
+// there, repository hooks and system configuration are disabled, and the host verifies
+// every claim the bundle makes before anything is published.
+export function bundleCommand(s: BundleSpec) {
+  return `set -eu; cd ${quote(s.repo)}; test "$(git branch --show-current)" = ${quote(s.branch)}; test -z "$(git status --porcelain --untracked-files=all)"; base=$(cat ${quote(s.base_file)}); commit=$(git rev-parse HEAD); env GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0 git -c core.hooksPath=/dev/null merge-base --is-ancestor "$base" "$commit"; rm -f ${quote(s.out)}; env GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0 git -c core.hooksPath=/dev/null bundle create ${quote(s.out)} ${quote(`refs/heads/${s.branch}`)}${s.self_contained ? "" : ' "$base"'}; printf '%s\n%s\n' "$base" "$commit"`;
+}
+
+// Host Git never inherits ambient Git configuration: only the handoff environment below.
+const hostEnv = Object.fromEntries(
+  Object.entries(process.env).filter(([k]) => !k.startsWith("GIT_")),
+);
+
+async function git(
+  args: string[],
+  env: Record<string, string>,
+): Promise<{ code: number; stdout: string; stderr: string }> {
+  const child = Bun.spawn(["git", ...args], {
+    env: { ...hostEnv, ...env },
+    stdin: "ignore",
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const [stdout, stderr, code] = await Promise.all([
+    new Response(child.stdout).text(),
+    new Response(child.stderr).text(),
+    child.exited,
+  ]);
+  return { code, stdout, stderr };
+}
+
+export interface Handoff {
+  target: string;
+  branch: string;
+  base: string;
+  commit: string;
+  bundle: Uint8Array;
+  self_contained: boolean;
+}
+
+// The only place a write credential is used: this process, on the control-plane host.
+async function hostCredentials(
+  c: Config,
+  dir: string,
+  fetcher: typeof fetch,
+): Promise<Record<string, string>> {
+  if (c.SWARMFORGE_GIT_PUSH_MODE === "github-app") {
+    const token = await githubInstallationToken(c, fetcher, "write");
+    const secret = join(dir, "token");
+    const askpass = join(dir, "askpass");
+    writeFileSync(secret, token, { mode: 0o600 });
+    writeFileSync(
+      askpass,
+      '#!/bin/sh\ncase "$1" in *Username*) printf x-access-token;; *) cat "$SF_GIT_TOKEN_FILE";; esac\n',
+      { mode: 0o700 },
+    );
+    return { GIT_ASKPASS: askpass, SF_GIT_TOKEN_FILE: secret };
+  }
+  if (c.SWARMFORGE_GIT_PUSH_MODE === "ssh") {
+    return {
+      GIT_SSH_COMMAND: `ssh -i ${c.SWARMFORGE_GIT_SSH_KEY_PATH} -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=${c.SWARMFORGE_GIT_SSH_KNOWN_HOSTS_PATH}`,
+    };
+  }
+  throw new GitHandoffError("Git push is not configured");
+}
+
+export async function publishBundle(
+  c: Config,
+  handoff: Handoff,
+  fetcher: typeof fetch = fetch,
+): Promise<{ branch: string; base_commit: string; commit: string }> {
+  const { target, branch, base, commit, bundle } = handoff;
+  if (handoff.bundle.length > maxBundleBytes)
+    throw new GitHandoffError("Git handoff bundle is too large to publish");
+  const dir = mkdtempSync(join(tmpdir(), "swarmforge-handoff-"));
+  chmodSync(dir, 0o700);
+  try {
+    const hooks = join(dir, "hooks");
+    mkdirSync(hooks);
+    const bundlePath = join(dir, "handoff.bundle");
+    writeFileSync(bundlePath, bundle, { mode: 0o600 });
+    const repo = join(dir, "handoff.git");
+    // Host Git ignores guest-reachable configuration: a fresh repository, no system or
+    // global config, no hooks, and object checks while the untrusted bundle is read.
+    const guard = [
+      "-c",
+      `core.hooksPath=${hooks}`,
+      "-c",
+      "transfer.fsckObjects=true",
+    ];
+    const env = {
+      ...(await hostCredentials(c, dir, fetcher)),
+      GIT_CONFIG_GLOBAL: "/dev/null",
+      GIT_CONFIG_SYSTEM: "/dev/null",
+      GIT_TERMINAL_PROMPT: "0",
+      GIT_OPTIONAL_LOCKS: "0",
+      LC_ALL: "C",
+    };
+    if ((await git([...guard, "init", "--bare", "--quiet", repo], env)).code)
+      throw new GitHandoffError("Host Git repository setup failed");
+    if (!handoff.self_contained) {
+      const seed = await git(
+        [
+          ...guard,
+          "-C",
+          repo,
+          "fetch",
+          "--no-tags",
+          "--quiet",
+          "--",
+          target,
+          base,
+        ],
+        env,
+      );
+      if (seed.code)
+        throw new BundlePrerequisiteError(
+          "Remote cannot provide the handoff base commit",
+        );
+    }
+    const loaded = await git(
+      [
+        ...guard,
+        "-C",
+        repo,
+        "fetch",
+        "--no-tags",
+        "--quiet",
+        "--",
+        bundlePath,
+        `+refs/heads/${branch}:refs/heads/${branch}`,
+      ],
+      env,
+    );
+    if (loaded.code)
+      throw new GitHandoffError("Git handoff bundle could not be read");
+    const head = await git(
+      [
+        "-C",
+        repo,
+        "rev-parse",
+        "--verify",
+        "--quiet",
+        `refs/heads/${branch}^{commit}`,
+      ],
+      env,
+    );
+    if (head.code || head.stdout.trim() !== commit)
+      throw new GitHandoffError(
+        "Git handoff bundle does not match the reported commit",
+      );
+    const ancestry = await git(
+      [...guard, "-C", repo, "merge-base", "--is-ancestor", base, commit],
+      env,
+    );
+    if (ancestry.code)
+      throw new GitHandoffError(
+        "Git handoff base is not an ancestor of the reported commit",
+      );
+    const pushed = await git(
+      [
+        ...guard,
+        "-C",
+        repo,
+        "push",
+        "--quiet",
+        "--",
+        target,
+        `refs/heads/${branch}:refs/heads/${branch}`,
+      ],
+      env,
+    );
+    if (pushed.code)
+      throw new GitHandoffError(
+        `Host Git push failed: ${pushed.stderr.trim().slice(0, 200)}`,
+      );
+    const remote = await git(
+      ["ls-remote", "--", target, `refs/heads/${branch}`],
+      env,
+    );
+    const remoteSha = remote.stdout.split(/\s+/)[0] ?? "";
+    if (remote.code || remoteSha !== commit)
+      throw new GitHandoffError(
+        "Remote branch does not hold the pushed commit",
+      );
+    return { branch, base_commit: base, commit };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 }

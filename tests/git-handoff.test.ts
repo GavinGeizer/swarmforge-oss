@@ -1,9 +1,18 @@
 import { expect, test } from "bun:test";
 import { generateKeyPairSync, verify } from "node:crypto";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Freestyle } from "freestyle";
+import type { Config } from "../src/config";
 import { loadConfig } from "../src/config";
 import { Coordinator } from "../src/coordinator";
 import { branchFor, githubInstallationToken } from "../src/git-handoff";
@@ -68,6 +77,34 @@ test("GitHub App requests a repository-scoped Contents token with a signed JWT",
     );
     expect(called).toBe(true);
     expect(token).toBe("installation-token");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a read-scoped installation token is available for the guest clone", async () => {
+  const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+  const dir = mkdtempSync(join(tmpdir(), "sf-app-read-"));
+  const path = join(dir, "app.pem");
+  writeFileSync(path, privateKey.export({ type: "pkcs1", format: "pem" }));
+  try {
+    const token = await githubInstallationToken(
+      {
+        ...config,
+        SWARMFORGE_GITHUB_APP_ID: "123",
+        SWARMFORGE_GITHUB_INSTALLATION_ID: "456",
+        SWARMFORGE_GITHUB_PRIVATE_KEY_PATH: path,
+        SWARMFORGE_GITHUB_REPOSITORY: "owner/repo",
+      },
+      (async (_input: RequestInfo | URL, init?: RequestInit) => {
+        expect(JSON.parse(String(init?.body)).permissions).toEqual({
+          contents: "read",
+        });
+        return Response.json({ token: "read-token" });
+      }) as typeof fetch,
+      "read",
+    );
+    expect(token).toBe("read-token");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -166,86 +203,6 @@ test("worker instructions require a commit on its assigned branch while SwarmFor
   store.close();
 });
 
-test("SSH handoff keeps the key out of Git commands and removes it after push failure", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "sf-ssh-"));
-  const key = join(dir, "key");
-  const hosts = join(dir, "known_hosts");
-  writeFileSync(key, "PRIVATE TEST KEY");
-  writeFileSync(hosts, "git.example ssh-ed25519 AAAA");
-  const commands: string[] = [];
-  const writes: { path: string; content: string; mode?: number }[] = [];
-  const fakeClient = {
-    vms: {
-      ref: () => ({
-        fs: {
-          writeTextFile: async (
-            path: string,
-            content: string,
-            options?: { mode?: number },
-          ) => {
-            writes.push({ path, content, mode: options?.mode });
-          },
-        },
-        exec: async ({ command }: { command: string }) => {
-          commands.push(command);
-          return {
-            statusCode: command.includes("git push") ? 1 : 0,
-            stdout: "",
-            stderr: "",
-          };
-        },
-      }),
-    },
-  } as unknown as Freestyle;
-  const c = loadConfig({
-    FREESTYLE_API_TOKEN: "secret",
-    FREESTYLE_SNAPSHOT_ID: "snap",
-    SWARMFORGE_MODEL_BASE_URL: "https://model.example/v1",
-    SWARMFORGE_MODEL_API_KEY: "key",
-    SWARMFORGE_MODEL_NAME: "qwen",
-    SWARMFORGE_GIT_TREE: "git@git.example:repo.git",
-    SWARMFORGE_GIT_PUSH_MODE: "ssh",
-    SWARMFORGE_GIT_PUSH_URL: "git@git.example:repo.git",
-    SWARMFORGE_GIT_SSH_KEY_PATH: key,
-    SWARMFORGE_GIT_SSH_KNOWN_HOSTS_PATH: hosts,
-  });
-  const store = new Store(":memory:");
-  const w = {
-    ...store.create({ ...task, timeout_seconds: 60 }),
-    vm_id: "vm-1",
-  };
-  try {
-    await expect(
-      new FreestyleProvider(c, fakeClient).pushBranch(w),
-    ).rejects.toThrow("Git push or remote commit verification failed");
-    expect(writes).toEqual([
-      {
-        path: "/opt/swarmforge/git-secret",
-        content: "PRIVATE TEST KEY",
-        mode: 0o600,
-      },
-      {
-        path: "/opt/swarmforge/git-auth",
-        content: "git.example ssh-ed25519 AAAA",
-        mode: 0o600,
-      },
-    ]);
-    expect(
-      commands.some(
-        (x) =>
-          x.includes("git push") &&
-          x.includes(branchFor(w)) &&
-          x.includes("git ls-remote"),
-      ),
-    ).toBe(true);
-    expect(commands.at(-1)).toContain("rm -f");
-    expect(commands.join(" ")).not.toContain("PRIVATE TEST KEY");
-  } finally {
-    store.close();
-    rmSync(dir, { recursive: true, force: true });
-  }
-});
-
 test("worker checkout gets a task branch and local Git author identity", async () => {
   const dir = mkdtempSync(join(tmpdir(), "sf-prepare-"));
   const key = join(dir, "key");
@@ -299,89 +256,459 @@ test("worker checkout gets a task branch and local Git author identity", async (
   }
 });
 
-test("push command publishes a real commit to a branch and verifies its remote SHA", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "sf-push-"));
-  const repo = join(dir, "repo");
-  const remote = join(dir, "remote.git");
-  const control = join(dir, ".swarmforge");
-  const run = async (...args: string[]) => {
-    const p = Bun.spawn(args, { stdout: "pipe", stderr: "pipe" });
-    const output = await new Response(p.stdout).text();
-    const error = await new Response(p.stderr).text();
-    if ((await p.exited) !== 0) throw new Error(error);
-    return output.trim();
+test("a failed clone removes the staged guest credential", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "sf-clone-"));
+  const commands: string[] = [];
+  const writes: { path: string; content: string; mode?: number }[] = [];
+  const vm = {
+    fs: {
+      writeTextFile: async (
+        path: string,
+        content: string,
+        options?: { mode?: number },
+      ) => {
+        writes.push({ path, content, mode: options?.mode });
+      },
+    },
+    exec: async ({ command }: { command: string }) => {
+      commands.push(command);
+      return {
+        statusCode: command.includes("git clone") ? 1 : 0,
+        stdout: "",
+        stderr: "denied",
+      };
+    },
+  };
+  const c = loadConfig({
+    FREESTYLE_API_TOKEN: "secret",
+    FREESTYLE_SNAPSHOT_ID: "snap",
+    SWARMFORGE_MODEL_BASE_URL: "https://model.example/v1",
+    SWARMFORGE_MODEL_API_KEY: "key",
+    SWARMFORGE_MODEL_NAME: "qwen",
+    SWARMFORGE_GIT_TREE: "git@git.example:repo.git",
+    SWARMFORGE_GIT_PUSH_MODE: "ssh",
+    SWARMFORGE_GIT_PUSH_URL: "git@git.example:repo.git",
+    SWARMFORGE_GIT_SSH_KEY_PATH: join(dir, "key"),
+    SWARMFORGE_GIT_SSH_KNOWN_HOSTS_PATH: join(dir, "hosts"),
+  });
+  writeFileSync(join(dir, "key"), "PRIVATE TEST KEY");
+  writeFileSync(join(dir, "hosts"), "git.example ssh-ed25519 AAAA");
+  const store = new Store(":memory:");
+  const w = {
+    ...store.create({ ...task, timeout_seconds: 60 }),
+    vm_id: "vm-1",
   };
   try {
-    mkdirSync(control);
-    await run("git", "init", "--bare", remote);
-    await run("git", "init", repo);
-    await run("git", "-C", repo, "config", "user.name", "Test");
-    await run("git", "-C", repo, "config", "user.email", "test@example.test");
-    writeFileSync(join(repo, "code.txt"), "base");
-    await run("git", "-C", repo, "add", ".");
-    await run("git", "-C", repo, "commit", "-m", "base");
-    const base = await run("git", "-C", repo, "rev-parse", "HEAD");
-    writeFileSync(join(control, "git-base"), `${base}\n`);
-    const store = new Store(":memory:");
-    const w = {
-      ...store.create({ ...task, timeout_seconds: 60 }),
-      vm_id: "vm-1",
-    };
-    await run("git", "-C", repo, "checkout", "-b", branchFor(w));
-    writeFileSync(join(repo, "code.txt"), "changed");
-    await run("git", "-C", repo, "add", ".");
-    await run("git", "-C", repo, "commit", "-m", "change");
-    const key = join(dir, "key");
-    const hosts = join(dir, "hosts");
-    writeFileSync(key, "unused");
-    writeFileSync(hosts, "unused");
-    const vm = {
-      fs: { writeTextFile: async () => undefined },
-      exec: async ({ command }: { command: string }) => {
-        if (command.startsWith("rm -f"))
-          return { statusCode: 0, stdout: "", stderr: "" };
-        const p = Bun.spawn(["bash", "-c", command], {
-          stdout: "pipe",
-          stderr: "pipe",
-        });
-        const stdout = await new Response(p.stdout).text();
-        const stderr = await new Response(p.stderr).text();
-        return { statusCode: await p.exited, stdout, stderr };
+    await expect(
+      new FreestyleProvider(c, {
+        vms: { ref: () => vm },
+      } as unknown as Freestyle).prepare(w),
+    ).rejects.toThrow("Failed to clone");
+    expect(writes.map((x) => x.path)).toEqual([
+      "/opt/swarmforge/git-secret",
+      "/opt/swarmforge/git-auth",
+    ]);
+    expect(commands.at(-1)).toBe(
+      "rm -f '/opt/swarmforge/git-auth' '/opt/swarmforge/git-secret'",
+    );
+    expect(commands.join(" ")).not.toContain("PRIVATE TEST KEY");
+  } finally {
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+async function git(...args: string[]) {
+  const p = Bun.spawn(["git", ...args], { stdout: "pipe", stderr: "pipe" });
+  const stdout = await new Response(p.stdout).text();
+  const stderr = await new Response(p.stderr).text();
+  if ((await p.exited) !== 0) throw new Error(`${args.join(" ")}: ${stderr}`);
+  return stdout.trim();
+}
+
+async function branchOrNull(remote: string, branch: string) {
+  const p = Bun.spawn(
+    ["git", "--git-dir", remote, "rev-parse", "--verify", "--quiet", branch],
+    { stdout: "pipe", stderr: "pipe" },
+  );
+  const stdout = await new Response(p.stdout).text();
+  return (await p.exited) === 0 ? stdout.trim() : null;
+}
+
+// A worker checkout, a bare remote and the workspace bookkeeping the handoff relies on.
+async function workspace() {
+  const dir = mkdtempSync(join(tmpdir(), "sf-handoff-"));
+  const remote = join(dir, "remote.git");
+  const repo = join(dir, "repo");
+  mkdirSync(join(dir, ".swarmforge"));
+  await git("init", "--bare", remote);
+  await git("init", repo);
+  await git("-C", repo, "config", "user.name", "Test");
+  await git("-C", repo, "config", "user.email", "test@example.test");
+  writeFileSync(join(repo, "code.txt"), "base");
+  await git("-C", repo, "add", ".");
+  await git("-C", repo, "commit", "-m", "base");
+  const base = await git("-C", repo, "rev-parse", "HEAD");
+  await git("-C", repo, "remote", "add", "origin", remote);
+  await git("-C", repo, "push", "-q", "origin", "HEAD:refs/heads/main");
+  writeFileSync(join(dir, ".swarmforge", "git-base"), `${base}\n`);
+  return { dir, remote, repo, base };
+}
+
+// A VM whose filesystem and shell are this machine, so the real Git plumbing is exercised.
+function localVm() {
+  const commands: string[] = [];
+  const writes: { path: string; content: string; mode?: number }[] = [];
+  const vm = {
+    fs: {
+      writeTextFile: async (
+        path: string,
+        content: string,
+        options?: { mode?: number },
+      ) => {
+        writes.push({ path, content, mode: options?.mode });
+        writeFileSync(path, content);
       },
-    };
+      stat: async (path: string) => {
+        const s = statSync(path);
+        return {
+          size: s.size,
+          isFile: s.isFile(),
+          isDirectory: s.isDirectory(),
+          isSymlink: s.isSymbolicLink(),
+        };
+      },
+      readFile: async (path: string) =>
+        new Uint8Array(await Bun.file(path).arrayBuffer()),
+    },
+    exec: async ({ command }: { command: string }) => {
+      commands.push(command);
+      const p = Bun.spawn(["bash", "-c", command], {
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      const [stdout, stderr, code] = await Promise.all([
+        new Response(p.stdout).text(),
+        new Response(p.stderr).text(),
+        p.exited,
+      ]);
+      return { statusCode: code, stdout, stderr };
+    },
+  };
+  return { vm, commands, writes };
+}
+
+function sshConfig(dir: string, tree: string, push: string): Config {
+  const key = join(dir, "key");
+  const hosts = join(dir, "hosts");
+  writeFileSync(key, "PRIVATE TEST KEY");
+  writeFileSync(hosts, "git.example ssh-ed25519 AAAA");
+  return loadConfig({
+    FREESTYLE_API_TOKEN: "secret",
+    FREESTYLE_SNAPSHOT_ID: "snap",
+    SWARMFORGE_MODEL_BASE_URL: "https://model.example/v1",
+    SWARMFORGE_MODEL_API_KEY: "key",
+    SWARMFORGE_MODEL_NAME: "qwen",
+    SWARMFORGE_GIT_TREE: tree,
+    SWARMFORGE_GIT_PUSH_MODE: "ssh",
+    SWARMFORGE_GIT_PUSH_URL: push,
+    SWARMFORGE_GIT_SSH_KEY_PATH: key,
+    SWARMFORGE_GIT_SSH_KNOWN_HOSTS_PATH: hosts,
+    SWARMFORGE_WORKSPACE: dir,
+  });
+}
+
+const handoffDirs = () =>
+  readdirSync(tmpdir()).filter((n) => n.startsWith("swarmforge-handoff-"));
+
+test("push hands a bundle to the host, which publishes and verifies the remote SHA", async () => {
+  const f = await workspace();
+  const store = new Store(":memory:");
+  const w = {
+    ...store.create({ ...task, timeout_seconds: 60 }),
+    vm_id: "vm-1",
+  };
+  const branch = branchFor(w);
+  try {
+    await git("-C", f.repo, "checkout", "-q", "-b", branch);
+    writeFileSync(join(f.repo, "code.txt"), "changed");
+    await git("-C", f.repo, "add", ".");
+    await git("-C", f.repo, "commit", "-m", "change");
+    const commit = await git("-C", f.repo, "rev-parse", "HEAD");
+    const guest = localVm();
+    const provider = new FreestyleProvider(sshConfig(f.dir, f.repo, f.remote), {
+      vms: { ref: () => guest.vm },
+    } as unknown as Freestyle);
+    const before = handoffDirs();
+    expect(await provider.pushBranch(w)).toEqual({
+      branch,
+      base_commit: f.base,
+      commit,
+    });
+    expect(
+      await git("--git-dir", f.remote, "rev-parse", `refs/heads/${branch}`),
+    ).toBe(commit);
+    // The worker only ever produced a bundle: no credential, no push, no leftover file.
+    expect(guest.writes).toEqual([]);
+    expect(guest.commands.join("\n")).not.toContain("git push");
+    expect(guest.commands.join("\n")).not.toContain("PRIVATE TEST KEY");
+    expect(guest.commands.join("\n")).toContain("bundle create");
+    expect(
+      existsSync(join(f.dir, ".swarmforge", `handoff-${w.worker_id}.bundle`)),
+    ).toBe(false);
+    expect(handoffDirs()).toEqual(before);
+  } finally {
+    store.close();
+    rmSync(f.dir, { recursive: true, force: true });
+  }
+});
+
+test("a malicious pre-push hook never runs and never observes a credential", async () => {
+  const f = await workspace();
+  const marker = join(f.dir, "hook-ran");
+  const store = new Store(":memory:");
+  const w = {
+    ...store.create({ ...task, timeout_seconds: 60 }),
+    vm_id: "vm-1",
+  };
+  const branch = branchFor(w);
+  try {
+    await git("-C", f.repo, "checkout", "-q", "-b", branch);
+    writeFileSync(join(f.repo, "code.txt"), "changed");
+    await git("-C", f.repo, "add", ".");
+    await git("-C", f.repo, "commit", "-m", "change");
+    const commit = await git("-C", f.repo, "rev-parse", "HEAD");
+    const hooks = join(f.repo, ".git", "hooks");
+    mkdirSync(hooks, { recursive: true });
+    writeFileSync(
+      join(hooks, "pre-push"),
+      `#!/bin/sh\nenv >> ${JSON.stringify(`${f.dir}/hook-env`)}\ncat /opt/swarmforge/git-secret >> ${JSON.stringify(`${f.dir}/hook-key`)} 2>/dev/null\nexit 0\n`,
+      { mode: 0o755 },
+    );
+    const guest = localVm();
+    const provider = new FreestyleProvider(sshConfig(f.dir, f.repo, f.remote), {
+      vms: { ref: () => guest.vm },
+    } as unknown as Freestyle);
+    await provider.pushBranch(w);
+    expect(existsSync(marker)).toBe(false);
+    expect(existsSync(join(f.dir, "hook-env"))).toBe(false);
+    expect(existsSync(join(f.dir, "hook-key"))).toBe(false);
+    expect(
+      await git("--git-dir", f.remote, "rev-parse", `refs/heads/${branch}`),
+    ).toBe(commit);
+  } finally {
+    store.close();
+    rmSync(f.dir, { recursive: true, force: true });
+  }
+});
+
+test("a rejected push reports failure and leaves no bundle or host state behind", async () => {
+  const f = await workspace();
+  const store = new Store(":memory:");
+  const w = {
+    ...store.create({ ...task, timeout_seconds: 60 }),
+    vm_id: "vm-1",
+  };
+  try {
+    await git("-C", f.repo, "checkout", "-q", "-b", branchFor(w));
+    writeFileSync(join(f.repo, "code.txt"), "changed");
+    await git("-C", f.repo, "add", ".");
+    await git("-C", f.repo, "commit", "-m", "change");
+    writeFileSync(
+      join(f.remote, "hooks", "pre-receive"),
+      "#!/bin/sh\necho rejected >&2\nexit 1\n",
+      { mode: 0o755 },
+    );
+    const guest = localVm();
+    const provider = new FreestyleProvider(sshConfig(f.dir, f.repo, f.remote), {
+      vms: { ref: () => guest.vm },
+    } as unknown as Freestyle);
+    const before = handoffDirs();
+    await expect(provider.pushBranch(w)).rejects.toThrow("Host Git push");
+    expect(guest.writes).toEqual([]);
+    expect(guest.commands.join("\n")).not.toContain("PRIVATE TEST KEY");
+    expect(
+      existsSync(join(f.dir, ".swarmforge", `handoff-${w.worker_id}.bundle`)),
+    ).toBe(false);
+    expect(handoffDirs()).toEqual(before);
+  } finally {
+    store.close();
+    rmSync(f.dir, { recursive: true, force: true });
+  }
+});
+
+test("the GitHub App installation token stays on the host and never enters the worker", async () => {
+  const f = await workspace();
+  const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+  const keyPath = join(f.dir, "app.pem");
+  writeFileSync(keyPath, privateKey.export({ type: "pkcs1", format: "pem" }));
+  const store = new Store(":memory:");
+  const w = {
+    ...store.create({ ...task, timeout_seconds: 60 }),
+    vm_id: "vm-1",
+  };
+  const branch = branchFor(w);
+  try {
+    await git("-C", f.repo, "checkout", "-q", "-b", branch);
+    writeFileSync(join(f.repo, "code.txt"), "changed");
+    await git("-C", f.repo, "add", ".");
+    await git("-C", f.repo, "commit", "-m", "change");
+    const commit = await git("-C", f.repo, "rev-parse", "HEAD");
     const c = loadConfig({
       FREESTYLE_API_TOKEN: "secret",
       FREESTYLE_SNAPSHOT_ID: "snap",
       SWARMFORGE_MODEL_BASE_URL: "https://model.example/v1",
       SWARMFORGE_MODEL_API_KEY: "key",
       SWARMFORGE_MODEL_NAME: "qwen",
-      SWARMFORGE_GIT_TREE: repo,
-      SWARMFORGE_GIT_PUSH_MODE: "ssh",
-      SWARMFORGE_GIT_PUSH_URL: remote,
-      SWARMFORGE_GIT_SSH_KEY_PATH: key,
-      SWARMFORGE_GIT_SSH_KNOWN_HOSTS_PATH: hosts,
-      SWARMFORGE_WORKSPACE: dir,
+      SWARMFORGE_GIT_TREE: "https://github.com/owner/repo.git",
+      SWARMFORGE_GIT_PUSH_MODE: "github-app",
+      SWARMFORGE_GITHUB_APP_ID: "123",
+      SWARMFORGE_GITHUB_INSTALLATION_ID: "456",
+      SWARMFORGE_GITHUB_PRIVATE_KEY_PATH: keyPath,
+      SWARMFORGE_GITHUB_REPOSITORY: "owner/repo",
+      SWARMFORGE_WORKSPACE: f.dir,
     });
-    const provider = new FreestyleProvider(c, {
-      vms: { ref: () => vm },
-    } as unknown as Freestyle);
+    // The target is redirected to the local bare remote so the handoff runs offline.
+    const scopes: unknown[] = [];
+    const guest = localVm();
+    const provider = new FreestyleProvider(
+      { ...c, SWARMFORGE_GIT_TREE: f.remote },
+      { vms: { ref: () => guest.vm } } as unknown as Freestyle,
+      (async (_input: RequestInfo | URL, init?: RequestInit) => {
+        scopes.push(
+          (JSON.parse(String(init?.body)) as { permissions: unknown })
+            .permissions,
+        );
+        return Response.json({ token: "host-installation-token" });
+      }) as typeof fetch,
+    );
+    const pushed = await provider.pushBranch(w);
+    expect(pushed.commit).toBe(commit);
+    expect(pushed.review_url).toBe(
+      `https://github.com/owner/repo/compare/${pushed.base_commit}...${encodeURIComponent(branch)}`,
+    );
+    expect(scopes).toEqual([{ contents: "write" }]);
+    expect(guest.writes).toEqual([]);
+    expect(guest.commands.join("\n")).not.toContain("host-installation-token");
+    expect(
+      await git("--git-dir", f.remote, "rev-parse", `refs/heads/${branch}`),
+    ).toBe(commit);
+  } finally {
+    store.close();
+    rmSync(f.dir, { recursive: true, force: true });
+  }
+});
+
+test("a remote without the handoff base still receives the branch as a full bundle", async () => {
+  const f = await workspace();
+  const elsewhere = join(f.dir, "elsewhere.git");
+  await git("init", "--bare", elsewhere);
+  const store = new Store(":memory:");
+  const w = {
+    ...store.create({ ...task, timeout_seconds: 60 }),
+    vm_id: "vm-1",
+  };
+  const branch = branchFor(w);
+  try {
+    await git("-C", f.repo, "checkout", "-q", "-b", branch);
+    writeFileSync(join(f.repo, "code.txt"), "changed");
+    await git("-C", f.repo, "add", ".");
+    await git("-C", f.repo, "commit", "-m", "change");
+    const commit = await git("-C", f.repo, "rev-parse", "HEAD");
+    const guest = localVm();
+    const provider = new FreestyleProvider(
+      sshConfig(f.dir, f.repo, elsewhere),
+      { vms: { ref: () => guest.vm } } as unknown as Freestyle,
+    );
     const pushed = await provider.pushBranch(w);
     expect(pushed).toEqual({
-      branch: branchFor(w),
-      base_commit: base,
-      commit: await run("git", "-C", repo, "rev-parse", "HEAD"),
+      branch,
+      base_commit: f.base,
+      commit,
     });
+    // The first, smaller bundle is replaced by a self-contained one after the seed fails.
+    const bundles = guest.commands.filter((x) => x.includes("bundle create"));
+    expect(bundles.length).toBe(2);
+    const spec = (x: string) =>
+      x.slice(x.indexOf("bundle create"), x.indexOf("; printf"));
+    expect(spec(bundles[0]!)).toContain('"$base"');
+    expect(spec(bundles[1]!)).not.toContain('"$base"');
     expect(
-      await run(
-        "git",
-        "--git-dir",
-        remote,
-        "rev-parse",
-        `refs/heads/${branchFor(w)}`,
-      ),
-    ).toBe(pushed.commit);
-    store.close();
+      await git("--git-dir", elsewhere, "rev-parse", `refs/heads/${branch}`),
+    ).toBe(commit);
   } finally {
-    rmSync(dir, { recursive: true, force: true });
+    store.close();
+    rmSync(f.dir, { recursive: true, force: true });
+  }
+});
+
+test("a bundle that does not match the reported commit is refused", async () => {
+  const f = await workspace();
+  const store = new Store(":memory:");
+  const w = {
+    ...store.create({ ...task, timeout_seconds: 60 }),
+    vm_id: "vm-1",
+  };
+  try {
+    await git("-C", f.repo, "checkout", "-q", "-b", branchFor(w));
+    writeFileSync(join(f.repo, "code.txt"), "changed");
+    await git("-C", f.repo, "add", ".");
+    await git("-C", f.repo, "commit", "-m", "change");
+    const guest = localVm();
+    const run = guest.vm.exec;
+    guest.vm.exec = async (input: { command: string }) => {
+      const r = await run(input);
+      if (r.statusCode === 0 && r.stdout.includes("\n"))
+        r.stdout = `${f.base}\n${"c".repeat(40)}\n`;
+      return r;
+    };
+    const provider = new FreestyleProvider(sshConfig(f.dir, f.repo, f.remote), {
+      vms: { ref: () => guest.vm },
+    } as unknown as Freestyle);
+    await expect(provider.pushBranch(w)).rejects.toThrow(
+      "does not match the reported commit",
+    );
+    expect(await branchOrNull(f.remote, `refs/heads/${branchFor(w)}`)).toBe(
+      null,
+    );
+  } finally {
+    store.close();
+    rmSync(f.dir, { recursive: true, force: true });
+  }
+});
+
+test("a rewritten handoff base cannot extend the verified range", async () => {
+  const f = await workspace();
+  const store = new Store(":memory:");
+  const w = {
+    ...store.create({ ...task, timeout_seconds: 60 }),
+    vm_id: "vm-1",
+  };
+  try {
+    await git("-C", f.repo, "checkout", "-q", "-b", branchFor(w));
+    writeFileSync(join(f.repo, "code.txt"), "changed");
+    await git("-C", f.repo, "add", ".");
+    await git("-C", f.repo, "commit", "-m", "change");
+    const commit = await git("-C", f.repo, "rev-parse", "HEAD");
+    const guest = localVm();
+    const run = guest.vm.exec;
+    guest.vm.exec = async (input: { command: string }) => {
+      const r = await run(input);
+      if (r.statusCode === 0 && r.stdout.includes("\n"))
+        r.stdout = `${"d".repeat(40)}\n${commit}\n`;
+      return r;
+    };
+    const provider = new FreestyleProvider(sshConfig(f.dir, f.repo, f.remote), {
+      vms: { ref: () => guest.vm },
+    } as unknown as Freestyle);
+    await expect(provider.pushBranch(w)).rejects.toThrow(
+      "base is not an ancestor",
+    );
+    expect(await branchOrNull(f.remote, `refs/heads/${branchFor(w)}`)).toBe(
+      null,
+    );
+  } finally {
+    store.close();
+    rmSync(f.dir, { recursive: true, force: true });
   }
 });

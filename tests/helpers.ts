@@ -74,8 +74,11 @@ export class FakeProvider implements WorkerProvider {
     if (command.includes("SWARMFORGE_GIT_CHECK"))
       return {
         stdout: JSON.stringify({
-          safe: !this.dirty,
-          reason: this.dirty ? "dirty" : "clean",
+          clean: !this.dirty,
+          stray: 0,
+          unpushed: 0,
+          repos: 1,
+          notes: this.dirty ? ["dirty or unreadable Git workspace"] : [],
         }),
         stderr: "",
         code: 0,

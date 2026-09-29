@@ -637,7 +637,10 @@ export class Coordinator {
         throw new GitHandoffError("Git branch push or verification failed");
       }
       r = { ...r, git: { ...r.git, ...pushed, persisted: true, dirty: false } };
-    }
+    } else if (r.git?.persisted)
+      // Only a push SwarmForge made and verified can be persisted; the worker's own
+      // claim would otherwise be taken for proof that its commits survived.
+      r = { ...r, git: { ...r.git, persisted: false } };
     this.inference.delete(w.worker_id);
     this.excerpts.delete(w.worker_id);
     r = resultSchema.parse(redactorFor(this).value(r));

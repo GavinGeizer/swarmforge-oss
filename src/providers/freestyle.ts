@@ -3,14 +3,24 @@ import { Freestyle, FreestyleApiError, type VmData } from "freestyle";
 import type { Config } from "../config";
 import { gitTree, workerEnvironment } from "../config";
 import type { VmInfo, Worker, WorkerProvider } from "../domain";
-import { branchFor, githubInstallationToken } from "../git-handoff";
+import {
+  BundlePrerequisiteError,
+  branchFor,
+  bundleCommand,
+  githubInstallationToken,
+  maxBundleBytes,
+  publishBundle,
+  quote,
+} from "../git-handoff";
 import { openCodeConfig } from "./opencode";
-export const quote = (s: string) => `'${s.replaceAll("'", "'\\''")}'`;
+
+export { quote };
 export class FreestyleProvider implements WorkerProvider {
   readonly client: Freestyle;
   constructor(
     readonly config: Config,
     client?: Freestyle,
+    private readonly fetcher: typeof fetch = fetch,
   ) {
     this.client =
       client ??
@@ -124,7 +134,7 @@ export class FreestyleProvider implements WorkerProvider {
     if (tree.clone) {
       const repository = `${workspace}/repo`;
       const staging = `${workspace}/.swarmforge/repo-clone-${w.worker_id}`;
-      const clone = await this.withGitAuth(w.vm_id, async (auth) =>
+      const clone = await this.withGitAuth(w.vm_id, "read", async (auth) =>
         vm.exec({
           command: `if [ -d ${quote(`${repository}/.git`)} ]; then exit 0; fi; if [ -e ${quote(repository)} ]; then echo 'Repository destination already exists and is not a Git checkout' >&2; exit 1; fi; rm -rf ${quote(staging)} && ${auth} git clone -- ${quote(tree.target)} ${quote(staging)} && mv ${quote(staging)} ${quote(repository)}`,
           linuxUser: "root",
@@ -185,6 +195,7 @@ export class FreestyleProvider implements WorkerProvider {
   }
   private async withGitAuth<T>(
     id: string,
+    scope: "read" | "write",
     action: (prefix: string) => Promise<T>,
   ): Promise<T> {
     const mode = this.config.SWARMFORGE_GIT_PUSH_MODE;
@@ -196,7 +207,11 @@ export class FreestyleProvider implements WorkerProvider {
     let failed = false;
     try {
       if (mode === "github-app") {
-        const token = await githubInstallationToken(this.config);
+        const token = await githubInstallationToken(
+          this.config,
+          this.fetcher,
+          scope,
+        );
         await vm.fs.writeTextFile(paths[1]!, token, { mode: 0o600 });
         await vm.fs.writeTextFile(
           paths[0]!,
@@ -240,41 +255,88 @@ export class FreestyleProvider implements WorkerProvider {
     if (failed) throw failure;
     return value as T;
   }
+  private async handoff(
+    vm: ReturnType<Freestyle["vms"]["ref"]>,
+    repo: string,
+    branch: string,
+    path: string,
+    self_contained: boolean,
+  ) {
+    const made = await vm.exec({
+      command: bundleCommand({
+        repo,
+        branch,
+        base_file: `${this.config.SWARMFORGE_WORKSPACE}/.swarmforge/git-base`,
+        out: path,
+        self_contained,
+      }),
+      linuxUser: "root",
+      timeoutMs: this.config.SWARMFORGE_GIT_PUSH_TIMEOUT_MS,
+    });
+    if (made.statusCode !== 0)
+      throw new Error("Git push or remote commit verification failed");
+    const [base, commit] = (made.stdout ?? "").trim().split("\n");
+    if (
+      !/^[0-9a-f]{40,64}$/.test(base ?? "") ||
+      !/^[0-9a-f]{40,64}$/.test(commit ?? "")
+    )
+      throw new Error("Git push verification returned invalid commit IDs");
+    const stat = await vm.fs.stat(path);
+    if (!stat.isFile || stat.size < 1 || stat.size > maxBundleBytes)
+      throw new Error("Git handoff bundle is missing or too large to transfer");
+    const bundle = await vm.fs.readFile(path);
+    if (bundle.length !== stat.size)
+      throw new Error("Git handoff bundle transfer was truncated");
+    return { base: base!, commit: commit!, bundle };
+  }
+  // The worker is untrusted, so it only ever produces a bundle: the authenticated push,
+  // its hooks, its configuration and the remote SHA check all run on the control plane.
   async pushBranch(w: Worker) {
     if (!w.vm_id || this.config.SWARMFORGE_GIT_PUSH_MODE === "none")
       throw new Error("Git push unavailable");
     const vm = this.client.vms.ref(w.vm_id);
     const repo = `${this.config.SWARMFORGE_WORKSPACE}/repo`;
     const branch = branchFor(w);
+    const path = `${this.config.SWARMFORGE_WORKSPACE}/.swarmforge/handoff-${w.worker_id}.bundle`;
     const target =
       this.config.SWARMFORGE_GIT_PUSH_MODE === "github-app"
         ? this.config.SWARMFORGE_GIT_TREE
         : this.config.SWARMFORGE_GIT_PUSH_URL!;
-    const result = await this.withGitAuth(w.vm_id, async (auth) =>
-      vm.exec({
-        command: `set -eu; cd ${quote(repo)}; test "$(git branch --show-current)" = ${quote(branch)}; test -z "$(git status --porcelain --untracked-files=all)"; base=$(cat ${quote(`${this.config.SWARMFORGE_WORKSPACE}/.swarmforge/git-base`)}); commit=$(git rev-parse HEAD); git merge-base --is-ancestor "$base" "$commit"; ${auth} git push -- ${quote(target)} ${quote(`HEAD:refs/heads/${branch}`)} >&2; remote=$(${auth} git ls-remote -- ${quote(target)} ${quote(`refs/heads/${branch}`)}); remote_sha=$(printf '%s\n' "$remote" | cut -f1); test "$remote_sha" = "$commit"; git update-ref ${quote(`refs/remotes/origin/${branch}`)} "$commit"; printf '%s\n%s\n' "$base" "$commit"`,
-        linuxUser: "root",
-        timeoutMs: this.config.SWARMFORGE_GIT_PUSH_TIMEOUT_MS,
-      }),
-    );
-    if (result.statusCode !== 0)
-      throw new Error("Git push or remote commit verification failed");
-    const [base_commit, commit] = (result.stdout ?? "").trim().split("\n");
-    if (
-      !/^[0-9a-f]{40,64}$/.test(base_commit ?? "") ||
-      !/^[0-9a-f]{40,64}$/.test(commit ?? "")
-    )
-      throw new Error("Git push verification returned invalid commit IDs");
+    const attempt = async (self_contained: boolean) => {
+      const handoff = await this.handoff(
+        vm,
+        repo,
+        branch,
+        path,
+        self_contained,
+      );
+      return publishBundle(
+        this.config,
+        { target, branch, ...handoff, self_contained },
+        this.fetcher,
+      );
+    };
+    let pushed: { branch: string; base_commit: string; commit: string };
+    try {
+      pushed = await attempt(false).catch(async (e) => {
+        // A remote that cannot serve the base commit still accepts the full branch.
+        if (!(e instanceof BundlePrerequisiteError)) throw e;
+        return attempt(true);
+      });
+    } finally {
+      try {
+        await vm.exec({
+          command: `rm -f ${quote(path)}`,
+          linuxUser: "root",
+          timeoutMs: 30000,
+        });
+      } catch {}
+    }
     const review_url =
       this.config.SWARMFORGE_GIT_PUSH_MODE === "github-app"
-        ? `https://github.com/${this.config.SWARMFORGE_GITHUB_REPOSITORY}/compare/${base_commit}...${encodeURIComponent(branch)}`
+        ? `https://github.com/${this.config.SWARMFORGE_GITHUB_REPOSITORY}/compare/${pushed.base_commit}...${encodeURIComponent(pushed.branch)}`
         : undefined;
-    return {
-      branch,
-      base_commit: base_commit!,
-      commit: commit!,
-      ...(review_url ? { review_url } : {}),
-    };
+    return { ...pushed, ...(review_url ? { review_url } : {}) };
   }
   async pauseWorker(id: string) {
     await this.client.vms.ref(id).pause();

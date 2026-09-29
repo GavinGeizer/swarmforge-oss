@@ -27,9 +27,9 @@ Transient provider/startup failures retry within deadlines. Timeouts stop the Op
 
 ## Destruction and durability
 
-No automatic destruction occurs on completion or failure. Normal destruction stops OpenCode and checks Git status, untracked files and local commits absent from remote refs in the configured workspace and reported working directory. `.swarmforge` output is excluded. Unverifiable or local-only work blocks cleanup. `force=true` explicitly bypasses this protection.
+No automatic destruction occurs on completion or failure. Normal destruction stops OpenCode and checks Git status, untracked files and local commits that the control plane cannot show to be durable in the configured workspace and reported working directory. `.swarmforge` output is excluded. Unverifiable or local-only work blocks cleanup. `force=true` explicitly bypasses this protection.
 
-Remote refs are a conservative hint, not proof that every branch was durably pushed. Files outside declared workspaces and unusual external mounts require operator care. Source durability belongs to the external Git tree. Non-source artifacts are available only while their VM is retained; collect them before deletion.
+Local branches, remote-tracking refs and reflogs are guest-writable, so they are not durability evidence: the only accepted proof is the commit SwarmForge pushed itself and confirmed with a remote SHA lookup. Work committed after that point, or by a worker without a verified handoff, keeps its VM in `recovery_required`. Files outside declared workspaces and unusual external mounts require operator care. Source durability belongs to the external Git tree. Non-source artifacts are available only while their VM is retained; collect them before deletion.
 
 ## Deployment boundary
 
