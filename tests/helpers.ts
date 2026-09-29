@@ -200,7 +200,7 @@ export function harness() {
   const store = new Store(":memory:");
   const provider = new FakeProvider();
   const agent = new FakeAgent();
-  const coordinator = new Coordinator(config, store, provider, agent);
+  const coordinator = new Coordinator({ ...config }, store, provider, agent);
   return { store, provider, agent, coordinator };
 }
 export async function runToRunning(h: ReturnType<typeof harness>, id: string) {
