@@ -19,6 +19,9 @@ export interface WorkerDetail {
     vm_id?: string | null;
     opencode_session_id?: string | null;
     pending_messages?: number;
+    excerpt?: string;
+    excerpt_partial?: boolean;
+    excerpt_at?: number;
   };
   result: { status?: string; summary?: string; warnings?: string[] } | null;
   events: { id: number; type: string; at: number; data: string }[];
@@ -57,6 +60,15 @@ export async function connectSwarmForge(url: string, token?: string) {
   const call = async <T>(name: string, args: Record<string, unknown>) =>
     structured<T>(await client.callTool({ name, arguments: args }));
   return {
+    worker: (workerId: string) =>
+      call<WorkerDetail["worker"]>("get_worker", { worker_id: workerId }),
+    async result(workerId: string): Promise<WorkerDetail["result"]> {
+      const response = await call<{ result: WorkerDetail["result"] }>(
+        "get_worker_result",
+        { worker_id: workerId },
+      );
+      return response.result;
+    },
     async overview(): Promise<OverviewData> {
       const status = await call<SwarmStatus>("get_swarm_status", {});
       const workers: WorkerSummary[] = [];

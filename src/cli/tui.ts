@@ -16,6 +16,7 @@ export async function runDashboard(
   initial: OverviewData,
   input = process.stdin,
   output = process.stdout,
+  pollIntervalMs = 5_000,
 ) {
   let data = initial;
   let selected = visibleWorkers(data.workers)[0]?.worker_id;
@@ -56,6 +57,21 @@ export async function runDashboard(
       const visible = visibleWorkers(data.workers);
       if (!visible.some((worker) => worker.worker_id === selected))
         selected = visible[0]?.worker_id;
+      if (mode === "detail" && detail && !busy) {
+        const id = detail.worker.worker_id;
+        const prior = detail.worker.state;
+        const worker = await client.worker(id);
+        if (mode === "detail" && detail?.worker.worker_id === id && !busy) {
+          detail = { ...detail, worker };
+          if (
+            prior !== worker.state &&
+            ["completed", "failed", "cancelled", "destroyed"].includes(
+              worker.state,
+            )
+          )
+            detail = { ...detail, result: await client.result(id) };
+        }
+      }
       message = "";
     } catch (error) {
       message = `Refresh failed: ${error instanceof Error ? error.message : "unknown error"}`;
@@ -106,7 +122,7 @@ export async function runDashboard(
   render();
   await new Promise<void>((resolve) => {
     const redraw = setInterval(render, 1_000);
-    const poll = setInterval(() => void refresh(), 5_000);
+    const poll = setInterval(() => void refresh(), pollIntervalMs);
     const onResize = () => render();
     const stop = () => {
       if (stopped) return;

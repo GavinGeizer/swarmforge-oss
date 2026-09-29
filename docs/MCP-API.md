@@ -5,7 +5,7 @@ Streamable HTTP: `POST /mcp`. Supply the configured bearer token. Standard MCP S
 | Tool | Arguments | Result |
 | --- | --- | --- |
 | `spawn_worker` | `task_id`, `prompt`; optional `team_id="default"`, `role="coder"`, `timeout_seconds`, `request_id` | Worker ID, ownership, initial queued state; provisioning is asynchronous. |
-| `get_worker` | `worker_id` | State, IDs, timestamps, error, pending control/messages, token usage. |
+| `get_worker` | `worker_id` | State, IDs, timestamps, error, pending control/messages, token usage. While a turn is active, a bounded single-line excerpt of the latest assistant text plus `excerpt_partial` and `excerpt_at`; absent once the worker settles. |
 | `list_workers` | Optional `team_id`, `task_id`, `state`, `offset=0`, `limit=20` | Paginated metadata; total and next offset. |
 | `send_worker_message` | `worker_id`, `message` | Durable queued run ID; same OpenCode context. |
 | `pause_worker` | `worker_id` | State/metadata after pause or pending intent. |
@@ -28,3 +28,5 @@ Creation retries should reuse the same `request_id` and arguments. Reusing the k
 Artifact resource URIs look like `swarmforge://workers/<id>/artifacts/<encoded-path>?offset=0&length=32768`. Explicitly call MCP `resources/read` for that URI. Responses contain base64 blobs of at most 32 KiB. Use subsequent offsets to download large files without placing them all in model context. Traversal and symlink paths are rejected; detected credentials block file content retrieval. Tools do not export guest configuration or arbitrary filesystem paths.
 
 `GET /health` provides liveness. `GET /events?after=<event-id>` returns a bounded SSE replay; reconnect with `Last-Event-ID` to continue. These endpoints use the same bearer access as MCP. Events describe durable lifecycle changes and do not contain prompts.
+
+Response excerpts are live status only. They reuse the existing session poll, are capped at 180 characters on a single sanitized line, redact configured secrets, and are cleared when a turn settles or a new dispatch starts. They are never written to events, metrics, SQLite, or `list_workers`.

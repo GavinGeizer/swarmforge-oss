@@ -1,7 +1,9 @@
 import type { Config } from "./config";
 import {
+  type AgentSnapshot,
   type CodingAgent,
   type Dispatch,
+  type ResponseExcerpt,
   resultSchema,
   spawnSchema,
   terminal,
@@ -11,7 +13,7 @@ import {
 } from "./domain";
 import { GitHandoffError } from "./git-handoff";
 import { inspectPersistence } from "./safety";
-import { redactorFor } from "./security";
+import { excerptText, redactorFor } from "./security";
 import type { Store } from "./store";
 export class Coordinator {
   private locks = new Map<string, Promise<void>>();
@@ -20,6 +22,7 @@ export class Coordinator {
   private stopped = false;
   private lastReconcile = Date.now();
   readonly inference = new Map<string, number>();
+  readonly excerpts = new Map<string, ResponseExcerpt>();
   constructor(
     readonly config: Config,
     readonly store: Store,
@@ -44,6 +47,9 @@ export class Coordinator {
     } finally {
       clearTimeout(timer);
     }
+  }
+  excerpt(id: string): ResponseExcerpt | null {
+    return this.excerpts.get(id) ?? null;
   }
   spawn(input: unknown) {
     const parsed = spawnSchema.parse(input);
@@ -242,6 +248,7 @@ export class Coordinator {
             if (w.intent || w.state === "destroyed") return;
             if (!vm) {
               this.inference.delete(w.worker_id);
+              this.excerpts.delete(w.worker_id);
               this.store.cancelDispatches(w.worker_id);
               this.store.transition(w.worker_id, "failed", {
                 error: "VM disappeared; local workspace is lost",
@@ -361,6 +368,7 @@ export class Coordinator {
   }
   private async deliver(w: Worker, d: Dispatch) {
     // Persist dispatch intent first. Ambiguous submission after a crash is inspected, never blindly replayed.
+    this.excerpts.delete(w.worker_id);
     this.store.claimDispatch(w, d);
     await this.bounded(this.agent.submit(this.store.get(w.worker_id), d));
     this.store.saveDispatch({ ...d, state: "sent", sent_at: Date.now() });
@@ -373,6 +381,7 @@ export class Coordinator {
     }
     const snapshot = await this.bounded(this.agent.inspect(w));
     this.inference.set(w.worker_id, snapshot.inference_active);
+    this.trackExcerpt(w, snapshot, d);
     for (const m of snapshot.messages)
       if (m.role === "assistant")
         this.store.usage(
@@ -460,6 +469,35 @@ export class Coordinator {
       },
     );
   }
+  // Live status only: reuse the polled snapshot, never re-query the provider, and keep nothing durable.
+  private trackExcerpt(w: Worker, snapshot: AgentSnapshot, d: Dispatch) {
+    const replies = snapshot.messages.filter(
+      (m) => m.role === "assistant" && m.parent_id === d.message_id,
+    );
+    const latest = replies.at(-1);
+    if (!latest) {
+      this.excerpts.delete(w.worker_id);
+      return;
+    }
+    if (!latest.text) {
+      this.excerpts.delete(w.worker_id);
+      return;
+    }
+    const redactor = redactorFor(this);
+    const text = excerptText(latest.text, (value) => redactor.text(value));
+    if (!text) {
+      this.excerpts.delete(w.worker_id);
+      return;
+    }
+    const partial = !latest.completed;
+    const previous = this.excerpts.get(w.worker_id);
+    if (previous?.text === text && previous.partial === partial) return;
+    this.excerpts.set(w.worker_id, {
+      text,
+      at: Date.now(),
+      partial,
+    });
+  }
   private identify(w: Worker, d: Dispatch, r: WorkerResult): WorkerResult {
     return {
       ...r,
@@ -501,6 +539,7 @@ export class Coordinator {
       r = { ...r, git: { ...r.git, ...pushed, persisted: true, dirty: false } };
     }
     this.inference.delete(w.worker_id);
+    this.excerpts.delete(w.worker_id);
     r = resultSchema.parse(redactorFor(this).value(r));
     this.store.finish(w.worker_id, d, r);
     // Canonical result is now durable in SQLite even if the best-effort mirror fails.
@@ -534,6 +573,7 @@ export class Coordinator {
   }
   private async fail(w: Worker, reason: string) {
     this.inference.delete(w.worker_id);
+    this.excerpts.delete(w.worker_id);
     const stopped = await this.quiesce(w);
     const safety = !stopped
       ? { safe: false, reason: "VM paused after OpenCode stop failure" }
@@ -586,6 +626,7 @@ export class Coordinator {
       }
       await this.bounded(this.provider.pauseWorker(w.vm_id));
       this.inference.delete(id);
+      this.excerpts.delete(id);
       this.store.transition(id, "paused", {
         previous_state: w.state,
         paused_at: Date.now(),
@@ -617,6 +658,7 @@ export class Coordinator {
         await this.quiesce(w);
       }
       this.inference.delete(id);
+      this.excerpts.delete(id);
       this.store.cancelDispatches(id);
       this.store.transition(id, "cancelled", {
         deadline_at: null,
@@ -677,6 +719,7 @@ export class Coordinator {
         await this.bounded(this.provider.destroyWorker(w.vm_id));
       }
       this.inference.delete(id);
+      this.excerpts.delete(id);
       this.store.cancelDispatches(id);
       this.store.transition(id, "destroyed", {
         intent: null,

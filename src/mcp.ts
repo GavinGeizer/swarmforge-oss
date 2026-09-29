@@ -84,9 +84,9 @@ export function createMcpServer(c: Coordinator) {
   );
   register(
     "get_worker",
-    "Get worker lifecycle, session metadata and detailed token accounting.",
+    "Get worker lifecycle, session metadata, token accounting and a bounded live response excerpt.",
     worker,
-    (a) => publicWorker(c, a.worker_id),
+    (a) => publicWorker(c, a.worker_id, true),
     true,
   );
   register(

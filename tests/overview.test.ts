@@ -136,6 +136,74 @@ test("worker text cannot inject terminal control sequences", () => {
   expect(view).not.toContain("\u001b");
 });
 
+test("focused worker detail shows the live response excerpt as one partial fresh line", () => {
+  const view = renderWorkerDetail(
+    {
+      worker: {
+        ...workers[0],
+        vm_id: "vm-1",
+        opencode_session_id: "ses-1",
+        pending_messages: 0,
+        excerpt:
+          "…rewriting renderWorkerDetail\u001b[31m now\u001b[0m with a bounded tail",
+        excerpt_partial: true,
+        excerpt_at: now - 12_000,
+      },
+      result: null,
+      events: [],
+      serviceLog: null,
+    },
+    { now, width: 120 },
+  );
+  expect(view).toContain("RESPONSE  partial · 12s ago");
+  expect(view).toContain(
+    "rewriting renderWorkerDetail now with a bounded tail",
+  );
+  expect(view).not.toContain("\u001b");
+  expect(
+    view.split("\n").filter((line) => line.includes("rewriting")),
+  ).toHaveLength(1);
+  expect(view).toContain("No result yet");
+});
+
+test("completed focus shows the durable result summary and no stale excerpt", () => {
+  const view = renderWorkerDetail(
+    {
+      worker: {
+        ...workers[2],
+        excerpt: "stale live text from an earlier turn",
+        excerpt_partial: true,
+        excerpt_at: now - 4_000,
+      },
+      result: { status: "completed", summary: "Updated API pagination" },
+      events: [],
+      serviceLog: null,
+    },
+    { now, width: 120 },
+  );
+  expect(view).not.toContain("RESPONSE");
+  expect(view).not.toContain("stale live text");
+  expect(view).toContain("Updated API pagination");
+});
+
+test("narrow focused view keeps the newest words of a long excerpt", () => {
+  const view = renderWorkerDetail(
+    {
+      worker: {
+        ...workers[0],
+        excerpt: `${"earlier words ".repeat(20)}TAILNOW`,
+        excerpt_partial: true,
+        excerpt_at: now,
+      },
+      result: null,
+      events: [],
+      serviceLog: null,
+    },
+    { now, width: 60 },
+  );
+  expect(view).toContain("TAILNOW");
+});
+
 test("selection reveals workers beyond the first overview page", () => {
   const many = Array.from({ length: 10 }, (_, index) => ({
     ...workers[0]!,
@@ -211,4 +279,55 @@ test("interactive overview inspects workers and confirms destruction", async () 
   await session;
   expect(raw).toEqual([true, false]);
   expect(chunks.at(-1)).toContain("\u001b[?1049l");
+});
+
+test("focused dashboard refreshes its live excerpt without fetching logs again", async () => {
+  const data = {
+    url: "http://127.0.0.1:8787/mcp",
+    metrics: { enabled: true, port: 9090 },
+    states: { running: 1 },
+    tokens: { total: 0 },
+    workers: [workers[0]!],
+  };
+  let inspectCalls = 0;
+  let workerCalls = 0;
+  const chunks: string[] = [];
+  const input = Object.assign(new EventEmitter(), {
+    setRawMode: () => {},
+    resume: () => {},
+    pause: () => {},
+  }) as unknown as typeof process.stdin;
+  const output = Object.assign(new EventEmitter(), {
+    columns: 100,
+    write: (value: string) => {
+      chunks.push(value);
+      return true;
+    },
+  }) as unknown as typeof process.stdout;
+  const client = {
+    overview: async () => data,
+    inspect: async () => {
+      inspectCalls++;
+      return {
+        worker: { ...workers[0]!, excerpt: "first words" },
+        result: null,
+        events: [],
+        serviceLog: null,
+      };
+    },
+    worker: async () => {
+      workerCalls++;
+      return { ...workers[0]!, excerpt: "newest words" };
+    },
+    control: async () => workers[0]!,
+    close: async () => {},
+  } as unknown as Parameters<typeof runDashboard>[0];
+  const session = runDashboard(client, data, input, output, 20);
+  input.emit("keypress", "", { name: "return" });
+  await Bun.sleep(90);
+  input.emit("keypress", "", { name: "q" });
+  await session;
+  expect(chunks.join("")).toContain("newest words");
+  expect(workerCalls).toBeGreaterThan(0);
+  expect(inspectCalls).toBe(1);
 });
