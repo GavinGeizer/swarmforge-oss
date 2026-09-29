@@ -236,6 +236,12 @@ export class FreestyleProvider implements WorkerProvider {
                 modified: stat.modified ?? "",
               };
             },
+            readFile: async (
+              _id: string,
+              path: string,
+              offset: number,
+              length: number,
+            ) => vm.fs.readFile(path, { offset, length }),
           },
           id,
           roots,

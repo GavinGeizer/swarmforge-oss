@@ -15,7 +15,12 @@ import type { Freestyle } from "freestyle";
 import type { Config } from "../src/config";
 import { loadConfig } from "../src/config";
 import { Coordinator } from "../src/coordinator";
-import { branchFor, githubInstallationToken } from "../src/git-handoff";
+import {
+  branchFor,
+  githubInstallationToken,
+  publishedTree,
+  recordedTree,
+} from "../src/git-handoff";
 import { FreestyleProvider } from "../src/providers/freestyle";
 import { bootstrap } from "../src/providers/opencode";
 import { Store } from "../src/store";
@@ -831,6 +836,88 @@ test("a rewritten handoff base cannot replace the one recorded at prepare", asyn
     expect(await branchOrNull(f.remote, `refs/heads/${branchFor(w)}`)).toBe(
       null,
     );
+  } finally {
+    store.close();
+    rmSync(f.dir, { recursive: true, force: true });
+  }
+});
+
+test("a re-prepare keeps the branch point the control plane recorded", async () => {
+  const store = new Store(":memory:");
+  const provider = new FakeProvider();
+  // A deployment that hands off, so a branch point is recorded at prepare.
+  provider.handoff = true;
+  provider.gitBase = "a".repeat(40);
+  const agent = new FakeAgent();
+  const c = {
+    ...config,
+    SWARMFORGE_GIT_PUSH_MODE: "ssh" as const,
+    SWARMFORGE_GIT_PUSH_URL: "git@example:repo.git",
+    SWARMFORGE_GIT_SSH_KEY_PATH: "/key",
+    SWARMFORGE_GIT_SSH_KNOWN_HOSTS_PATH: "/hosts",
+  };
+  const coordinator = new Coordinator(c, store, provider, agent);
+  const h = { store, provider, agent, coordinator };
+  try {
+    const w = coordinator.spawn(task);
+    await runToRunning(h, w.worker_id);
+    expect(store.get(w.worker_id).git_base).toBe("a".repeat(40));
+    // Messaging a failed worker boots it again, which prepares the workspace a second
+    // time. By now the guest owns the base file the provider reports.
+    store.transition(w.worker_id, "failed", { error: "task failed" });
+    provider.gitBase = "d".repeat(40);
+    await coordinator.message(w.worker_id, "try again");
+    expect(store.get(w.worker_id).state).toBe("booting");
+    await coordinator.tick();
+    // The guest-reported branch point is discarded; the recorded one still stands.
+    expect(store.get(w.worker_id).git_base).toBe("a".repeat(40));
+    expect(store.get(w.worker_id).state).toBe("ready");
+  } finally {
+    store.close();
+  }
+});
+
+test("the published tree carries a blob id, not just a length", async () => {
+  const f = await workspace();
+  const store = new Store(":memory:");
+  const w = {
+    ...store.create({ ...task, timeout_seconds: 60 }),
+    vm_id: "vm-1",
+  };
+  try {
+    const c = sshConfig(f.dir, f.repo, f.remote);
+    // The recorded base reports "code.txt" with the object id the repository stores.
+    expect(await recordedTree(c, f.repo, f.base)).toEqual(
+      new Map([
+        [
+          "code.txt",
+          {
+            size: 4,
+            oid: await git("-C", f.repo, "rev-parse", "HEAD:code.txt"),
+          },
+        ],
+      ]),
+    );
+    // A published branch reports the ids of its own blobs, so a same-length edit is
+    // detectable by comparing content rather than length.
+    await git("-C", f.repo, "checkout", "-q", "-b", branchFor(w));
+    writeFileSync(join(f.repo, "code.txt"), "later");
+    await git("-C", f.repo, "add", ".");
+    await git("-C", f.repo, "commit", "-m", "later");
+    const commit = await git("-C", f.repo, "rev-parse", "HEAD");
+    await git(
+      "-C",
+      f.repo,
+      "push",
+      "-q",
+      "origin",
+      `HEAD:refs/heads/${branchFor(w)}`,
+    );
+    const published = await publishedTree(c, f.remote, branchFor(w), commit);
+    expect(published.get("code.txt")).toEqual({
+      size: 5,
+      oid: await git("-C", f.repo, "rev-parse", "HEAD:code.txt"),
+    });
   } finally {
     store.close();
     rmSync(f.dir, { recursive: true, force: true });

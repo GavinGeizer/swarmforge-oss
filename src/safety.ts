@@ -1,7 +1,12 @@
 import { createHash } from "node:crypto";
 import type { Config } from "./config";
 import type { FileInfo, Worker, WorkerProvider, WorkerResult } from "./domain";
-import { branchFor, publishedTree, recordedTree } from "./git-handoff";
+import {
+  branchFor,
+  type PublishedFile,
+  publishedTree,
+  recordedTree,
+} from "./git-handoff";
 
 export interface WorkspaceEntry {
   size: number;
@@ -20,6 +25,14 @@ export interface WorkspaceFs {
     isSymlink: boolean;
     modified: string;
   }>;
+  // Content is read through the same control-plane API, so a host-side hash can be
+  // compared with a published blob id without the guest resolving anything.
+  readFile(
+    id: string,
+    path: string,
+    offset: number,
+    length: number,
+  ): Promise<Uint8Array>;
 }
 export interface WorkspaceRoot {
   root: string;
@@ -75,7 +88,11 @@ export async function inspectWorkspace(
             files.set(relative, {
               size: stat.size,
               modified: stat.modified,
-              ...(stat.isSymlink ? { link: true } : {}),
+              // A listing reports a link as one, and `stat` follows it to its target, so
+              // both are consulted before a file is read as ordinary content.
+              ...(stat.isSymlink || entry.kind === "symlink"
+                ? { link: true }
+                : {}),
             });
             if (++snapshot.files > walkLimits.files)
               throw new Error("more than 5000 files");
@@ -116,9 +133,56 @@ function verifiedCommit(w: Worker, result: WorkerResult | null) {
   return /^[0-9a-f]{40,64}$/.test(git.commit ?? "") ? git.commit! : null;
 }
 
-function differs(snapshot: WorkspaceSnapshot, expected: Map<string, number>) {
+const readChunk = 1024 * 1024;
+function blobAlgorithm(oid: string): "sha1" | "sha256" | null {
+  if (/^[0-9a-f]{40}$/.test(oid)) return "sha1";
+  if (/^[0-9a-f]{64}$/.test(oid)) return "sha256";
+  return null;
+}
+
+// A published file is only published if the workspace still holds its content. A file
+// length is not an identity: a same-length uncommitted edit keeps it, so the host hashes
+// what it reads through the file API and compares that with the published blob id.
+async function matchesPublished(
+  fs: WorkspaceFs,
+  id: string,
+  path: string,
+  size: number,
+  file: PublishedFile,
+) {
+  const algorithm = blobAlgorithm(file.oid);
+  if (!algorithm) return false;
+  if (file.size >= 0 && file.size !== size) return false;
+  const hash = createHash(algorithm);
+  hash.update(`blob ${size}\0`);
+  let read = 0;
+  try {
+    while (read < size) {
+      const chunk = await fs.readFile(
+        id,
+        path,
+        read,
+        Math.min(readChunk, size - read),
+      );
+      // Short or failed reads prove nothing, so the file is reported, never certified.
+      if (!chunk.length) return false;
+      hash.update(chunk);
+      read += chunk.length;
+    }
+  } catch {
+    return false;
+  }
+  return hash.digest("hex") === file.oid;
+}
+
+async function differs(
+  fs: WorkspaceFs,
+  id: string,
+  snapshot: WorkspaceSnapshot,
+  expected: Map<string, PublishedFile>,
+) {
   const issues: string[] = [];
-  for (const { files, gitRoots } of snapshot.roots) {
+  for (const { root, files, gitRoots } of snapshot.roots) {
     // A repository at the root subsumes any nested one; never compare a path twice.
     const prefixes = gitRoots.has("") ? [""] : [...gitRoots].sort();
     for (const path of files.keys())
@@ -126,26 +190,40 @@ function differs(snapshot: WorkspaceSnapshot, expected: Map<string, number>) {
         issues.push(`untracked ${path}`);
     for (const prefix of prefixes) {
       const start = prefix ? `${prefix}/` : "";
-      const inRepo = new Map(
-        [...files]
-          .filter(([path]) => path.startsWith(start))
-          .map(([path, entry]) => [path.slice(start.length), entry]),
-      );
-      if (!inRepo.size) continue;
-      for (const [path, entry] of inRepo) {
-        const size = expected.get(path);
-        if (size === undefined) issues.push(`untracked ${path}`);
-        // -1 marks a size that is not comparable; the path is still required.
-        else if (size >= 0 && !entry.link && size !== entry.size)
-          issues.push(`modified ${path}`);
+      const inRepo = new Map<string, { entry: WorkspaceEntry; path: string }>();
+      for (const [path, entry] of files)
+        if (path.startsWith(start))
+          inRepo.set(path.slice(start.length), {
+            entry,
+            path: `${root}/${path}`,
+          });
+      for (const [published, { entry, path }] of inRepo) {
+        const file = expected.get(published);
+        if (file === undefined) issues.push(`untracked ${published}`);
+        // A link is matched by presence; the file API cannot report a stable target.
+        else if (
+          !entry.link &&
+          !(await matchesPublished(fs, id, path, entry.size, file))
+        )
+          issues.push(`modified ${published}`);
       }
-      // Skipped directories are never walked, so their published files are not "deleted".
+      // Deletions are compared for an empty checkout too: a guest that removed every
+      // published file must not be certified by the emptiness it caused. Skipped
+      // directories are never walked, so their published files are not "deleted".
       for (const path of expected.keys())
         if (!inRepo.has(path) && !skipped.has(path.split("/")[0] ?? ""))
           issues.push(`deleted ${path}`);
     }
   }
   return issues;
+}
+
+// Published files an empty workspace no longer holds. Skipped directories are never
+// walked, so their published files are not "deleted".
+function absentFrom(expected: Map<string, PublishedFile>) {
+  return [...expected.keys()].filter(
+    (path) => !skipped.has(path.split("/")[0] ?? ""),
+  );
 }
 
 export async function inspectPersistence(
@@ -178,7 +256,6 @@ export async function inspectPersistence(
       ).slice(0, 200)}`,
     };
   }
-  if (!snapshot.files) return { safe: true, reason: "no files to persist" };
   // The baseline is a control-plane observation of the workspace before the worker ran.
   if (
     w.workspace_digest &&
@@ -188,13 +265,15 @@ export async function inspectPersistence(
       safe: true,
       reason: "workspace unchanged since the worker was prepared",
     };
-  if (!snapshot.roots.some((r) => r.gitRoots.size))
+  // Files that no repository claims can never be covered by a handoff. An empty workspace
+  // has none, so emptiness alone is not a verdict and the published tree decides below.
+  if (snapshot.files && !snapshot.roots.some((r) => r.gitRoots.size))
     return { safe: false, reason: "files outside a Git repository" };
   const verified = verifiedCommit(w, result);
   const subject = verified
     ? "the verified remote branch"
     : "the recorded handoff base";
-  let expected: Map<string, number> | null = null;
+  let expected: Map<string, PublishedFile> | null = null;
   try {
     if (verified)
       expected = await publishedTree(
@@ -215,12 +294,21 @@ export async function inspectPersistence(
       ).slice(0, 200)}`,
     };
   }
+  // Without a published tree no work was ever claimed, so an empty workspace is empty
+  // of anything to lose; files on disk are still unpersisted.
   if (!expected)
-    return {
-      safe: false,
-      reason: "local files are not covered by a verified handoff",
-    };
-  const issues = differs(snapshot, expected);
+    return snapshot.files
+      ? {
+          safe: false,
+          reason: "local files are not covered by a verified handoff",
+        }
+      : { safe: true, reason: "no files to persist" };
+  // An empty workspace is not evidence that nothing was lost: a guest that removed every
+  // published file leaves exactly this snapshot. Deletions are compared against the
+  // published tree before the workspace is ever certified safe.
+  const issues = snapshot.files
+    ? await differs(provider, w.vm_id, snapshot, expected)
+    : absentFrom(expected).map((path) => `deleted ${path}`);
   if (issues.length)
     return {
       safe: false,
@@ -229,5 +317,10 @@ export async function inspectPersistence(
           .slice(0, 5)
           .join(", ")}`.slice(0, 1000),
     };
-  return { safe: true, reason: `workspace matches ${subject}` };
+  return snapshot.files
+    ? { safe: true, reason: `workspace matches ${subject}` }
+    : {
+        safe: true,
+        reason: `workspace is empty and ${subject} holds no files`,
+      };
 }

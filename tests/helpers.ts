@@ -31,6 +31,9 @@ export class FakeProvider implements WorkerProvider {
   digest: string | null = null;
   mtime = "2026-01-01T00:00:00Z";
   gitBase: string | null = "b".repeat(40);
+  // A branch point is only recorded when the deployment actually hands off, as the
+  // provider does; without one there is no published tree to compare a workspace with.
+  handoff = config.SWARMFORGE_GIT_PUSH_MODE !== "none";
   failure = false;
   // Reports one untracked file at the workspace root, as a working worker would leave.
   dirty = false;
@@ -59,7 +62,7 @@ export class FakeProvider implements WorkerProvider {
     if (this.failure) throw new Error("boot failure");
     return {
       endpoint: `https://${w.vm_id}.example`,
-      git_base: this.gitBase,
+      git_base: this.handoff ? this.gitBase : null,
       workspace_digest: this.digest,
     };
   }

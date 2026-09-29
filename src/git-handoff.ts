@@ -316,6 +316,13 @@ const hardenedEnv = (extra: Record<string, string>) => ({
   LC_ALL: "C",
 });
 
+// One published blob: its length, and the object id that proves its content. A length
+// alone cannot tell a published file from a same-length local edit.
+export interface PublishedFile {
+  size: number;
+  oid: string;
+}
+
 // The published tree of a branch SwarmForge pushed, read from the remote on the host.
 export async function publishedTree(
   c: Config,
@@ -323,7 +330,7 @@ export async function publishedTree(
   branch: string,
   commit: string,
   fetcher: typeof fetch = fetch,
-): Promise<Map<string, number>> {
+): Promise<Map<string, PublishedFile>> {
   return treeAt(c, target, `refs/heads/${branch}`, commit, fetcher);
 }
 
@@ -334,7 +341,7 @@ export async function recordedTree(
   target: string,
   commit: string,
   fetcher: typeof fetch = fetch,
-): Promise<Map<string, number>> {
+): Promise<Map<string, PublishedFile>> {
   return treeAt(c, target, "HEAD", commit, fetcher);
 }
 
@@ -344,7 +351,7 @@ async function treeAt(
   ref: string,
   commit: string,
   fetcher: typeof fetch,
-): Promise<Map<string, number>> {
+): Promise<Map<string, PublishedFile>> {
   const dir = mkdtempSync(join(tmpdir(), "swarmforge-handoff-"));
   chmodSync(dir, 0o700);
   try {
@@ -370,14 +377,18 @@ async function treeAt(
     );
     if (tree.code)
       throw new GitHandoffError("Host could not read the published tree");
-    const files = new Map<string, number>();
+    const files = new Map<string, PublishedFile>();
     for (const entry of tree.stdout.split("\0")) {
       // "<mode> <type> <object> <size>\t<path>"; submodules carry no local content.
       const [meta, path] = entry.split("\t");
       const parts = meta?.trim().split(/\s+/) ?? [];
       if (!path || parts[1] !== "blob") continue;
       const size = Number(parts[3]);
-      files.set(path, Number.isSafeInteger(size) ? size : -1);
+      // The blob id travels with the length so the caller can prove content, not just size.
+      files.set(path, {
+        size: Number.isSafeInteger(size) ? size : -1,
+        oid: parts[2] ?? "",
+      });
     }
     return files;
   } finally {

@@ -3,6 +3,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readdirSync,
+  readFileSync,
   rmSync,
   statSync,
   symlinkSync,
@@ -44,6 +45,15 @@ class LocalWorkspace extends FakeProvider {
       isSymlink: stat.isSymbolicLink(),
       modified: stat.mtime.toISOString(),
     };
+  }
+  // The host hashes workspace content to compare it with a published blob id.
+  override async readFile(
+    _id: string,
+    path: string,
+    offset = 0,
+    length = 65536,
+  ) {
+    return new Uint8Array(readFileSync(path)).slice(offset, offset + length);
   }
   override async exec(): Promise<{
     stdout: string;
@@ -372,6 +382,104 @@ test("the branch point and baseline recorded at prepare are the ones a later han
     expect(await inspectPersistence(provider, c, recorded, null)).toMatchObject(
       { safe: true },
     );
+  } finally {
+    h.store.close();
+    rmSync(f.base, { recursive: true, force: true });
+  }
+});
+
+test("a same-length uncommitted edit is not certified as published", async () => {
+  const f = await fixture();
+  const h = harness();
+  const w = {
+    ...h.coordinator.spawn(task),
+    vm_id: "local",
+    git_base: f.head,
+    workspace_digest: null,
+  };
+  const c = loadTestConfig({
+    workspace: f.dir,
+    tree: f.remote,
+    push: f.remote,
+  });
+  const provider = new LocalWorkspace();
+  try {
+    expect((await inspectPersistence(provider, c, w, null)).safe).toBe(true);
+    // "modified" is eight bytes, exactly like the published "original": only the content
+    // differs, so a length comparison would certify this uncommitted work as safe.
+    writeFileSync(join(f.repo, "code.txt"), "modified");
+    const edited = await inspectPersistence(provider, c, w, null);
+    expect(edited.safe).toBe(false);
+    expect(edited.reason).toContain("modified code.txt");
+    // Restoring the published content makes the same file safe again.
+    writeFileSync(join(f.repo, "code.txt"), "original");
+    expect((await inspectPersistence(provider, c, w, null)).safe).toBe(true);
+  } finally {
+    h.store.close();
+    rmSync(f.base, { recursive: true, force: true });
+  }
+});
+
+test("an emptied workspace is not safe while published files are missing from it", async () => {
+  const f = await fixture();
+  const h = harness();
+  const w = {
+    ...h.coordinator.spawn(task),
+    vm_id: "local",
+    git_base: f.head,
+    workspace_digest: null,
+  };
+  const c = loadTestConfig({
+    workspace: f.dir,
+    tree: f.remote,
+    push: f.remote,
+  });
+  const provider = new LocalWorkspace();
+  try {
+    // The tracked file is removed but the repository survives.
+    rmSync(join(f.repo, "code.txt"));
+    const emptied = await inspectPersistence(provider, c, w, null);
+    expect(emptied.safe).toBe(false);
+    expect(emptied.reason).toContain("deleted code.txt");
+    // Removing the repository as well leaves the same empty snapshot, and the deletion of
+    // every published file is still compared before the workspace is certified safe.
+    rmSync(f.repo, { recursive: true, force: true });
+    const gone = await inspectPersistence(provider, c, w, null);
+    expect(gone.safe).toBe(false);
+    expect(gone.reason).toContain("deleted code.txt");
+  } finally {
+    h.store.close();
+    rmSync(f.base, { recursive: true, force: true });
+  }
+});
+
+test("an empty workspace is safe when the published tree expects no files", async () => {
+  const f = await fixture();
+  const h = harness();
+  const c = loadTestConfig({
+    workspace: f.dir,
+    tree: f.remote,
+    push: f.remote,
+  });
+  const provider = new LocalWorkspace();
+  try {
+    // The published branch point holds no files: the only tracked file was removed.
+    rmSync(join(f.repo, "code.txt"));
+    await git("-C", f.repo, "add", "-A");
+    await git("-C", f.repo, "commit", "-q", "-m", "remove the file");
+    const head = await git("-C", f.repo, "rev-parse", "HEAD");
+    await git("-C", f.repo, "push", "-q", "origin", "HEAD:refs/heads/main");
+    const w = {
+      ...h.coordinator.spawn(task),
+      vm_id: "local",
+      git_base: head,
+      workspace_digest: null,
+    };
+    rmSync(f.repo, { recursive: true, force: true });
+    // Nothing was ever published, so an empty workspace holds no lost work.
+    expect(await inspectPersistence(provider, c, w, null)).toMatchObject({
+      safe: true,
+    });
   } finally {
     h.store.close();
     rmSync(f.base, { recursive: true, force: true });

@@ -405,10 +405,12 @@ export class Coordinator {
           this.config.SWARMFORGE_GIT_PUSH_TIMEOUT_MS +
             this.config.SWARMFORGE_API_TIMEOUT_MS,
         );
-        // Control-plane facts about the workspace, recorded before the agent can run.
+        // Control-plane facts about the workspace, recorded before the agent can run. A
+        // re-prepare reads the guest-controlled base file again, so the first recorded
+        // branch point is kept: the guest never gets to move the point its work forks from.
         w = this.store.patch(id, {
           endpoint: prepared.endpoint,
-          git_base: prepared.git_base ?? w.git_base,
+          git_base: w.git_base ?? prepared.git_base,
           workspace_digest: prepared.workspace_digest ?? w.workspace_digest,
         });
         const session = await this.bounded(this.agent.ensureSession(w));
