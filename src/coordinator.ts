@@ -494,6 +494,17 @@ export class Coordinator {
           m.cache_read,
           m.cache_write,
         );
+    // A turn settles only when the snapshot shows nothing of this dispatch in flight and
+    // /session/status either reports idle or stays silent; "unknown" silence is not a
+    // finished turn, so the idle budget still decides.
+    const settled =
+      !snapshot.messages.some(
+        (m) =>
+          m.role === "assistant" &&
+          !m.completed &&
+          m.parent_id === d.message_id,
+      ) &&
+      (snapshot.status === "idle" || snapshot.status === "unknown");
     if (d.state === "sending") {
       if (
         snapshot.messages.some(
@@ -502,7 +513,7 @@ export class Coordinator {
       ) {
         this.store.saveDispatch({ ...d, state: "sent" });
       } else if (
-        snapshot.status === "idle" &&
+        settled &&
         Date.now() - (d.sent_at ?? d.created_at) >
           this.config.SWARMFORGE_API_TIMEOUT_MS
       ) {
@@ -521,7 +532,7 @@ export class Coordinator {
     const reply =
       [...replies].reverse().find((m) => m.result !== undefined || m.error) ??
       replies.at(-1);
-    if (snapshot.status === "idle" && reply) {
+    if (settled && reply) {
       const parsed = resultSchema.safeParse(reply.result);
       const result = parsed.success
         ? this.identify(w, d, parsed.data)
@@ -536,7 +547,7 @@ export class Coordinator {
         );
       return;
     }
-    if (snapshot.status === "idle") {
+    if (settled) {
       const fallback = await this.fallback(w, d);
       if (fallback) {
         await this.complete(w, d, fallback);

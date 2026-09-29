@@ -159,20 +159,36 @@ export class OpenCodeAgent implements CodingAgent {
             cache_write: 0,
           };
     });
+    const inference_active = mapped.some(
+      (m) => m.role === "assistant" && !m.completed,
+    );
     return {
-      status: status.data?.[w.opencode_session_id]?.type ?? "idle",
+      status: reportedStatus(
+        status.data?.[w.opencode_session_id]?.type,
+        inference_active,
+      ),
       messages: mapped,
-      inference_active: mapped.some(
-        (m) => m.role === "assistant" && !m.completed,
-      )
-        ? 1
-        : 0,
+      inference_active: inference_active ? 1 : 0,
     };
   }
   async abort(w: Worker) {
     if (w.opencode_session_id)
       await this.client(w).session.abort({ sessionID: w.opencode_session_id });
   }
+}
+
+// /session/status is polled for the whole OpenCode server, so a missing entry says nothing
+// about this session: treat silence as unknown, and an incomplete assistant message as proof
+// that inference is running.
+function reportedStatus(
+  reported: string | undefined,
+  inferenceActive: boolean,
+): AgentSnapshot["status"] {
+  return reported === "idle" || reported === "busy" || reported === "retry"
+    ? reported
+    : inferenceActive
+      ? "busy"
+      : "unknown";
 }
 
 function parseJsonText(text: string): unknown {

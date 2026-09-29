@@ -220,7 +220,9 @@ export interface ResponseExcerpt {
   partial: boolean;
 }
 export interface AgentSnapshot {
-  status: "idle" | "busy" | "retry";
+  // "unknown" is silence: /session/status listed neither this session nor a status it
+  // recognizes. It is never proof that a turn finished.
+  status: "idle" | "busy" | "retry" | "unknown";
   messages: AgentMessage[];
   inference_active: number;
 }
