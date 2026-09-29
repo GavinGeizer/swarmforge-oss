@@ -494,17 +494,11 @@ export class Coordinator {
           m.cache_read,
           m.cache_write,
         );
-    // A turn settles only when the snapshot shows nothing of this dispatch in flight and
-    // /session/status either reports idle or stays silent; "unknown" silence is not a
-    // finished turn, so the idle budget still decides.
-    const settled =
-      !snapshot.messages.some(
-        (m) =>
-          m.role === "assistant" &&
-          !m.completed &&
-          m.parent_id === d.message_id,
-      ) &&
-      (snapshot.status === "idle" || snapshot.status === "unknown");
+    // A turn settles only on a reported idle, which the adapter also produces for a session
+    // /session/status no longer lists. A status it could not interpret stays unknown and
+    // unsettled, and message history is an estimate, never a completion signal: a turn
+    // interrupted by a restart, an OOM or an abort leaves a message with no completion.
+    const settled = snapshot.status === "idle";
     if (d.state === "sending") {
       if (
         snapshot.messages.some(

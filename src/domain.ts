@@ -220,8 +220,8 @@ export interface ResponseExcerpt {
   partial: boolean;
 }
 export interface AgentSnapshot {
-  // "unknown" is silence: /session/status listed neither this session nor a status it
-  // recognizes. It is never proof that a turn finished.
+  // "unknown" is a reported /session/status type this version does not recognize. It is
+  // never proof that a turn finished; an absent entry is read as idle, not as unknown.
   status: "idle" | "busy" | "retry" | "unknown";
   messages: AgentMessage[];
   inference_active: number;

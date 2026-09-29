@@ -163,10 +163,7 @@ export class OpenCodeAgent implements CodingAgent {
       (m) => m.role === "assistant" && !m.completed,
     );
     return {
-      status: reportedStatus(
-        status.data?.[w.opencode_session_id]?.type,
-        inference_active,
-      ),
+      status: sessionStatus(status.data?.[w.opencode_session_id]?.type),
       messages: mapped,
       inference_active: inference_active ? 1 : 0,
     };
@@ -177,18 +174,17 @@ export class OpenCodeAgent implements CodingAgent {
   }
 }
 
-// /session/status is polled for the whole OpenCode server, so a missing entry says nothing
-// about this session: treat silence as unknown, and an incomplete assistant message as proof
-// that inference is running.
-function reportedStatus(
-  reported: string | undefined,
-  inferenceActive: boolean,
-): AgentSnapshot["status"] {
+// /session/status is polled for the whole OpenCode server and lists only sessions with
+// work, so an absent entry is the normal shape of a finished turn and is read as idle. A
+// reported type this version does not recognize is not read as idle either: it becomes
+// unknown, which never settles a turn. Message history never decides the status: an
+// assistant message without time.completed is left behind by a restart, an OOM or an abort
+// and is estimated through inference_active alone.
+function sessionStatus(reported: string | undefined): AgentSnapshot["status"] {
+  if (reported === undefined) return "idle";
   return reported === "idle" || reported === "busy" || reported === "retry"
     ? reported
-    : inferenceActive
-      ? "busy"
-      : "unknown";
+    : "unknown";
 }
 
 function parseJsonText(text: string): unknown {
