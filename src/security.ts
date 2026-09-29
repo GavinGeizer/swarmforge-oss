@@ -1,4 +1,5 @@
 import type { Coordinator } from "./coordinator";
+import { excerptLimit } from "./domain";
 export class Redactor {
   constructor(readonly secrets: () => string[]) {}
   text(value: string) {
@@ -47,8 +48,84 @@ export function redactorFor(c: Coordinator) {
     ...c.store.all().map((w) => w.server_password),
   ]);
 }
-export function publicWorker(c: Coordinator, id: string) {
+function isSpace(code: number) {
+  return (
+    code === 32 ||
+    (code >= 9 && code <= 13) ||
+    code === 0xa0 ||
+    code === 0x1680 ||
+    (code >= 0x2000 && code <= 0x200a) ||
+    code === 0x202f ||
+    code === 0x205f ||
+    code === 0x3000
+  );
+}
+// Terminal-invisible code points: C0/C1 controls, bidi overrides, zero width and BOM.
+function isInvisible(code: number) {
+  return (
+    code < 32 ||
+    code === 127 ||
+    (code >= 128 && code <= 159) ||
+    code === 0xad ||
+    (code >= 0x200b && code <= 0x200f) ||
+    (code >= 0x2028 && code <= 0x202e) ||
+    (code >= 0x2060 && code <= 0x2064) ||
+    (code >= 0x2066 && code <= 0x206f) ||
+    code === 0xfeff
+  );
+}
+function escapeLength(chars: string[], index: number) {
+  const marker = chars[index + 1];
+  if (marker === "[") {
+    let end = index + 2;
+    while (end < chars.length && !/[@-~]/.test(chars[end]!)) end++;
+    return end < chars.length ? end + 1 : chars.length;
+  }
+  if (marker === "]") {
+    let end = index + 2;
+    while (end < chars.length) {
+      if (chars[end] === "\u0007") return end + 1;
+      if (chars[end] === "\u001b" && chars[end + 1] === "\\") return end + 2;
+      end++;
+    }
+    return chars.length;
+  }
+  return Math.min(chars.length, index + 2);
+}
+// Model output is untrusted: redact before trimming so a secret split by truncation is never partially revealed.
+export function excerptText(value: string, redact: (text: string) => string) {
+  const chars = [...redact(value)];
+  let out = "";
+  for (let index = 0; index < chars.length; ) {
+    const code = chars[index]!.codePointAt(0)!;
+    if (code === 27) {
+      const end = escapeLength(chars, index);
+      out += " ";
+      index = end;
+      continue;
+    }
+    out += isSpace(code) ? " " : isInvisible(code) ? "" : chars[index];
+    index++;
+  }
+  const clean = out.replace(/\s+/g, " ").trim();
+  if (!clean) return "";
+  const tail = [...clean];
+  if (tail.length <= excerptLimit) return clean;
+  const bounded = tail.slice(tail.length - excerptLimit);
+  let start = 0;
+  while (
+    start < bounded.length - 1 &&
+    start < 24 &&
+    !/\s/.test(bounded[start]!)
+  )
+    start++;
+  while (start < bounded.length - 1 && /\p{M}/u.test(bounded[start]!)) start++;
+  const body = bounded.slice(start).join("").trim();
+  return body ? `…${body}` : "";
+}
+export function publicWorker(c: Coordinator, id: string, detail = false) {
   const w = c.store.get(id);
+  const excerpt = detail ? c.excerpt(id) : null;
   return {
     worker_id: w.worker_id,
     team_id: w.team_id,
@@ -69,5 +146,13 @@ export function publicWorker(c: Coordinator, id: string) {
     pending_messages: c.store
       .dispatches(id)
       .filter((d) => ["pending", "sending", "sent"].includes(d.state)).length,
+    // Ephemeral, bounded and only on the single-worker view; never listed or persisted.
+    ...(excerpt
+      ? {
+          excerpt: excerpt.text,
+          excerpt_partial: excerpt.partial,
+          excerpt_at: excerpt.at,
+        }
+      : {}),
   };
 }

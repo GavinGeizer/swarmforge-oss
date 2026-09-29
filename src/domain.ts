@@ -172,11 +172,18 @@ export interface AgentMessage {
   result?: unknown;
   error?: string;
   model?: string;
+  text?: string;
   input: number;
   output: number;
   reasoning: number;
   cache_read: number;
   cache_write: number;
+}
+export const excerptLimit = 180;
+export interface ResponseExcerpt {
+  text: string;
+  at: number;
+  partial: boolean;
 }
 export interface AgentSnapshot {
   status: "idle" | "busy" | "retry";

@@ -19,6 +19,9 @@ export interface WorkerDetail {
     vm_id?: string | null;
     opencode_session_id?: string | null;
     pending_messages?: number;
+    excerpt?: string;
+    excerpt_partial?: boolean;
+    excerpt_at?: number;
   };
   result: { status?: string; summary?: string; warnings?: string[] } | null;
   events: { id: number; type: string; at: number; data: string }[];

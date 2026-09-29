@@ -136,6 +136,56 @@ test("worker text cannot inject terminal control sequences", () => {
   expect(view).not.toContain("\u001b");
 });
 
+test("focused worker detail shows the live response excerpt as one partial fresh line", () => {
+  const view = renderWorkerDetail(
+    {
+      worker: {
+        ...workers[0],
+        vm_id: "vm-1",
+        opencode_session_id: "ses-1",
+        pending_messages: 0,
+        excerpt:
+          "…rewriting renderWorkerDetail\u001b[31m now\u001b[0m with a bounded tail",
+        excerpt_partial: true,
+        excerpt_at: now - 12_000,
+      },
+      result: null,
+      events: [],
+      serviceLog: null,
+    },
+    { now, width: 120 },
+  );
+  expect(view).toContain("RESPONSE  partial · 12s ago");
+  expect(view).toContain(
+    "rewriting renderWorkerDetail now with a bounded tail",
+  );
+  expect(view).not.toContain("\u001b");
+  expect(
+    view.split("\n").filter((line) => line.includes("rewriting")),
+  ).toHaveLength(1);
+  expect(view).toContain("No result yet");
+});
+
+test("completed focus shows the durable result summary and no stale excerpt", () => {
+  const view = renderWorkerDetail(
+    {
+      worker: {
+        ...workers[2],
+        excerpt: "stale live text from an earlier turn",
+        excerpt_partial: true,
+        excerpt_at: now - 4_000,
+      },
+      result: { status: "completed", summary: "Updated API pagination" },
+      events: [],
+      serviceLog: null,
+    },
+    { now, width: 120 },
+  );
+  expect(view).not.toContain("RESPONSE");
+  expect(view).not.toContain("stale live text");
+  expect(view).toContain("Updated API pagination");
+});
+
 test("selection reveals workers beyond the first overview page", () => {
   const many = Array.from({ length: 10 }, (_, index) => ({
     ...workers[0]!,

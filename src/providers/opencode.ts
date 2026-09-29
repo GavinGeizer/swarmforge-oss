@@ -127,23 +127,21 @@ export class OpenCodeAgent implements CodingAgent {
       page = older.data;
       all.unshift(...page);
     }
-    const mapped = all.map(({ info, parts }) =>
-      info.role === "assistant"
+    const mapped = all.map(({ info, parts }) => {
+      const text = parts
+        .filter((part) => part.type === "text")
+        .map((part) => part.text)
+        .join("\n");
+      return info.role === "assistant"
         ? {
             id: info.id,
             parent_id: info.parentID,
             role: info.role,
             completed: !!info.time.completed,
-            result:
-              info.structured ??
-              parseJsonText(
-                parts
-                  .filter((part) => part.type === "text")
-                  .map((part) => part.text)
-                  .join("\n"),
-              ),
+            result: info.structured ?? parseJsonText(text),
             error: info.error?.name,
             model: info.modelID,
+            text: tailText(text),
             input: info.tokens.input,
             output: info.tokens.output,
             reasoning: info.tokens.reasoning,
@@ -159,8 +157,8 @@ export class OpenCodeAgent implements CodingAgent {
             reasoning: 0,
             cache_read: 0,
             cache_write: 0,
-          },
-    );
+          };
+    });
     return {
       status: status.data?.[w.opencode_session_id]?.type ?? "idle",
       messages: mapped,
@@ -184,4 +182,11 @@ function parseJsonText(text: string): unknown {
   } catch {
     return undefined;
   }
+}
+
+// Assistant text is unbounded; keep only its tail, on code point boundaries, for the live excerpt.
+function tailText(text: string, limit = 4096) {
+  const chars = [...text];
+  if (chars.length <= limit) return text;
+  return chars.slice(chars.length - limit).join("");
 }

@@ -32,6 +32,7 @@ const activeStates = new Set([
   "recovery_required",
 ]);
 const recentStates = new Set(["completed", "failed", "cancelled", "destroyed"]);
+const settledStates = new Set([...recentStates, "recovery_required"]);
 
 export function groupWorkers(workers: WorkerSummary[]) {
   return {
@@ -229,6 +230,16 @@ export function renderWorkerDetail(
   if (worker.opencode_session_id)
     lines.push(`Session  ${worker.opencode_session_id}`);
   if (worker.error) lines.push("", `ERROR  ${worker.error}`);
+  if (worker.excerpt && !settledStates.has(worker.state)) {
+    const age = worker.excerpt_at
+      ? elapsed(now - worker.excerpt_at)
+      : "unknown";
+    lines.push(
+      "",
+      `RESPONSE  ${worker.excerpt_partial ? "partial" : "latest reply"} · ${age} ago`,
+      `  ${worker.excerpt}`,
+    );
+  }
   lines.push("", "RESULT", result?.summary ?? "  No result yet");
   if (result?.warnings?.length)
     for (const warning of result.warnings.slice(0, 3))
