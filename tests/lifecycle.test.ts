@@ -360,3 +360,166 @@ test("reconciliation discovers a late-created VM even if destroy previously saw 
   expect(h.store.get(w.worker_id).vm_id).toBeTruthy();
   h.store.close();
 });
+
+// A guest deleted while the coordinator stops it: the first stop attempt already reports
+// it gone and every later probe agrees, as the provider does for a missing VM. The
+// returned counter records persistence inspections the coordinator attempted.
+function vanishDuringStop(h: ReturnType<typeof harness>) {
+  const exec = h.provider.exec.bind(h.provider);
+  const missing = (id: string) => {
+    h.provider.vms.delete(id);
+    return new Error("VM not found");
+  };
+  const stop = { checks: 0 };
+  h.provider.exec = async (id, command) => {
+    if (command.includes("SWARMFORGE_GIT_CHECK")) stop.checks++;
+    if (command.includes("systemctl stop")) throw missing(id);
+    if (!h.provider.vms.has(id)) throw missing(id);
+    return exec(id, command);
+  };
+  h.provider.pauseWorker = async (id) => {
+    if (h.provider.vms.has(id)) throw new Error("pause unavailable");
+    throw missing(id);
+  };
+  return stop;
+}
+
+test("deadline failure settles when the VM vanished between abort and stop", async () => {
+  const h = harness();
+  const w = h.coordinator.spawn(task);
+  await runToRunning(h, w.worker_id);
+  const vm = h.store.get(w.worker_id).vm_id!;
+  const stop = vanishDuringStop(h);
+  h.store.patch(w.worker_id, { deadline_at: Date.now() - 1 });
+  await h.coordinator.tick();
+  const failed = h.store.get(w.worker_id);
+  // Generation is provably stopped, but nothing can verify persistence on a lost guest.
+  expect(failed.state).toBe("recovery_required");
+  expect(failed.intent).toBeNull();
+  expect(failed.deadline_at).toBeNull();
+  expect(h.store.dispatch(w.worker_id)).toBeUndefined();
+  expect(h.provider.vms.has(vm)).toBe(false);
+  // A confirmed-absent guest is quiesced, so persistence is still inspected once.
+  expect(stop.checks).toBe(1);
+  // A settled failure is never retried on later passes.
+  await h.coordinator.tick();
+  expect(h.store.get(w.worker_id).state).toBe("recovery_required");
+  h.store.close();
+});
+
+test("cancel settles when the VM vanished while execution was being stopped", async () => {
+  const h = harness();
+  const w = h.coordinator.spawn(task);
+  await runToRunning(h, w.worker_id);
+  vanishDuringStop(h);
+  await h.coordinator.control(w.worker_id, "cancel");
+  const cancelled = h.store.get(w.worker_id);
+  expect(cancelled.state).toBe("cancelled");
+  expect(cancelled.intent).toBeNull();
+  expect(h.store.dispatch(w.worker_id)).toBeUndefined();
+  await h.coordinator.tick();
+  expect(h.store.get(w.worker_id).state).toBe("cancelled");
+  h.store.close();
+});
+
+test("destroy settles and clears its intent when the VM vanishes during quiesce", async () => {
+  const h = harness();
+  const w = h.coordinator.spawn(task);
+  await runToRunning(h, w.worker_id);
+  vanishDuringStop(h);
+  await h.coordinator.control(w.worker_id, "destroy");
+  const stopped = h.store.get(w.worker_id);
+  expect(stopped.state).toBe("recovery_required");
+  expect(stopped.intent).toBeNull();
+  expect(stopped.deadline_at).toBeNull();
+  // Without a cleared intent the destroy would be replayed on every pass, forever.
+  await h.coordinator.tick();
+  expect(h.store.get(w.worker_id).intent).toBeNull();
+  h.store.close();
+});
+
+test("an ambiguous live VM that cannot be stopped is never treated as quiesced", async () => {
+  const h = harness();
+  const w = h.coordinator.spawn(task);
+  await runToRunning(h, w.worker_id);
+  const vm = h.store.get(w.worker_id).vm_id!;
+  const exec = h.provider.exec.bind(h.provider);
+  h.provider.exec = async (id, command) =>
+    command.includes("systemctl stop")
+      ? { stdout: "", stderr: "still running", code: 1 }
+      : exec(id, command);
+  h.provider.pauseWorker = async () => {
+    throw new Error("pause unavailable");
+  };
+  h.store.patch(w.worker_id, { deadline_at: Date.now() - 1 });
+  await h.coordinator.tick();
+  const failed = h.store.get(w.worker_id);
+  expect(failed.state).toBe("recovery_required");
+  expect(failed.vm_id).toBe(vm);
+  expect(h.provider.vms.has(vm)).toBe(true);
+  h.store.close();
+});
+
+test("a message sent while a failure is in flight is rejected instead of acknowledged and dropped", async () => {
+  const h = harness();
+  const w = h.coordinator.spawn(task);
+  await runToRunning(h, w.worker_id);
+  let release: () => void = () => {};
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let entered: () => void = () => {};
+  const inside = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  const abort = h.agent.abort.bind(h.agent);
+  h.agent.abort = async (worker) => {
+    entered();
+    await gate;
+    await abort(worker);
+  };
+  h.store.patch(w.worker_id, { deadline_at: Date.now() - 1 });
+  const failing = h.coordinator.tick();
+  await inside;
+  const queued = h.store.dispatches(w.worker_id).length;
+  // The failure started first and cancels every dispatch: a message may not be
+  // acknowledged with "queued" and then silently removed by it.
+  expect(() => h.coordinator.message(w.worker_id, "during failure")).toThrow(
+    "lifecycle operation in progress",
+  );
+  expect(h.store.dispatches(w.worker_id)).toHaveLength(queued);
+  release();
+  await failing;
+  expect(h.store.get(w.worker_id).state).toBe("failed");
+  expect(h.store.dispatch(w.worker_id)).toBeUndefined();
+  h.store.close();
+});
+
+test("a message acknowledged before a later cancel is ordered before that cancel", async () => {
+  const h = harness();
+  const w = h.coordinator.spawn(task);
+  await runToRunning(h, w.worker_id);
+  const accepted = h.coordinator.message(w.worker_id, "before cancel");
+  expect(accepted.delivery).toBe("queued");
+  await h.coordinator.control(w.worker_id, "cancel");
+  const dropped = h.store
+    .dispatches(w.worker_id)
+    .find((d) => d.run_id === accepted.run_id);
+  expect(dropped?.state).toBe("cancelled");
+  expect(h.store.get(w.worker_id).state).toBe("cancelled");
+  h.store.close();
+});
+
+test("a message is accepted again once the failed lifecycle operation has settled", async () => {
+  const h = harness();
+  const w = h.coordinator.spawn(task);
+  await runToRunning(h, w.worker_id);
+  h.provider.dirty = true;
+  h.store.patch(w.worker_id, { deadline_at: Date.now() - 1 });
+  await h.coordinator.tick();
+  expect(h.store.get(w.worker_id).state).toBe("recovery_required");
+  const accepted = h.coordinator.message(w.worker_id, "after failure");
+  expect(accepted.delivery).toBe("queued");
+  expect(h.store.get(w.worker_id).state).toBe("booting");
+  h.store.close();
+});

@@ -21,6 +21,7 @@ import { excerptText, redactorFor } from "./security";
 import type { Store } from "./store";
 export class Coordinator {
   private locks = new Map<string, Promise<void>>();
+  private tearingDown = new Map<string, number>();
   private timer: ReturnType<typeof setInterval> | undefined;
   private ticking = false;
   private stopped = false;
@@ -178,6 +179,13 @@ export class Coordinator {
   }
   private queueMessage(id: string, message: string) {
     const w = this.store.get(id);
+    // A teardown that started earlier cancels every dispatch it can see. Refusing here
+    // keeps send_worker_message linearized with it: no run is ever acknowledged as
+    // "queued" and then silently removed by an operation already in flight.
+    if (this.tearingDown.has(id))
+      throw new Error(
+        "Worker lifecycle operation in progress; retry the message",
+      );
     if (
       w.state === "destroyed" ||
       w.intent === "destroy" ||
@@ -653,6 +661,9 @@ export class Coordinator {
       );
     } catch {}
   }
+  // Returns true only when OpenCode generation is provably over: the service confirmed
+  // itself stopped, or the guest is confirmed gone. A refused stop and any ambiguous live
+  // VM return false, so callers retain the environment for inspection.
   private async quiesce(w: Worker): Promise<boolean> {
     if (!w.vm_id) return true;
     try {
@@ -667,30 +678,55 @@ export class Coordinator {
       );
       if (stopped.code === 0) return true;
     } catch {}
-    // A successful VM pause also stops token generation, but Git inspection must not wake it.
-    await this.bounded(this.provider.pauseWorker(w.vm_id));
-    return false;
+    try {
+      // A successful VM pause also stops token generation, but Git inspection must not wake it.
+      await this.bounded(this.provider.pauseWorker(w.vm_id));
+      return false;
+    } catch {}
+    // Stopping races with the guest being deleted or a provider outage. Only a confirmed
+    // absence settles the worker; a probe that fails or still finds the VM stays unsafe.
+    const probe = await this.bounded(this.provider.getWorker(w.vm_id)).catch(
+      () => undefined,
+    );
+    return probe === null;
+  }
+  // Teardown cancels every queued dispatch, so the worker is held for the whole window,
+  // provider round-trips included, and send_worker_message rejects instead of racing it.
+  private async teardown<T>(id: string, fn: () => Promise<T>): Promise<T> {
+    this.tearingDown.set(id, (this.tearingDown.get(id) ?? 0) + 1);
+    try {
+      return await fn();
+    } finally {
+      const remaining = (this.tearingDown.get(id) ?? 1) - 1;
+      if (remaining > 0) this.tearingDown.set(id, remaining);
+      else this.tearingDown.delete(id);
+    }
   }
   private async fail(w: Worker, reason: string) {
-    this.inference.delete(w.worker_id);
-    this.excerpts.delete(w.worker_id);
-    const stopped = await this.quiesce(w);
-    const safety = !stopped
-      ? { safe: false, reason: "VM paused after OpenCode stop failure" }
-      : await this.bounded(
-          inspectPersistence(
-            this.provider,
-            this.config,
-            w,
-            this.store.result(w.worker_id),
-          ),
-        ).catch(() => ({ safe: false, reason: "Persistence check timed out" }));
-    this.store.cancelDispatches(w.worker_id);
-    this.store.transition(
-      w.worker_id,
-      w.vm_id && !safety.safe ? "recovery_required" : "failed",
-      { error: reason, completed_at: Date.now(), deadline_at: null },
-    );
+    await this.teardown(w.worker_id, async () => {
+      this.inference.delete(w.worker_id);
+      this.excerpts.delete(w.worker_id);
+      const stopped = await this.quiesce(w);
+      const safety = !stopped
+        ? { safe: false, reason: "VM paused after OpenCode stop failure" }
+        : await this.bounded(
+            inspectPersistence(
+              this.provider,
+              this.config,
+              w,
+              this.store.result(w.worker_id),
+            ),
+          ).catch(() => ({
+            safe: false,
+            reason: "Persistence check timed out",
+          }));
+      this.store.cancelDispatches(w.worker_id);
+      this.store.transition(
+        w.worker_id,
+        w.vm_id && !safety.safe ? "recovery_required" : "failed",
+        { error: reason, completed_at: Date.now(), deadline_at: null },
+      );
+    });
   }
   async control(
     id: string,
@@ -752,80 +788,84 @@ export class Coordinator {
       return;
     }
     if (w.intent === "cancel") {
-      if (w.vm_id) {
-        if (w.state === "paused")
-          await this.bounded(this.provider.resumeWorker(w.vm_id));
-        await this.quiesce(w);
-      }
-      this.inference.delete(id);
-      this.excerpts.delete(id);
-      this.store.cancelDispatches(id);
-      this.store.transition(id, "cancelled", {
-        deadline_at: null,
-        completed_at: Date.now(),
-        intent: null,
+      await this.teardown(id, async () => {
+        if (w.vm_id) {
+          if (w.state === "paused")
+            await this.bounded(this.provider.resumeWorker(w.vm_id));
+          await this.quiesce(w);
+        }
+        this.inference.delete(id);
+        this.excerpts.delete(id);
+        this.store.cancelDispatches(id);
+        this.store.transition(id, "cancelled", {
+          deadline_at: null,
+          completed_at: Date.now(),
+          intent: null,
+        });
       });
       return;
     }
     if (w.intent === "destroy") {
-      if (w.vm_id) {
-        if (!w.force_destroy) {
-          const vm = await this.bounded(this.provider.getWorker(w.vm_id));
-          if (vm) {
-            if (["paused", "stopped"].includes(vm.state))
-              await this.bounded(this.provider.resumeWorker(w.vm_id));
-            if (!(await this.quiesce(w))) {
-              this.store.transition(id, "recovery_required", {
-                intent: null,
-                deadline_at: null,
-                error:
-                  "VM paused because OpenCode could not be stopped; inspect before destruction",
-              });
-              return;
-            }
-            if (
-              this.config.SWARMFORGE_GIT_PUSH_MODE !== "none" &&
-              (this.store.dispatch(id) ||
-                !this.store.result(id)?.git?.persisted)
-            ) {
-              this.store.cancelDispatches(id);
-              this.store.transition(id, "recovery_required", {
-                intent: null,
-                deadline_at: null,
-                error:
-                  "No verified branch handoff for this worker; inspect before destruction",
-              });
-              return;
-            }
-            const safety = await this.bounded(
-              inspectPersistence(
-                this.provider,
-                this.config,
-                w,
-                this.store.result(id),
-              ),
-            );
-            if (!safety.safe) {
-              this.store.cancelDispatches(id);
-              this.store.transition(id, "recovery_required", {
-                intent: null,
-                deadline_at: null,
-                error: safety.reason,
-              });
-              return;
+      await this.teardown(id, async () => {
+        if (w.vm_id) {
+          if (!w.force_destroy) {
+            const vm = await this.bounded(this.provider.getWorker(w.vm_id));
+            if (vm) {
+              if (["paused", "stopped"].includes(vm.state))
+                await this.bounded(this.provider.resumeWorker(w.vm_id));
+              if (!(await this.quiesce(w))) {
+                this.store.transition(id, "recovery_required", {
+                  intent: null,
+                  deadline_at: null,
+                  error:
+                    "VM paused because OpenCode could not be stopped; inspect before destruction",
+                });
+                return;
+              }
+              if (
+                this.config.SWARMFORGE_GIT_PUSH_MODE !== "none" &&
+                (this.store.dispatch(id) ||
+                  !this.store.result(id)?.git?.persisted)
+              ) {
+                this.store.cancelDispatches(id);
+                this.store.transition(id, "recovery_required", {
+                  intent: null,
+                  deadline_at: null,
+                  error:
+                    "No verified branch handoff for this worker; inspect before destruction",
+                });
+                return;
+              }
+              const safety = await this.bounded(
+                inspectPersistence(
+                  this.provider,
+                  this.config,
+                  w,
+                  this.store.result(id),
+                ),
+              );
+              if (!safety.safe) {
+                this.store.cancelDispatches(id);
+                this.store.transition(id, "recovery_required", {
+                  intent: null,
+                  deadline_at: null,
+                  error: safety.reason,
+                });
+                return;
+              }
             }
           }
+          await this.bounded(this.provider.destroyWorker(w.vm_id));
         }
-        await this.bounded(this.provider.destroyWorker(w.vm_id));
-      }
-      this.inference.delete(id);
-      this.excerpts.delete(id);
-      this.store.cancelDispatches(id);
-      this.store.transition(id, "destroyed", {
-        intent: null,
-        deadline_at: null,
-        completed_at: Date.now(),
-        error: null,
+        this.inference.delete(id);
+        this.excerpts.delete(id);
+        this.store.cancelDispatches(id);
+        this.store.transition(id, "destroyed", {
+          intent: null,
+          deadline_at: null,
+          completed_at: Date.now(),
+          error: null,
+        });
       });
     }
   }
