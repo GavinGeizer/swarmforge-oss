@@ -186,7 +186,12 @@ test("artifact directory listing rejects symlink roots", async () => {
   const h = harness();
   const w = h.coordinator.spawn(task);
   await runToRunning(h, w.worker_id);
-  h.provider.stat = async () => ({ size: 0, isFile: false, isSymlink: true });
+  h.provider.stat = async () => ({
+    size: 0,
+    isFile: false,
+    isSymlink: true,
+    modified: "",
+  });
   const files = new WorkerFiles(h.coordinator);
   await expect(files.artifacts(w.worker_id)).rejects.toThrow();
   h.store.close();

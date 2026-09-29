@@ -1,17 +1,25 @@
 import { readFileSync } from "node:fs";
 import { Freestyle, FreestyleApiError, type VmData } from "freestyle";
 import type { Config } from "../config";
-import { gitTree, workerEnvironment } from "../config";
-import type { VmInfo, Worker, WorkerProvider } from "../domain";
+import { gitTree, sshTree, workerEnvironment } from "../config";
+import type {
+  FileInfo,
+  Prepared,
+  VmInfo,
+  Worker,
+  WorkerProvider,
+} from "../domain";
 import {
   BundlePrerequisiteError,
   branchFor,
   bundleCommand,
+  GitHandoffError,
   githubInstallationToken,
   maxBundleBytes,
   publishBundle,
   quote,
 } from "../git-handoff";
+import { inspectWorkspace, workspaceDigest } from "../safety";
 import { openCodeConfig } from "./opencode";
 
 export { quote };
@@ -117,7 +125,7 @@ export class FreestyleProvider implements WorkerProvider {
     }
     return list;
   }
-  async prepare(w: Worker) {
+  async prepare(w: Worker): Promise<Prepared> {
     if (!w.vm_id) throw new Error("VM missing");
     const vm = this.client.vms.ref(w.vm_id);
     const workspace = this.config.SWARMFORGE_WORKSPACE;
@@ -131,10 +139,11 @@ export class FreestyleProvider implements WorkerProvider {
         "Snapshot must provide opencode, python3, git, systemd and writable workspace",
       );
     const tree = gitTree(this.config.SWARMFORGE_GIT_TREE);
+    let git_base: string | null = null;
     if (tree.clone) {
       const repository = `${workspace}/repo`;
       const staging = `${workspace}/.swarmforge/repo-clone-${w.worker_id}`;
-      const clone = await this.withGitAuth(w.vm_id, "read", async (auth) =>
+      const clone = await this.withReadAuth(w.vm_id, async (auth) =>
         vm.exec({
           command: `if [ -d ${quote(`${repository}/.git`)} ]; then exit 0; fi; if [ -e ${quote(repository)} ]; then echo 'Repository destination already exists and is not a Git checkout' >&2; exit 1; fi; rm -rf ${quote(staging)} && ${auth} git clone -- ${quote(tree.target)} ${quote(staging)} && mv ${quote(staging)} ${quote(repository)}`,
           linuxUser: "root",
@@ -148,13 +157,20 @@ export class FreestyleProvider implements WorkerProvider {
       if (this.config.SWARMFORGE_GIT_PUSH_MODE !== "none") {
         const branch = branchFor(w);
         const baseFile = `${workspace}/.swarmforge/git-base`;
+        // The branch point is reported once, before the coding agent exists in the VM,
+        // and stored by the control plane; the file is only a convenience for retries.
         const checkout = await vm.exec({
-          command: `set -eu; cd ${quote(repository)}; if [ -f ${quote(baseFile)} ]; then test "$(git branch --show-current)" = ${quote(branch)}; else base=$(git rev-parse HEAD); if git show-ref --verify --quiet ${quote(`refs/heads/${branch}`)}; then git checkout ${quote(branch)}; else git checkout -b ${quote(branch)}; fi; printf '%s\n' "$base" > ${quote(baseFile)}; fi; git config user.name ${quote(this.config.SWARMFORGE_GIT_AUTHOR_NAME)}; git config user.email ${quote(this.config.SWARMFORGE_GIT_AUTHOR_EMAIL)}`,
+          command: `set -eu; cd ${quote(repository)}; if [ -f ${quote(baseFile)} ]; then test "$(git branch --show-current)" = ${quote(branch)}; else base=$(git rev-parse HEAD); if git show-ref --verify --quiet ${quote(`refs/heads/${branch}`)}; then git checkout ${quote(branch)}; else git checkout -b ${quote(branch)}; fi; printf '%s\n' "$base" > ${quote(baseFile)}; fi; git config user.name ${quote(this.config.SWARMFORGE_GIT_AUTHOR_NAME)}; git config user.email ${quote(this.config.SWARMFORGE_GIT_AUTHOR_EMAIL)}; cat ${quote(baseFile)}`,
           linuxUser: "root",
           timeoutMs: 30000,
         });
         if (checkout.statusCode !== 0)
           throw new Error("Failed to prepare worker Git branch");
+        const reported =
+          (checkout.stdout ?? "").trim().split("\n").at(-1) ?? "";
+        if (!/^[0-9a-f]{40,64}$/.test(reported))
+          throw new Error("Worker Git branch point could not be determined");
+        git_base = reported;
       }
     }
     const env = {
@@ -183,6 +199,10 @@ export class FreestyleProvider implements WorkerProvider {
       `[Unit]\nDescription=SwarmForge OpenCode worker\nAfter=network-online.target\n[Service]\nType=simple\nExecStart=/bin/bash /opt/swarmforge/start.sh\nRestart=on-failure\nRestartSec=2\nStandardOutput=journal\nStandardError=journal\nLogRateLimitIntervalSec=30s\nLogRateLimitBurst=200\n[Install]\nWantedBy=multi-user.target\n`,
     );
     // Journald owns log rotation; avoid an unbounded redirected stdout file.
+    let workspace_digest: string | null = null;
+    if (!w.workspace_digest)
+      // Recorded through the file API before the coding agent can touch the workspace.
+      workspace_digest = await this.digest(vm, w.vm_id, [workspace]);
     const start = await vm.exec({
       command:
         "systemctl daemon-reload && systemctl enable --now swarmforge-opencode.service",
@@ -191,15 +211,57 @@ export class FreestyleProvider implements WorkerProvider {
     });
     if (start.statusCode !== 0)
       throw new Error("OpenCode service failed to start");
-    return `https://${this.domain(w)}`;
+    return {
+      endpoint: `https://${this.domain(w)}`,
+      git_base,
+      workspace_digest,
+    };
   }
-  private async withGitAuth<T>(
+  private async digest(
+    vm: ReturnType<Freestyle["vms"]["ref"]>,
     id: string,
-    scope: "read" | "write",
+    roots: string[],
+  ) {
+    try {
+      return workspaceDigest(
+        await inspectWorkspace(
+          {
+            listFiles: async (_id: string, path: string) => vm.fs.readDir(path),
+            stat: async (_id: string, path: string) => {
+              const stat = await vm.fs.stat(path);
+              return {
+                size: stat.size,
+                isFile: stat.isFile,
+                isSymlink: stat.isSymlink,
+                modified: stat.modified ?? "",
+              };
+            },
+          },
+          id,
+          roots,
+        ),
+        roots,
+      );
+    } catch {
+      // A workspace too large to walk simply leaves the comparison to the published tree.
+      return null;
+    }
+  }
+  // The only credential the guest may ever see is read-only, and only for the clone
+  // that runs before the coding agent starts. The write key is used on the host alone.
+  private async withReadAuth<T>(
+    id: string,
     action: (prefix: string) => Promise<T>,
   ): Promise<T> {
     const mode = this.config.SWARMFORGE_GIT_PUSH_MODE;
     if (mode === "none") return action("");
+    const target = gitTree(this.config.SWARMFORGE_GIT_TREE).target;
+    const ssh = sshTree(target);
+    if (mode === "ssh" && !ssh) return action("");
+    if (mode === "ssh" && !this.config.SWARMFORGE_GIT_SSH_CLONE_KEY_PATH)
+      throw new Error(
+        "Cloning an SSH tree requires SWARMFORGE_GIT_SSH_CLONE_KEY_PATH; the write key never enters the worker",
+      );
     const vm = this.client.vms.ref(id);
     const paths = ["/opt/swarmforge/git-auth", "/opt/swarmforge/git-secret"];
     let value: T | undefined;
@@ -210,7 +272,7 @@ export class FreestyleProvider implements WorkerProvider {
         const token = await githubInstallationToken(
           this.config,
           this.fetcher,
-          scope,
+          "read",
         );
         await vm.fs.writeTextFile(paths[1]!, token, { mode: 0o600 });
         await vm.fs.writeTextFile(
@@ -223,18 +285,18 @@ export class FreestyleProvider implements WorkerProvider {
         );
       } else {
         const key = readFileSync(
-          this.config.SWARMFORGE_GIT_SSH_KEY_PATH!,
+          this.config.SWARMFORGE_GIT_SSH_CLONE_KEY_PATH!,
           "utf8",
         );
         const hosts = readFileSync(
-          this.config.SWARMFORGE_GIT_SSH_KNOWN_HOSTS_PATH!,
+          this.config.SWARMFORGE_GIT_SSH_CLONE_KNOWN_HOSTS_PATH!,
           "utf8",
         );
         await vm.fs.writeTextFile(paths[1]!, key, { mode: 0o600 });
         await vm.fs.writeTextFile(paths[0]!, hosts, { mode: 0o600 });
-        const ssh = `ssh -i ${paths[1]} -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=${paths[0]}`;
+        const options = `ssh -i ${paths[1]} -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=${paths[0]}`;
         value = await action(
-          `env GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND=${quote(ssh)}`,
+          `env GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND=${quote(options)}`,
         );
       }
     } catch (error) {
@@ -297,22 +359,29 @@ export class FreestyleProvider implements WorkerProvider {
     const vm = this.client.vms.ref(w.vm_id);
     const repo = `${this.config.SWARMFORGE_WORKSPACE}/repo`;
     const branch = branchFor(w);
+    // The branch point comes from the control plane, never from the guest.
+    if (!w.git_base) throw new Error("Git handoff base was not recorded");
     const path = `${this.config.SWARMFORGE_WORKSPACE}/.swarmforge/handoff-${w.worker_id}.bundle`;
     const target =
       this.config.SWARMFORGE_GIT_PUSH_MODE === "github-app"
         ? this.config.SWARMFORGE_GIT_TREE
         : this.config.SWARMFORGE_GIT_PUSH_URL!;
     const attempt = async (self_contained: boolean) => {
-      const handoff = await this.handoff(
-        vm,
-        repo,
-        branch,
-        path,
-        self_contained,
-      );
+      const bundle = await this.handoff(vm, repo, branch, path, self_contained);
+      if (bundle.base !== w.git_base)
+        throw new GitHandoffError(
+          "Git handoff base does not match the base recorded at prepare",
+        );
       return publishBundle(
         this.config,
-        { target, branch, ...handoff, self_contained },
+        {
+          target,
+          branch,
+          base: w.git_base,
+          commit: bundle.commit,
+          bundle: bundle.bundle,
+          self_contained,
+        },
         this.fetcher,
       );
     };
@@ -367,10 +436,17 @@ export class FreestyleProvider implements WorkerProvider {
   writeFile(id: string, path: string, content: string) {
     return this.client.vms.ref(id).fs.writeTextFile(path, content);
   }
-  listFiles(id: string, path: string) {
-    return this.client.vms.ref(id).fs.readDir(path);
+  async listFiles(id: string, path: string): Promise<FileInfo[]> {
+    const entries = await this.client.vms.ref(id).fs.readDir(path);
+    return entries.map((e) => ({ name: e.name, kind: e.kind }));
   }
-  stat(id: string, path: string) {
-    return this.client.vms.ref(id).fs.stat(path);
+  async stat(id: string, path: string) {
+    const stat = await this.client.vms.ref(id).fs.stat(path);
+    return {
+      size: stat.size,
+      isFile: stat.isFile,
+      isSymlink: stat.isSymlink,
+      modified: stat.modified ?? "",
+    };
   }
 }

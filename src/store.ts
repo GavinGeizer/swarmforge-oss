@@ -91,6 +91,8 @@ export class Store {
         state: "queued",
         vm_id: null,
         vm_missing: false,
+        git_base: null,
+        workspace_digest: null,
         opencode_session_id: null,
         endpoint: null,
         server_password: randomUUID() + randomUUID(),

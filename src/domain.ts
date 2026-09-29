@@ -85,6 +85,10 @@ export interface Worker {
   request_fingerprint: string;
   vm_id: string | null;
   vm_missing: boolean;
+  // Recorded by the control plane at prepare: the branch point and the workspace
+  // baseline. A worker can edit neither, so neither can justify destroying it.
+  git_base: string | null;
+  workspace_digest: string | null;
   opencode_session_id: string | null;
   endpoint: string | null;
   server_password: string;
@@ -170,11 +174,16 @@ export interface FileInfo {
   name: string;
   kind: string;
 }
+export interface Prepared {
+  endpoint: string;
+  git_base: string | null;
+  workspace_digest: string | null;
+}
 export interface WorkerProvider {
   createWorker(w: Worker): Promise<VmInfo>;
   getWorker(id: string): Promise<VmInfo | null>;
   listWorkers(): Promise<VmInfo[]>;
-  prepare(w: Worker): Promise<string>;
+  prepare(w: Worker): Promise<Prepared>;
   pushBranch(w: Worker): Promise<{
     branch: string;
     commit: string;
@@ -196,7 +205,12 @@ export interface WorkerProvider {
   stat(
     id: string,
     path: string,
-  ): Promise<{ size: number; isFile: boolean; isSymlink: boolean }>;
+  ): Promise<{
+    size: number;
+    isFile: boolean;
+    isSymlink: boolean;
+    modified: string;
+  }>;
 }
 export interface AgentMessage {
   id: string;

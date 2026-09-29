@@ -1,13 +1,151 @@
+import { createHash } from "node:crypto";
 import type { Config } from "./config";
-import type { Worker, WorkerProvider, WorkerResult } from "./domain";
-import { branchFor, quote } from "./git-handoff";
+import type { FileInfo, Worker, WorkerProvider, WorkerResult } from "./domain";
+import { branchFor, publishedTree, recordedTree } from "./git-handoff";
 
-// Local refs, remotes and reflogs are guest-writable, so they are never evidence that
-// work is durable: only a push the control plane performed and verified counts.
+export interface WorkspaceEntry {
+  size: number;
+  modified: string;
+  // A link is matched by presence; the file API cannot report a stable target length.
+  link?: boolean;
+}
+export interface WorkspaceFs {
+  listFiles(id: string, path: string): Promise<FileInfo[]>;
+  stat(
+    id: string,
+    path: string,
+  ): Promise<{
+    size: number;
+    isFile: boolean;
+    isSymlink: boolean;
+    modified: string;
+  }>;
+}
+export interface WorkspaceRoot {
+  root: string;
+  files: Map<string, WorkspaceEntry>;
+  // Repository directories below this root, as paths relative to it; "" is the root.
+  gitRoots: Set<string>;
+}
+export interface WorkspaceSnapshot {
+  roots: WorkspaceRoot[];
+  files: number;
+}
+const skipped = new Set([".git", ".swarmforge", "node_modules", ".cache"]);
+const walkLimits = { files: 5000, directories: 1000 };
+
+// Read through the control-plane file API only. Nothing in the guest resolves a command,
+// so PATH shadowing, a replaced `git` or a forged report cannot change the outcome.
+export async function inspectWorkspace(
+  fs: WorkspaceFs,
+  id: string,
+  roots: string[],
+): Promise<WorkspaceSnapshot> {
+  const snapshot: WorkspaceSnapshot = { roots: [], files: 0 };
+  for (const root of [...new Set(roots)].sort()) {
+    const files = new Map<string, WorkspaceEntry>();
+    const gitRoots = new Set<string>();
+    snapshot.roots.push({ root, files, gitRoots });
+    const queue: { path: string; relative: string }[] = [
+      { path: root, relative: "" },
+    ];
+    let directories = 0;
+    while (queue.length) {
+      if (++directories > walkLimits.directories)
+        throw new Error("more than 1000 directories");
+      const current = queue.shift()!;
+      for (const entry of await fs.listFiles(id, current.path)) {
+        if (
+          !entry?.name ||
+          entry.name === "." ||
+          entry.name === ".." ||
+          entry.name.includes("/") ||
+          entry.name.includes("\\") ||
+          entry.name.includes("\0")
+        )
+          throw new Error("unusable directory entry");
+        const path = `${current.path}/${entry.name}`;
+        const relative = current.relative
+          ? `${current.relative}/${entry.name}`
+          : entry.name;
+        const kind = entry.kind === "directory" ? "directory" : "unknown";
+        if (kind === "unknown") {
+          const stat = await fs.stat(id, path);
+          if (stat.isSymlink || stat.isFile) {
+            files.set(relative, {
+              size: stat.size,
+              modified: stat.modified,
+              ...(stat.isSymlink ? { link: true } : {}),
+            });
+            if (++snapshot.files > walkLimits.files)
+              throw new Error("more than 5000 files");
+            continue;
+          }
+        }
+        if (entry.name === ".git") {
+          gitRoots.add(current.relative);
+          continue;
+        }
+        if (skipped.has(entry.name)) continue;
+        queue.push({ path, relative });
+      }
+    }
+  }
+  return snapshot;
+}
+
+export function workspaceDigest(snapshot: WorkspaceSnapshot, roots?: string[]) {
+  const wanted = roots ? new Set(roots) : null;
+  const lines: string[] = [];
+  for (const { root, files } of snapshot.roots) {
+    if (wanted && !wanted.has(root)) continue;
+    for (const [path, entry] of files)
+      lines.push(
+        `${root}\0${path}\0${entry.size}\0${entry.modified.replace(/\0/g, "")}`,
+      );
+  }
+  lines.sort();
+  return createHash("sha256").update(lines.join("\n")).digest("hex");
+}
+
+// Only a push the control plane made and verified counts: local branches, remote-tracking
+// refs and reflogs are all guest-writable, so the guest never decides its own durability.
 function verifiedCommit(w: Worker, result: WorkerResult | null) {
   const git = result?.git;
   if (!git?.persisted || git.branch !== branchFor(w)) return null;
   return /^[0-9a-f]{40,64}$/.test(git.commit ?? "") ? git.commit! : null;
+}
+
+function differs(snapshot: WorkspaceSnapshot, expected: Map<string, number>) {
+  const issues: string[] = [];
+  for (const { files, gitRoots } of snapshot.roots) {
+    // A repository at the root subsumes any nested one; never compare a path twice.
+    const prefixes = gitRoots.has("") ? [""] : [...gitRoots].sort();
+    for (const path of files.keys())
+      if (!prefixes.some((p) => path.startsWith(p ? `${p}/` : "")))
+        issues.push(`untracked ${path}`);
+    for (const prefix of prefixes) {
+      const start = prefix ? `${prefix}/` : "";
+      const inRepo = new Map(
+        [...files]
+          .filter(([path]) => path.startsWith(start))
+          .map(([path, entry]) => [path.slice(start.length), entry]),
+      );
+      if (!inRepo.size) continue;
+      for (const [path, entry] of inRepo) {
+        const size = expected.get(path);
+        if (size === undefined) issues.push(`untracked ${path}`);
+        // -1 marks a size that is not comparable; the path is still required.
+        else if (size >= 0 && !entry.link && size !== entry.size)
+          issues.push(`modified ${path}`);
+      }
+      // Skipped directories are never walked, so their published files are not "deleted".
+      for (const path of expected.keys())
+        if (!inRepo.has(path) && !skipped.has(path.split("/")[0] ?? ""))
+          issues.push(`deleted ${path}`);
+    }
+  }
+  return issues;
 }
 
 export async function inspectPersistence(
@@ -17,72 +155,79 @@ export async function inspectPersistence(
   result: WorkerResult | null,
 ) {
   if (!w.vm_id) return { safe: true, reason: "no VM" };
-  const roots = [
-    c.SWARMFORGE_WORKSPACE,
-    ...(c.SWARMFORGE_GIT_TREE.startsWith("/") ? [c.SWARMFORGE_GIT_TREE] : []),
-    ...(result?.git?.workspace ? [result.git.workspace] : []),
+  // The tree is read on the host, so only VM locations can hold unpersisted work.
+  const reported = result?.git?.workspace;
+  const candidates = [
+    ...new Set([c.SWARMFORGE_WORKSPACE, ...(reported ? [reported] : [])]),
   ];
-  const anchor = verifiedCommit(w, result) ?? "";
-  const script = `# SWARMFORGE_GIT_CHECK
-import os, subprocess, json
-roots=json.loads(${JSON.stringify(JSON.stringify(roots))})
-anchor=${JSON.stringify(anchor)}
-facts={'clean':True,'stray':0,'unpushed':0,'repos':0,'notes':[]}
-repos=set()
-def git(path,*args):
- p=subprocess.run(['git','-C',path,*args],capture_output=True,text=True,timeout=15)
- return p.returncode,p.stdout
-for root in roots:
- if not os.path.isdir(root):
-  facts['clean']=False; facts['notes'].append('workspace unavailable'); continue
- code,top=git(root,'rev-parse','--show-toplevel')
- if code==0: repos.add(top.strip())
- else:
-  for path,dirs,files in os.walk(root,followlinks=False):
-   dirs[:]=[d for d in dirs if d not in ['.swarmforge','node_modules','.cache']]
-   if '.git' in dirs or '.git' in files:
-    repos.add(path); dirs[:]=[]; continue
-   if files: facts['stray']+=len(files)
-   if len(repos)+facts['stray']>200: break
-for repo in repos:
- facts['repos']+=1
- code,out=git(repo,'status','--porcelain','--untracked-files=all','--','.',':(exclude).swarmforge',':(exclude)**/.swarmforge/**')
- if code!=0 or out.strip():
-  facts['clean']=False; facts['notes'].append('dirty or unreadable Git workspace')
- code,head=git(repo,'rev-parse','--verify','--quiet','HEAD')
- if code!=0: continue
- args=['rev-list','--count','--all']+(['--not',anchor] if anchor else [])
- code,out=git(repo,*args)
- if code!=0:
-  facts['clean']=False; facts['notes'].append('unreadable Git history')
- else: facts['unpushed']+=int(out.strip() or 0)
-print(json.dumps(facts))`;
+  // A reported directory inside the workspace is already covered by its parent.
+  const roots = candidates.filter(
+    (root) =>
+      !candidates.some(
+        (other) => other !== root && root.startsWith(`${other}/`),
+      ),
+  );
+  let snapshot: WorkspaceSnapshot;
   try {
-    const r = await provider.exec(w.vm_id, `python3 -c ${quote(script)}`);
-    if (r.code !== 0) return { safe: false, reason: "Git safety check failed" };
-    const facts: unknown = JSON.parse(r.stdout);
-    const f = facts as Record<string, unknown> | null;
-    if (
-      !f ||
-      typeof f !== "object" ||
-      typeof f.clean !== "boolean" ||
-      !Array.isArray(f.notes) ||
-      ![f.stray, f.unpushed, f.repos].every((n) => Number.isSafeInteger(n))
-    )
-      throw new Error("invalid safety response");
-    const issues = [...new Set((f.notes as unknown[]).map(String))];
-    if ((f.stray as number) > 0) issues.push("files outside a Git repository");
-    if ((f.unpushed as number) > 0)
-      issues.push(
-        anchor
-          ? "commits not covered by the verified remote branch"
-          : "local commits are not verified by the control plane",
-      );
+    snapshot = await inspectWorkspace(provider, w.vm_id, roots);
+  } catch (error) {
     return {
-      safe: issues.length === 0,
-      reason: issues.join("; ") || "no obvious unpersisted work",
+      safe: false,
+      reason: `Unable to inspect the workspace: ${String(
+        (error as Error).message,
+      ).slice(0, 200)}`,
     };
-  } catch {
-    return { safe: false, reason: "Unable to verify persistence" };
   }
+  if (!snapshot.files) return { safe: true, reason: "no files to persist" };
+  // The baseline is a control-plane observation of the workspace before the worker ran.
+  if (
+    w.workspace_digest &&
+    workspaceDigest(snapshot, [c.SWARMFORGE_WORKSPACE]) === w.workspace_digest
+  )
+    return {
+      safe: true,
+      reason: "workspace unchanged since the worker was prepared",
+    };
+  if (!snapshot.roots.some((r) => r.gitRoots.size))
+    return { safe: false, reason: "files outside a Git repository" };
+  const verified = verifiedCommit(w, result);
+  const subject = verified
+    ? "the verified remote branch"
+    : "the recorded handoff base";
+  let expected: Map<string, number> | null = null;
+  try {
+    if (verified)
+      expected = await publishedTree(
+        c,
+        c.SWARMFORGE_GIT_PUSH_MODE === "github-app"
+          ? c.SWARMFORGE_GIT_TREE
+          : c.SWARMFORGE_GIT_PUSH_URL!,
+        branchFor(w),
+        verified,
+      );
+    else if (w.git_base)
+      expected = await recordedTree(c, c.SWARMFORGE_GIT_TREE, w.git_base);
+  } catch (error) {
+    return {
+      safe: false,
+      reason: `Unable to read ${subject}: ${String(
+        (error as Error).message,
+      ).slice(0, 200)}`,
+    };
+  }
+  if (!expected)
+    return {
+      safe: false,
+      reason: "local files are not covered by a verified handoff",
+    };
+  const issues = differs(snapshot, expected);
+  if (issues.length)
+    return {
+      safe: false,
+      reason:
+        `${issues.length} workspace file(s) differ from ${subject}: ${issues
+          .slice(0, 5)
+          .join(", ")}`.slice(0, 1000),
+    };
+  return { safe: true, reason: `workspace matches ${subject}` };
 }

@@ -47,6 +47,11 @@ const schema = z
     SWARMFORGE_GIT_PUSH_URL: z.string().min(1).max(2048).optional(),
     SWARMFORGE_GIT_SSH_KEY_PATH: z.string().startsWith("/").optional(),
     SWARMFORGE_GIT_SSH_KNOWN_HOSTS_PATH: z.string().startsWith("/").optional(),
+    SWARMFORGE_GIT_SSH_CLONE_KEY_PATH: z.string().startsWith("/").optional(),
+    SWARMFORGE_GIT_SSH_CLONE_KNOWN_HOSTS_PATH: z
+      .string()
+      .startsWith("/")
+      .optional(),
     SWARMFORGE_GITHUB_APP_ID: z.string().regex(/^\d+$/).optional(),
     SWARMFORGE_GITHUB_INSTALLATION_ID: z.string().regex(/^\d+$/).optional(),
     SWARMFORGE_GITHUB_PRIVATE_KEY_PATH: z.string().startsWith("/").optional(),
@@ -116,7 +121,29 @@ const schema = z
       required("SWARMFORGE_GIT_PUSH_URL");
       required("SWARMFORGE_GIT_SSH_KEY_PATH");
       required("SWARMFORGE_GIT_SSH_KNOWN_HOSTS_PATH");
+      // The write key is host-only, so a cloned SSH tree needs its own read-only key.
+      if (
+        sshTree(gitTree(v.SWARMFORGE_GIT_TREE).target) &&
+        (!v.SWARMFORGE_GIT_SSH_CLONE_KEY_PATH ||
+          !v.SWARMFORGE_GIT_SSH_CLONE_KNOWN_HOSTS_PATH)
+      )
+        ctx.addIssue({
+          code: "custom",
+          path: ["SWARMFORGE_GIT_SSH_CLONE_KEY_PATH"],
+          message:
+            "Required for the read-only SSH clone; the write key stays on the host",
+        });
     }
+    if (
+      !!v.SWARMFORGE_GIT_SSH_CLONE_KEY_PATH !==
+      !!v.SWARMFORGE_GIT_SSH_CLONE_KNOWN_HOSTS_PATH
+    )
+      ctx.addIssue({
+        code: "custom",
+        path: ["SWARMFORGE_GIT_SSH_CLONE_KNOWN_HOSTS_PATH"],
+        message:
+          "Must be configured together with SWARMFORGE_GIT_SSH_CLONE_KEY_PATH",
+      });
     if (
       !["127.0.0.1", "localhost", "::1"].includes(v.SWARMFORGE_HOST) &&
       !v.SWARMFORGE_API_TOKEN
@@ -153,6 +180,10 @@ export function gitTree(raw: string): { clone: boolean; target: string } {
   if (raw === "none") return { clone: false, target: "" };
   if (raw.startsWith("none:")) return { clone: false, target: raw.slice(5) };
   return { clone: true, target: raw };
+}
+// An SSH location needs a key, so cloning it requires the read-only key path.
+export function sshTree(raw: string): boolean {
+  return /^(?:ssh:\/\/|[^/\s@]+@[^/\s]+:)/.test(raw);
 }
 export function workerEnvironment(
   c: Config,

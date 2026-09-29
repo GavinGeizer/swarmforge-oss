@@ -4,6 +4,7 @@ import type {
   AgentSnapshot,
   CodingAgent,
   Dispatch,
+  Prepared,
   VmInfo,
   Worker,
   WorkerProvider,
@@ -23,7 +24,15 @@ export const config = loadConfig({
 export class FakeProvider implements WorkerProvider {
   vms = new Map<string, VmInfo>();
   files = new Map<string, string>();
+  directories = new Set<string>();
+  commands: string[] = [];
+  workspace = "/workspace";
+  // Recorded at prepare, like the control-plane baseline of a real workspace.
+  digest: string | null = null;
+  mtime = "2026-01-01T00:00:00Z";
+  gitBase: string | null = "b".repeat(40);
   failure = false;
+  // Reports one untracked file at the workspace root, as a working worker would leave.
   dirty = false;
   destroyFailure = false;
   pushFailure = false;
@@ -46,9 +55,13 @@ export class FakeProvider implements WorkerProvider {
   async listWorkers() {
     return [...this.vms.values()];
   }
-  async prepare(w: Worker) {
+  async prepare(w: Worker): Promise<Prepared> {
     if (this.failure) throw new Error("boot failure");
-    return `https://${w.vm_id}.example`;
+    return {
+      endpoint: `https://${w.vm_id}.example`,
+      git_base: this.gitBase,
+      workspace_digest: this.digest,
+    };
   }
   async pushBranch(w: Worker) {
     if (this.pushFailure) throw new Error("push failed");
@@ -71,18 +84,7 @@ export class FakeProvider implements WorkerProvider {
     this.vms.delete(id);
   }
   async exec(_id: string, command: string) {
-    if (command.includes("SWARMFORGE_GIT_CHECK"))
-      return {
-        stdout: JSON.stringify({
-          clean: !this.dirty,
-          stray: 0,
-          unpushed: 0,
-          repos: 1,
-          notes: this.dirty ? ["dirty or unreadable Git workspace"] : [],
-        }),
-        stderr: "",
-        code: 0,
-      };
+    this.commands.push(command);
     return { stdout: "log output", stderr: "", code: 0 };
   }
   async readFile(id: string, path: string, offset = 0, length = 65536) {
@@ -94,11 +96,28 @@ export class FakeProvider implements WorkerProvider {
     this.files.set(`${id}:${path}`, content);
   }
   async listFiles(id: string, path: string) {
-    return [...this.files.keys()]
-      .filter((k) => k.startsWith(`${id}:${path}/`))
-      .map((k) => ({ name: k.slice(`${id}:${path}/`.length), kind: "file" }));
+    const prefix = `${id}:${path}/`;
+    const entries = new Map<string, string>();
+    for (const key of this.files.keys()) {
+      if (!key.startsWith(prefix)) continue;
+      const rest = key.slice(prefix.length);
+      const slash = rest.indexOf("/");
+      entries.set(
+        slash === -1 ? rest : rest.slice(0, slash),
+        slash === -1 ? "file" : "directory",
+      );
+    }
+    if (this.dirty && path === this.workspace) entries.set("dirty.txt", "file");
+    return [...entries].map(([name, kind]) => ({ name, kind }));
   }
   async stat(id: string, path: string) {
+    if (this.dirty && path === `${this.workspace}/dirty.txt`)
+      return {
+        size: 16,
+        isFile: true,
+        isSymlink: false,
+        modified: this.mtime,
+      };
     const data = this.files.get(`${id}:${path}`);
     if (data === undefined) {
       if (
@@ -109,12 +128,19 @@ export class FakeProvider implements WorkerProvider {
           "/workspace/.swarmforge/logs",
         ].includes(path)
       )
-        return { size: 0, isFile: false, isSymlink: false };
+        return { size: 0, isFile: false, isSymlink: false, modified: "" };
       if ([...this.files.keys()].some((k) => k.startsWith(`${id}:${path}/`)))
-        return { size: 0, isFile: false, isSymlink: false };
+        return { size: 0, isFile: false, isSymlink: false, modified: "" };
       throw new Error("missing file");
     }
-    return { size: Buffer.byteLength(data), isFile: true, isSymlink: false };
+    if (this.directories.has(`${id}:${path}`))
+      return { size: 0, isFile: false, isSymlink: false, modified: "" };
+    return {
+      size: Buffer.byteLength(data),
+      isFile: true,
+      isSymlink: false,
+      modified: this.mtime,
+    };
   }
 }
 export class FakeAgent implements CodingAgent {
@@ -202,6 +228,7 @@ export class FakeAgent implements CodingAgent {
 export function harness() {
   const store = new Store(":memory:");
   const provider = new FakeProvider();
+  provider.workspace = config.SWARMFORGE_WORKSPACE;
   const agent = new FakeAgent();
   const coordinator = new Coordinator({ ...config }, store, provider, agent);
   return { store, provider, agent, coordinator };
@@ -219,3 +246,23 @@ export const task = {
   role: "coder",
   prompt: "Implement a feature",
 };
+// An SSH-mode deployment against a local tree and remote, for host-side Git checks.
+export function loadTestConfig(input: {
+  workspace: string;
+  tree: string;
+  push: string;
+}) {
+  return loadConfig({
+    FREESTYLE_API_TOKEN: "secret",
+    FREESTYLE_SNAPSHOT_ID: "snap",
+    SWARMFORGE_MODEL_BASE_URL: "https://model.example/v1",
+    SWARMFORGE_MODEL_API_KEY: "key",
+    SWARMFORGE_MODEL_NAME: "qwen",
+    SWARMFORGE_GIT_TREE: input.tree,
+    SWARMFORGE_GIT_PUSH_MODE: "ssh",
+    SWARMFORGE_GIT_PUSH_URL: input.push,
+    SWARMFORGE_GIT_SSH_KEY_PATH: "/write-key",
+    SWARMFORGE_GIT_SSH_KNOWN_HOSTS_PATH: "/write-hosts",
+    SWARMFORGE_WORKSPACE: input.workspace,
+  });
+}

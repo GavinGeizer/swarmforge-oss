@@ -135,13 +135,25 @@ export interface Handoff {
 }
 
 // The only place a write credential is used: this process, on the control-plane host.
+// `read` never reaches for it when a read-only key or token is available.
 async function hostCredentials(
   c: Config,
   dir: string,
+  purpose: "push" | "read",
   fetcher: typeof fetch,
 ): Promise<Record<string, string>> {
+  const ssh = (key?: string, hosts?: string): Record<string, string> => {
+    if (!key || !hosts) return {};
+    return {
+      GIT_SSH_COMMAND: `ssh -i ${key} -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=${hosts}`,
+    };
+  };
   if (c.SWARMFORGE_GIT_PUSH_MODE === "github-app") {
-    const token = await githubInstallationToken(c, fetcher, "write");
+    const token = await githubInstallationToken(
+      c,
+      fetcher,
+      purpose === "push" ? "write" : "read",
+    );
     const secret = join(dir, "token");
     const askpass = join(dir, "askpass");
     writeFileSync(secret, token, { mode: 0o600 });
@@ -153,11 +165,21 @@ async function hostCredentials(
     return { GIT_ASKPASS: askpass, SF_GIT_TOKEN_FILE: secret };
   }
   if (c.SWARMFORGE_GIT_PUSH_MODE === "ssh") {
+    const push = ssh(
+      c.SWARMFORGE_GIT_SSH_KEY_PATH,
+      c.SWARMFORGE_GIT_SSH_KNOWN_HOSTS_PATH,
+    );
+    if (purpose === "push") return push;
+    // A read-only key is preferred; the write key is a host-side fallback only.
     return {
-      GIT_SSH_COMMAND: `ssh -i ${c.SWARMFORGE_GIT_SSH_KEY_PATH} -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=${c.SWARMFORGE_GIT_SSH_KNOWN_HOSTS_PATH}`,
+      ...push,
+      ...ssh(
+        c.SWARMFORGE_GIT_SSH_CLONE_KEY_PATH,
+        c.SWARMFORGE_GIT_SSH_CLONE_KNOWN_HOSTS_PATH,
+      ),
     };
   }
-  throw new GitHandoffError("Git push is not configured");
+  throw new GitHandoffError("Git access is not configured");
 }
 
 export async function publishBundle(
@@ -185,7 +207,7 @@ export async function publishBundle(
       "transfer.fsckObjects=true",
     ];
     const env = {
-      ...(await hostCredentials(c, dir, fetcher)),
+      ...(await hostCredentials(c, dir, "push", fetcher)),
       GIT_CONFIG_GLOBAL: "/dev/null",
       GIT_CONFIG_SYSTEM: "/dev/null",
       GIT_TERMINAL_PROMPT: "0",
@@ -280,6 +302,84 @@ export async function publishBundle(
         "Remote branch does not hold the pushed commit",
       );
     return { branch, base_commit: base, commit };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+const hardenedEnv = (extra: Record<string, string>) => ({
+  ...extra,
+  GIT_CONFIG_GLOBAL: "/dev/null",
+  GIT_CONFIG_SYSTEM: "/dev/null",
+  GIT_TERMINAL_PROMPT: "0",
+  GIT_OPTIONAL_LOCKS: "0",
+  LC_ALL: "C",
+});
+
+// The published tree of a branch SwarmForge pushed, read from the remote on the host.
+export async function publishedTree(
+  c: Config,
+  target: string,
+  branch: string,
+  commit: string,
+  fetcher: typeof fetch = fetch,
+): Promise<Map<string, number>> {
+  return treeAt(c, target, `refs/heads/${branch}`, commit, fetcher);
+}
+
+// The recorded branch point is only meaningful while the remote still serves it, so the
+// remote default branch is fetched and the commit is proven to be an ancestor of it.
+export async function recordedTree(
+  c: Config,
+  target: string,
+  commit: string,
+  fetcher: typeof fetch = fetch,
+): Promise<Map<string, number>> {
+  return treeAt(c, target, "HEAD", commit, fetcher);
+}
+
+async function treeAt(
+  c: Config,
+  target: string,
+  ref: string,
+  commit: string,
+  fetcher: typeof fetch,
+): Promise<Map<string, number>> {
+  const dir = mkdtempSync(join(tmpdir(), "swarmforge-handoff-"));
+  chmodSync(dir, 0o700);
+  try {
+    const repo = join(dir, "read.git");
+    const env = hardenedEnv(await hostCredentials(c, dir, "read", fetcher));
+    if ((await git(["init", "--bare", "--quiet", repo], env)).code)
+      throw new GitHandoffError("Host Git repository setup failed");
+    const fetched = await git(
+      ["-C", repo, "fetch", "--no-tags", "--quiet", "--", target, ref],
+      env,
+    );
+    if (fetched.code)
+      throw new GitHandoffError("Host could not read the configured tree");
+    const reachable = await git(
+      ["-C", repo, "merge-base", "--is-ancestor", commit, "FETCH_HEAD"],
+      env,
+    );
+    if (reachable.code)
+      throw new GitHandoffError("The recorded commit is no longer published");
+    const tree = await git(
+      ["-C", repo, "ls-tree", "-r", "-l", "-z", commit],
+      env,
+    );
+    if (tree.code)
+      throw new GitHandoffError("Host could not read the published tree");
+    const files = new Map<string, number>();
+    for (const entry of tree.stdout.split("\0")) {
+      // "<mode> <type> <object> <size>\t<path>"; submodules carry no local content.
+      const [meta, path] = entry.split("\t");
+      const parts = meta?.trim().split(/\s+/) ?? [];
+      if (!path || parts[1] !== "blob") continue;
+      const size = Number(parts[3]);
+      files.set(path, Number.isSafeInteger(size) ? size : -1);
+    }
+    return files;
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

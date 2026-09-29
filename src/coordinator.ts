@@ -400,12 +400,17 @@ export class Coordinator {
         return;
       }
       if (w.state === "booting") {
-        const endpoint = await this.bounded(
+        const prepared = await this.bounded(
           this.provider.prepare(w),
           this.config.SWARMFORGE_GIT_PUSH_TIMEOUT_MS +
             this.config.SWARMFORGE_API_TIMEOUT_MS,
         );
-        w = this.store.patch(id, { endpoint });
+        // Control-plane facts about the workspace, recorded before the agent can run.
+        w = this.store.patch(id, {
+          endpoint: prepared.endpoint,
+          git_base: prepared.git_base ?? w.git_base,
+          workspace_digest: prepared.workspace_digest ?? w.workspace_digest,
+        });
         const session = await this.bounded(this.agent.ensureSession(w));
         this.store.transition(id, "ready", {
           opencode_session_id: session,
