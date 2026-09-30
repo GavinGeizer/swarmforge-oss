@@ -864,6 +864,311 @@ describe("redaction", () => {
   });
 });
 
+// Credentials of every length must be removed wherever they appear: the loader
+// accepts any nonempty string, so a short credential is still a credential.
+const lengths = ["Q", "Q7z", "Q7z4m2p", "Q7z4m2pK", "Q7z4m2pK9w1t5r8x0z3n6v"];
+
+/** Everything a command would render, so a credential cannot hide in a key name. */
+function rendered(redacted: ReturnType<typeof redactedSettings>): string {
+  return [
+    redacted.config_path ?? "",
+    ...Object.values(redacted.values),
+    ...Object.values(redacted.sources),
+    ...redacted.secrets,
+  ].join("\n");
+}
+
+// A sandbox name is random, so it is removed before looking for a credential
+// that can be a single character.
+const withoutRoot = (text: string, dir: string) =>
+  text.split(dir).join("<sandbox>");
+
+function credentialConfig(secret: string, host = "") {
+  return `schema_version = 1
+[provider.freestyle]
+api_token = "${secret}"
+snapshot_id = "s"
+
+[model]
+base_url = "https://model.example/v1"
+api_key = "${secret}"
+name = "m"
+
+[git]
+tree = "none"
+
+[server]
+metrics_teams = "${secret}"
+db_path = "data/${secret}.sqlite"${host}
+`;
+}
+
+describe("credential redaction regressions", () => {
+  test("removes short credentials from unrelated values", async () => {
+    for (const secret of lengths) {
+      const dir = sandbox({ "conf/c.toml": credentialConfig(secret) });
+      const resolved = await resolveServerSettings({
+        cwd: dir,
+        configPath: "conf/c.toml",
+        env: { HOME: join(dir, "home") },
+      });
+      expect(resolved.value.FREESTYLE_API_TOKEN).toBe(secret);
+      expect(resolved.value.SWARMFORGE_METRICS_TEAMS).toBe(secret);
+      const redacted = redactedSettings(resolved);
+      expect(redacted.values.FREESTYLE_API_TOKEN).toBe("[REDACTED]");
+      expect(redacted.values.SWARMFORGE_MODEL_API_KEY).toBe("[REDACTED]");
+      expect(redacted.values.SWARMFORGE_METRICS_TEAMS).toBe("[REDACTED]");
+      expect(redacted.values.SWARMFORGE_DB_PATH).toBe(
+        join(dir, "conf/data/[REDACTED].sqlite"),
+      );
+      expect(withoutRoot(rendered(redacted), dir)).not.toContain(secret);
+    }
+  });
+
+  test("removes short credentials from a client endpoint", async () => {
+    for (const secret of lengths) {
+      const dir = sandbox({
+        "client.toml": `schema_version = 1
+[client]
+url = "https://mcp.example/${secret}/mcp"
+token = "${secret}"
+`,
+      });
+      const resolved = await resolveClientSettings({
+        cwd: dir,
+        configPath: "client.toml",
+        env: { HOME: dir },
+      });
+      const redacted = redactedSettings(resolved);
+      expect(redacted.values.token).toBe("[REDACTED]");
+      expect(redacted.values.url).toBe("https://mcp.example/[REDACTED]/mcp");
+      expect(withoutRoot(rendered(redacted), dir)).not.toContain(secret);
+    }
+  });
+
+  test("removes short credentials from a validation error", async () => {
+    for (const secret of lengths) {
+      const dir = sandbox({
+        "conf/c.toml": credentialConfig(
+          secret,
+          `\nallowed_hosts = "${secret}"`,
+        ),
+      });
+      const error = await failure(
+        resolveServerSettings({
+          cwd: dir,
+          configPath: "conf/c.toml",
+          env: { HOME: join(dir, "home") },
+        }),
+      );
+      expect((error as SettingsError).code).toBe("invalid_config");
+      expect(error.message).toContain("[REDACTED]");
+      expect(withoutRoot(error.message, dir)).not.toContain(secret);
+    }
+  });
+
+  test("removes encoded and base64 copies of a credential", async () => {
+    for (const secret of ["Q7z4m2p", "Q7z4m2pK9w1t5r8x0z3n6v"]) {
+      const dir = sandbox({
+        "conf/c.toml": `schema_version = 1
+[provider.freestyle]
+api_token = "${secret}"
+snapshot_id = "s"
+
+[model]
+base_url = "https://model.example/v1"
+api_key = "${secret}"
+name = "m"
+
+[git]
+tree = "none"
+
+[server]
+metrics_teams = "${encodeURIComponent(secret)} ${Buffer.from(secret).toString("base64")}"
+`,
+      });
+      const resolved = await resolveServerSettings({
+        cwd: dir,
+        configPath: "conf/c.toml",
+        env: { HOME: join(dir, "home") },
+      });
+      const redacted = redactedSettings(resolved);
+      expect(redacted.values.SWARMFORGE_METRICS_TEAMS).not.toContain(secret);
+      expect(redacted.values.SWARMFORGE_METRICS_TEAMS).not.toContain(
+        encodeURIComponent(secret),
+      );
+      expect(redacted.values.SWARMFORGE_METRICS_TEAMS).not.toContain(
+        Buffer.from(secret).toString("base64"),
+      );
+    }
+  });
+
+  test("removes a superseded credential from a later error", async () => {
+    const first = "superseded-value-11";
+    const second = "replacement-value-22";
+    const dir = sandbox({
+      "conf/c.toml": `schema_version = 1
+env_file = "later.env"
+[provider.freestyle]
+api_token = "${first}"
+snapshot_id = "s"
+
+[model]
+base_url = "https://model.example/v1"
+api_key = "k"
+name = "m"
+
+[git]
+tree = "none"
+
+[server]
+allowed_hosts = "${first}"
+`,
+      "conf/later.env": `FREESTYLE_API_TOKEN=${second}
+SWARMFORGE_ALLOWED_HOSTS=${first}
+`,
+    });
+    const error = await failure(
+      resolveServerSettings({
+        cwd: dir,
+        configPath: "conf/c.toml",
+        env: { HOME: join(dir, "home") },
+      }),
+    );
+    expect(error.message).toContain("[REDACTED]");
+    expect(error.message).not.toContain(first);
+    expect(error.message).not.toContain(second);
+  });
+
+  test("removes an overridden credential from a later error", async () => {
+    const configured = "override-value-33";
+    const dir = sandbox({
+      "conf/c.toml": `schema_version = 1
+[provider.freestyle]
+api_token = "${configured}"
+snapshot_id = "s"
+
+[model]
+base_url = "https://model.example/v1"
+api_key = "k"
+name = "m"
+
+[git]
+tree = "none"
+`,
+    });
+    const error = await failure(
+      resolveServerSettings({
+        cwd: dir,
+        configPath: "conf/c.toml",
+        env: { HOME: join(dir, "home") },
+        overrides: { SWARMFORGE_ALLOWED_HOSTS: configured },
+      }),
+    );
+    expect(error.message).toContain("[REDACTED]");
+    expect(error.message).not.toContain(configured);
+  });
+
+  test("removes a credential repeated in a source label", async () => {
+    const secret = "env-file-name-value-44";
+    const dir = sandbox({
+      [`env/${secret}.env`]: "SWARMFORGE_MAX_WORKERS=6\n",
+    });
+    const resolved = await resolveServerSettings({
+      cwd: dir,
+      env: {
+        HOME: join(dir, "home"),
+        ...validEnv(),
+        FREESTYLE_API_TOKEN: secret,
+      },
+      envFiles: [`env/${secret}.env`],
+    });
+    const redacted = redactedSettings(resolved);
+    expect(redacted.sources.SWARMFORGE_MAX_WORKERS).not.toContain(secret);
+    expect(redacted.sources.SWARMFORGE_MAX_WORKERS).toContain("env_file:");
+    expect(JSON.stringify(redacted)).not.toContain(secret);
+  });
+
+  test("strips control characters from diagnostics", async () => {
+    const dir = sandbox();
+    const injected = "mcp.example.com\u001b[31m\u0007\nsecond-line.example";
+    const error = await failure(
+      resolveServerSettings({
+        cwd: dir,
+        env: {
+          HOME: join(dir, "home"),
+          ...validEnv(),
+          SWARMFORGE_ALLOWED_HOSTS: injected,
+        },
+      }),
+    );
+    expect((error as SettingsError).code).toBe("invalid_config");
+    for (const character of ["\u001b", "\u0007", "\n"]) {
+      expect(error.message).not.toContain(character);
+    }
+    expect(error.message.split("\n")).toHaveLength(1);
+    expect(error.message).toContain("mcp.example.com[31msecond-line.example");
+    expect((error as SettingsError).path).toBeUndefined();
+  });
+
+  test("strips control characters from rendered settings", async () => {
+    const dir = sandbox({
+      "conf/c.toml": `schema_version = 1
+[provider.freestyle]
+api_token = "token"
+snapshot_id = "s"
+
+[model]
+base_url = "https://model.example/v1"
+api_key = "key"
+name = "m"
+
+[git]
+tree = "none"
+
+[server]
+metrics_teams = "team\\u001b[31m\\u0007"
+`,
+    });
+    const resolved = await resolveServerSettings({
+      cwd: dir,
+      configPath: "conf/c.toml",
+      env: { HOME: join(dir, "home") },
+    });
+    expect(resolved.value.SWARMFORGE_METRICS_TEAMS).toContain("\u001b");
+    const redacted = redactedSettings(resolved);
+    expect(redacted.values.SWARMFORGE_METRICS_TEAMS).toBe("team[31m");
+    for (const line of rendered(redacted).split("\n")) {
+      for (const character of ["\u001b", "\u0007"]) {
+        expect(line).not.toContain(character);
+      }
+    }
+  });
+
+  test("reports values and sources for exactly the same keys", async () => {
+    const dir = sandbox();
+    const client = redactedSettings(
+      await resolveClientSettings({ cwd: dir, env: { HOME: dir } }),
+    );
+    expect(client.values.token).toBeUndefined();
+    expect(client.sources.token).toBeUndefined();
+    expect(Object.keys(client.sources).sort()).toEqual(
+      Object.keys(client.values).sort(),
+    );
+    const server = redactedSettings(
+      await resolveServerSettings({
+        cwd: dir,
+        env: { HOME: dir, ...validEnv() },
+      }),
+    );
+    expect(server.values.SWARMFORGE_API_TOKEN).toBeUndefined();
+    expect(server.sources.SWARMFORGE_API_TOKEN).toBeUndefined();
+    expect(Object.keys(server.sources).sort()).toEqual(
+      Object.keys(server.values).sort(),
+    );
+  });
+});
+
 describe("client settings", () => {
   test("resolves a client endpoint and bearer token without provider settings", async () => {
     const dir = sandbox({

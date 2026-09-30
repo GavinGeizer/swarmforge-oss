@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { z } from "zod";
 import { type Config, loadConfig } from "../config";
-import { redact, SECRET_KEYS } from "./inspect";
+import { plain, redact, SECRET_KEYS } from "./inspect";
 import {
   anchorPath,
   defaultConfigPath,
@@ -47,13 +47,17 @@ export type SettingsErrorCode =
 
 /** Every resolution failure, with a code a command can branch on. */
 export class SettingsError extends Error {
+  readonly path?: string;
   constructor(
     readonly code: SettingsErrorCode,
     message: string,
-    readonly path?: string,
+    path?: string,
   ) {
-    super(message);
+    // Configuration values can hold terminal control characters; a diagnostic is
+    // printed by a command, so remove them at this boundary.
+    super(plain(message));
     this.name = "SettingsError";
+    this.path = path === undefined ? undefined : plain(path);
   }
 }
 
@@ -457,17 +461,19 @@ async function readDocument(
   try {
     raw = await readFile(path, "utf8");
   } catch (error) {
+    // A file name can hold credential material, so it is scrubbed as well.
+    const safe = redact(path, secrets);
     if (errno(error) === "ENOENT" && !required) return null;
     if (errno(error) === "ENOENT")
       throw new SettingsError(
         "config_not_found",
-        `Config file not found: ${path}`,
-        path,
+        `Config file not found: ${safe}`,
+        safe,
       );
     throw new SettingsError(
       "config_invalid",
-      `Cannot read ${path}: ${errno(error)}`,
-      path,
+      `Cannot read ${safe}: ${errno(error)}`,
+      safe,
     );
   }
   collectSecrets(raw, secrets);
@@ -603,16 +609,17 @@ async function readEnvFile(
   try {
     raw = await readFile(path, "utf8");
   } catch (error) {
+    const safe = redact(path, secrets);
     if (errno(error) === "ENOENT")
       throw new SettingsError(
         "env_file_not_found",
-        `Environment file not found: ${path}`,
-        path,
+        `Environment file not found: ${safe}`,
+        safe,
       );
     throw new SettingsError(
       "env_file_invalid",
-      `Cannot read environment file ${path}: ${errno(error)}`,
-      path,
+      `Cannot read environment file ${safe}: ${errno(error)}`,
+      safe,
     );
   }
   collectSecrets(raw, secrets);

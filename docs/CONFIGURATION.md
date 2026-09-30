@@ -173,14 +173,26 @@ SWARMFORGE_GIT_AUTHOR_NAME="$(echo not-run) `id`"
 `redactedSettings` in `src/settings/inspect.ts` renders resolved settings as plain
 JSON-serializable data: `config_path`, `values`, `sources` and `secrets`. Credential keys
 (`client.token`, `server.api_token`, `provider.freestyle.api_token`, `model.api_key`) always show
-`[REDACTED]`, and every other value and source is scanned for resolved credential material, so a
-token copied into another setting, a URL or a path is still removed. Credentials shorter than
-eight characters are masked in their own field but are not removed from other text, where they
-would match ordinary characters.
+`[REDACTED]`, and every value, source label and path is scanned for resolved credential
+material, so a token copied into another setting, an endpoint, a file name or a path is still
+removed.
+
+Every nonempty credential counts, however short. The loader accepts any string, so a
+one-character credential is a credential and is removed from every field, source and message.
+The cost is over-redaction: a very short credential also matches ordinary characters, and text
+around it is replaced with `[REDACTED]`. Prefer real tokens; when a diagnostic looks heavily
+redacted, suspect a short credential rather than a leak.
+
+`values` and `sources` report exactly the same keys: a setting that resolved to no value, such as
+an unset `client.token`, appears in neither. The raw `value` and `provenance` returned by the
+resolvers are not safe to print; render them with `redactedSettings`.
 
 Validation and parse errors are scrubbed the same way, including credential material that a
-later layer superseded, so a diagnostic can be printed without leaking a token that appears in
-an unexpected field. Diagnostics report file paths and line numbers, never file content.
+later layer superseded and credential material in the file path of a failed read, so a
+diagnostic can be printed without leaking a token that appears in an unexpected field. Every
+message, path and rendered field also has C0 and C1 control characters removed, so a value
+carrying an escape sequence cannot drive the terminal of whoever reads the output. Diagnostics
+report file paths and line numbers, never file content.
 
 ## Command integration
 
@@ -230,7 +242,8 @@ Failures throw `SettingsError` with `code` and `path`:
 | `invalid_config` | Resolved values rejected the existing server validation. |
 | `invalid_client` | Client endpoint is not a valid http or https URL. |
 
-Every message is already credential-free, so a command can print `error.message` directly.
+Every message and `path` is already credential-free and control-character-free, so a command
+can print `error.message` directly; `error.code` selects the exit behaviour.
 
 ## Migrating from `.env`
 
