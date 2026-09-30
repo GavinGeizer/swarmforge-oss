@@ -37,15 +37,20 @@ bun run package                     # dist/swarmforge, metadata JSON, SHA256SUMS
 bun run package:verify              # re-check the checksums and run the packaged binary
 ```
 
-Install it manually into your own home directory. Nothing is installed system-wide and no service is created:
+Install it manually into your own home directory. Nothing is installed system-wide and no service is created. Set `VERSION` to the version in the archive name you downloaded (for example `0.1.0`); quoting it matters, an unquoted `<version>` would be read by the shell as a redirection:
 
 ```sh
-tar -xzf dist/swarmforge-v<version>-linux-x64-glibc.tar.gz -C ~/.local/bin --strip-components=0 swarmforge
-chmod 755 ~/.local/bin/swarmforge
-(cd ~/.local && sha256sum -c SHA256SUMS)
+VERSION=0.1.0
+tmp="$(mktemp -d)"
+tar -xzf "dist/swarmforge-v${VERSION}-linux-x64-glibc.tar.gz" -C "$tmp"
+(cd "$tmp" && sha256sum -c SHA256SUMS)
+install -d "$HOME/.local/bin"
+install -m 755 "$tmp/swarmforge" "$HOME/.local/bin/swarmforge"
+rm -rf "$tmp"
+"$HOME/.local/bin/swarmforge" --version
 ```
 
-Add `~/.local/bin` to `PATH` in the shell profile you already use, for example `export PATH="$HOME/.local/bin:$PATH"` in `~/.bashrc`, then open a new shell. The executable needs no Bun, no `node_modules` and no checkout: it does not read `.env`, `bunfig.toml`, `tsconfig.json` or `package.json` from the directory it runs in, so a foreign directory cannot reconfigure it. Only Linux x64 with glibc is built and verified; `dist/` is ignored by Git.
+The checksum is verified inside the extracted archive, where `SHA256SUMS` and the executable sit together, before anything is installed. Add `~/.local/bin` to `PATH` in the shell profile you already use, for example `export PATH="$HOME/.local/bin:$PATH"` in `~/.bashrc`, then open a new shell and `swarmforge` resolves by name. The executable needs no Bun, no `node_modules` and no checkout: it does not read `.env`, `bunfig.toml`, `tsconfig.json` or `package.json` from the directory it runs in, so a foreign directory cannot reconfigure it. Only Linux x64 with glibc is built and verified; `dist/` is ignored by Git.
 
 Check what you installed:
 

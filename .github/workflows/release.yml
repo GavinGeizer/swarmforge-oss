@@ -13,6 +13,10 @@ on:
 permissions:
   contents: write
 
+env:
+  BUN_VERSION: "1.4.2"
+  ARTIFACT_NAME: swarmforge-linux-x64-glibc
+
 jobs:
   build:
     name: Build and verify the executable
@@ -30,6 +34,12 @@ jobs:
         run: |
           bun --version
           test "$(bun --version)" = "1.4.2"
+
+      - name: Require the tag to match the packaged version
+        # Checked before the expensive work, and again before anything is
+        # published, so a mistyped tag fails in seconds instead of after a build.
+        if: github.event_name == 'push'
+        run: bun scripts/package.ts tag "${{ github.ref_name }}"
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
@@ -49,43 +59,41 @@ jobs:
       - name: Verify the packaged runtime
         # A packaged artifact that cannot answer for itself is not a release:
         # the executable must run with no Bun and no node_modules on PATH, and
-        # it must report the version and commit it was built from.
+        # it must report the version and commit it was built from. It is
+        # installed into a temporary directory and invoked by absolute path, so
+        # nothing is installed system-wide and no PATH can find the wrong file.
         run: |
           bun run package:verify
-          install -m 755 dist/swarmforge /usr/local/bin/swarmforge
-          env -i PATH=/usr/bin:/bin HOME=/root swarmforge --version
-          test "$(env -i PATH=/usr/bin:/bin HOME=/root swarmforge --version)" = "$(bun -e 'console.log(require("./package.json").version)')"
-          env -i PATH=/usr/bin:/bin HOME=/root swarmforge --help | grep "build $(git rev-parse HEAD)"
-          env -i PATH=/usr/bin:/bin HOME=/root swarmforge config path
+          version="$(bun -e 'console.log(require("./package.json").version)')"
+          install_dir="$RUNNER_TEMP/swarmforge-install"
+          install_home="$RUNNER_TEMP/swarmforge-home"
+          mkdir -p "$install_dir" "$install_home"
+          install -m 755 dist/swarmforge "$install_dir/swarmforge"
+          test "$(env -i PATH=/usr/bin:/bin HOME="$install_home" "$install_dir/swarmforge" --version)" = "$version"
+          env -i PATH=/usr/bin:/bin HOME="$install_home" "$install_dir/swarmforge" --help | grep "build $(git rev-parse HEAD)"
+          env -i PATH=/usr/bin:/bin HOME="$install_home" "$install_dir/swarmforge" config path
+          env -i PATH=/usr/bin:/bin HOME="$install_home" "$install_dir/swarmforge" config show > /dev/null
 
       - name: Extract the archive and check the installed mode
         run: |
-          mkdir -p /tmp/swarmforge-release
-          tar -xzf "dist/swarmforge-v$(bun -e 'console.log(require("./package.json").version)')-linux-x64-glibc.tar.gz" -C /tmp/swarmforge-release
-          test -x /tmp/swarmforge-release/swarmforge
-          (cd /tmp/swarmforge-release && sha256sum -c SHA256SUMS)
-          install -m 755 /tmp/swarmforge-release/swarmforge /usr/local/bin/swarmforge-extracted
-          env -i PATH=/usr/bin:/bin HOME=/root swarmforge-extracted --version
+          version="$(bun -e 'console.log(require("./package.json").version)')"
+          extract_dir="$RUNNER_TEMP/swarmforge-extract"
+          install_home="$RUNNER_TEMP/swarmforge-home"
+          mkdir -p "$extract_dir" "$install_home"
+          tar -xzf "dist/swarmforge-v${version}-linux-x64-glibc.tar.gz" -C "$extract_dir"
+          test -x "$extract_dir/swarmforge"
+          (cd "$extract_dir" && sha256sum -c SHA256SUMS)
+          install -m 755 "$extract_dir/swarmforge" "$RUNNER_TEMP/swarmforge-install/swarmforge-extracted"
+          test "$(env -i PATH=/usr/bin:/bin HOME="$install_home" "$RUNNER_TEMP/swarmforge-install/swarmforge-extracted" --version)" = "$version"
 
       - name: Upload build artifacts
-        if: github.event_name == 'workflow_dispatch'
+        # The same assets on every trigger: the draft release is created from
+        # exactly these files, never from a second build.
         uses: actions/upload-artifact@v4
         with:
-          name: swarmforge-linux-x64-glibc
+          name: ${{ env.ARTIFACT_NAME }}
           path: |
             dist/swarmforge
-            dist/SHA256SUMS
-            dist/metadata-*.json
-            dist/swarmforge-v*-linux-x64-glibc.tar.gz
-          if-no-files-found: error
-          retention-days: 14
-
-      - name: Upload release assets
-        if: github.event_name == 'push'
-        uses: actions/upload-artifact@v4
-        with:
-          name: swarmforge-linux-x64-glibc
-          path: |
             dist/SHA256SUMS
             dist/metadata-*.json
             dist/swarmforge-v*-linux-x64-glibc.tar.gz
@@ -109,16 +117,19 @@ jobs:
         with:
           bun-version: "1.4.2"
 
-      - name: Install dependencies
-        run: bun install --frozen-lockfile
-
-      - name: Build and package the release archive
-        run: |
-          bun run build
-          bun run package
-
       - name: Require the tag to match the packaged version
-        run: bun run release:tag -- "${{ github.ref_name }}"
+        run: bun scripts/package.ts tag "${{ github.ref_name }}"
+
+      - name: Download the verified build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.ARTIFACT_NAME }}
+          path: release-assets
+
+      - name: Verify the downloaded release assets
+        # The archive a release would carry is the archive the build job
+        # verified: it is re-checked here rather than rebuilt.
+        run: bun scripts/package.ts release-assets release-assets --tag "${{ github.ref_name }}"
 
       - name: Create a draft release
         env:
@@ -129,6 +140,6 @@ jobs:
             --draft \
             --title "SwarmForge $version" \
             --notes "Linux x64 (glibc) executable for SwarmForge $version, built from $(git rev-parse HEAD) with Bun $(bun --version). Verify with the shipped SHA256SUMS." \
-            "dist/swarmforge-v${version}-linux-x64-glibc.tar.gz" \
-            "dist/SHA256SUMS" \
-            "dist/metadata-${version}.json"
+            "release-assets/swarmforge-v${version}-linux-x64-glibc.tar.gz" \
+            "release-assets/SHA256SUMS" \
+            "release-assets/metadata-${version}.json"

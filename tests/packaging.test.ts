@@ -2,7 +2,7 @@ import { Database } from "bun:sqlite";
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import type { Subprocess } from "bun";
 import {
   buildConfig,
@@ -13,7 +13,14 @@ import {
   repositoryCommit,
   repositoryRoot,
 } from "../scripts/build";
-import { packageCli, releaseTagMismatch } from "../scripts/package";
+import {
+  archiveName,
+  manifestName,
+  packageCli,
+  prepareReleaseAssets,
+  releaseTagMismatch,
+  verifyArchive,
+} from "../scripts/package";
 import { createHttpHandler } from "../src/http";
 import { COMMIT, unknownCommit, VERSION } from "../src/version";
 import { harness } from "./helpers";
@@ -37,6 +44,25 @@ let commit = "";
 let workspace = "";
 let foreign = "";
 let home = "";
+let packagedDist = "";
+
+/** Copies the suite's packaged output into a fresh directory, compiling nothing. */
+async function copyPackaged(name: string) {
+  const target = join(workspace, name);
+  await rm(target, { recursive: true, force: true });
+  await Bun.$`mkdir -p ${target}`.quiet();
+  for (const file of [
+    executableName,
+    manifestName,
+    `metadata-${manifest.version}.json`,
+    archiveName(manifest.version),
+  ])
+    await Bun.write(
+      join(target, file),
+      await readFile(join(packagedDist, file)),
+    );
+  return target;
+}
 
 async function run(
   command: string[],
@@ -58,6 +84,9 @@ async function run(
 
 /** A PATH with no Bun and no checkout `node_modules` on it. */
 const minimalPath = "/usr/bin:/bin";
+
+/** Output directory used by the test that executes the README install block. */
+const readmeDist = () => join(workspace, "readme-dist");
 
 /**
  * A complete, self-sufficient server environment for a packaged binary: no
@@ -113,7 +142,11 @@ beforeAll(async () => {
     "compiled-serve.ts",
     join(workspace, "compiled-serve"),
   );
-});
+  // Packaged once for the whole suite; every archive test below copies this
+  // output instead of compiling another binary.
+  packagedDist = join(workspace, "packaged");
+  await packageCli({ outDir: packagedDist, version: manifest.version, commit });
+}, 300000);
 
 /**
  * Compiles a test fixture with the same settings the CLI is compiled with, so
@@ -477,18 +510,13 @@ describe("compiled serve lifecycle", () => {
 
 describe("release archive", () => {
   test("packages a verified executable with metadata and checksums", async () => {
-    const outDir = join(workspace, "dist");
-    const packaged = await packageCli({
-      outDir,
-      version: manifest.version,
-      commit,
-    });
+    const outDir = await copyPackaged("dist");
+    const packaged = {
+      archivePath: join(outDir, archiveName(manifest.version)),
+      metadataPath: join(outDir, `metadata-${manifest.version}.json`),
+      checksumsPath: join(outDir, manifestName),
+    };
     expect(packaged.archivePath).toContain(manifest.version);
-    expect(packaged.files).toEqual([
-      executableName,
-      `metadata-${manifest.version}.json`,
-      "SHA256SUMS",
-    ]);
     const metadata = JSON.parse(await readFile(packaged.metadataPath, "utf8"));
     expect(metadata.version).toBe(manifest.version);
     expect(metadata.commit).toBe(commit);
@@ -506,12 +534,10 @@ describe("release archive", () => {
   }, 180000);
 
   test("extracts with mode 0755 and reports its build metadata", async () => {
-    const outDir = join(workspace, "extract-dist");
-    const packaged = await packageCli({
-      outDir,
-      version: manifest.version,
-      commit,
-    });
+    const outDir = await copyPackaged("extract-dist");
+    const packaged = {
+      archivePath: join(outDir, archiveName(manifest.version)),
+    };
     const target = join(workspace, "extracted");
     await rm(target, { recursive: true, force: true });
     await Bun.$`mkdir -p ${target}`.quiet();
@@ -557,6 +583,247 @@ describe("release archive", () => {
   });
 });
 
+describe("archive verification", () => {
+  const outDir = () => join(workspace, "verify-dist");
+  let packaged: {
+    archivePath: string;
+    metadataPath: string;
+    checksumsPath: string;
+    files: string[];
+  };
+
+  beforeAll(async () => {
+    const copied = await copyPackaged("verify-dist");
+    packaged = {
+      archivePath: join(copied, archiveName(manifest.version)),
+      metadataPath: join(copied, `metadata-${manifest.version}.json`),
+      checksumsPath: join(copied, manifestName),
+      files: [
+        executableName,
+        `metadata-${manifest.version}.json`,
+        manifestName,
+      ],
+    };
+  }, 120000);
+
+  /** A copy of the archive that a later step can damage. */
+  async function damaged(mutate: (path: string) => Promise<void>) {
+    const copy = join(
+      workspace,
+      `damaged-${Math.random().toString(36).slice(2)}.tar.gz`,
+    );
+    await Bun.write(copy, await readFile(packaged.archivePath));
+    await mutate(copy);
+    return copy;
+  }
+
+  test("accepts the archive packaging produced", async () => {
+    const verified = await verifyArchive({
+      archivePath: packaged.archivePath,
+      expectedVersion: manifest.version,
+      expectedCommit: commit,
+    });
+    expect(verified.version).toBe(manifest.version);
+    expect(verified.commit).toBe(commit);
+    expect(verified.target).toBe(compileTarget);
+    expect(verified.files).toContain(executableName);
+  }, 120000);
+
+  test("rejects a truncated archive", async () => {
+    const archive = await damaged(async (path) => {
+      const bytes = await readFile(path);
+      await Bun.write(path, bytes.subarray(0, Math.floor(bytes.length / 2)));
+    });
+    await expect(
+      verifyArchive({
+        archivePath: archive,
+        expectedVersion: manifest.version,
+      }),
+    ).rejects.toThrow(/not a readable tar\.gz|did not extract/);
+  }, 120000);
+
+  test("rejects an archive whose payload was edited", async () => {
+    // Recompressing an edited payload keeps the archive readable, so only the
+    // checksum comparison can catch this one.
+    const archive = await damaged(async (path) => {
+      const staging = join(workspace, "tamper");
+      await rm(staging, { recursive: true, force: true });
+      await Bun.$`mkdir -p ${staging}`.quiet();
+      await Bun.spawn(["tar", "-xzf", path, "-C", staging]).exited;
+      const binary = join(staging, executableName);
+      const tampered = Buffer.concat([
+        await readFile(binary),
+        Buffer.from("\0tampered"),
+      ]);
+      await Bun.write(binary, tampered);
+      await chmod(binary, 0o755);
+      await Bun.spawn(["tar", "-czf", path, "-C", staging, ...packaged.files])
+        .exited;
+    });
+    await expect(
+      verifyArchive({
+        archivePath: archive,
+        expectedVersion: manifest.version,
+      }),
+    ).rejects.toThrow(/SHA256SUMS did not verify/);
+  }, 120000);
+
+  test("rejects an archive whose metadata was edited to match", async () => {
+    const archive = await damaged(async (path) => {
+      const staging = join(workspace, "tamper-metadata");
+      await rm(staging, { recursive: true, force: true });
+      await Bun.$`mkdir -p ${staging}`.quiet();
+      await Bun.spawn(["tar", "-xzf", path, "-C", staging]).exited;
+      const metadataPath = join(staging, `metadata-${manifest.version}.json`);
+      const metadata = JSON.parse(await readFile(metadataPath, "utf8"));
+      metadata.executable.sha256 = "0".repeat(64);
+      await Bun.write(metadataPath, JSON.stringify(metadata));
+      await Bun.spawn(["tar", "-czf", path, "-C", staging, ...packaged.files])
+        .exited;
+    });
+    await expect(
+      verifyArchive({
+        archivePath: archive,
+        expectedVersion: manifest.version,
+      }),
+    ).rejects.toThrow(/does not describe its own contents/);
+  }, 120000);
+
+  test("rejects an archive whose executable lost its mode", async () => {
+    const archive = await damaged(async (path) => {
+      const staging = join(workspace, "tamper-mode");
+      await rm(staging, { recursive: true, force: true });
+      await Bun.$`mkdir -p ${staging}`.quiet();
+      await Bun.spawn(["tar", "-xzf", path, "-C", staging]).exited;
+      await chmod(join(staging, executableName), 0o644);
+      await Bun.spawn(["tar", "-czf", path, "-C", staging, ...packaged.files])
+        .exited;
+    });
+    await expect(
+      verifyArchive({
+        archivePath: archive,
+        expectedVersion: manifest.version,
+      }),
+    ).rejects.toThrow(/mode 0644, not 0755/);
+  }, 120000);
+
+  test("rejects an archive built from another commit", async () => {
+    await expect(
+      verifyArchive({
+        archivePath: packaged.archivePath,
+        expectedVersion: manifest.version,
+        expectedCommit: "0".repeat(40),
+      }),
+    ).rejects.toThrow(/metadata commit/);
+  }, 120000);
+
+  test("package:verify passes for the built archive and fails for a tampered one", async () => {
+    const passing = await run(
+      [process.execPath, "scripts/package.ts", "verify", outDir()],
+      {
+        cwd: repositoryRoot,
+        env: { PATH: process.env.PATH ?? "", HOME: home },
+      },
+    );
+    expect(passing.code).toBe(0);
+    expect(JSON.parse(passing.stdout).version).toBe(manifest.version);
+    // A tampered copy in the same directory is what a supply-chain edit looks
+    // like, and it must not verify.
+    const tampered = join(outDir(), archiveName(manifest.version));
+    const original = await readFile(tampered);
+    await Bun.write(tampered, original.subarray(0, 1024));
+    const failing = await run(
+      [process.execPath, "scripts/package.ts", "verify", outDir()],
+      {
+        cwd: repositoryRoot,
+        env: { PATH: process.env.PATH ?? "", HOME: home },
+      },
+    );
+    expect(failing.code).toBe(1);
+    expect(failing.stderr).toMatch(/archive|extract/i);
+    await Bun.write(tampered, original);
+  }, 180000);
+});
+
+describe("release assets", () => {
+  /** The layout `actions/download-artifact` produces from the build job. */
+  async function downloadAssets(overrides: Record<string, string> = {}) {
+    const directory = join(
+      workspace,
+      `release-assets-${Math.random().toString(36).slice(2)}`,
+    );
+    await Bun.$`mkdir -p ${directory}`.quiet();
+    const uploaded = await copyPackaged(`uploaded-${Date.now()}`);
+    for (const [name, source] of Object.entries({
+      [archiveName(manifest.version)]: join(
+        uploaded,
+        archiveName(manifest.version),
+      ),
+      [manifestName]: join(uploaded, manifestName),
+      [`metadata-${manifest.version}.json`]: join(
+        uploaded,
+        `metadata-${manifest.version}.json`,
+      ),
+      ...overrides,
+    })) {
+      await Bun.write(join(directory, name), await readFile(source));
+    }
+    return directory;
+  }
+
+  test("accepts the assets the build job uploaded for a matching tag", async () => {
+    const directory = await downloadAssets();
+    const prepared = await prepareReleaseAssets({
+      directory,
+      tag: `v${manifest.version}`,
+      version: manifest.version,
+    });
+    expect(prepared.assets.map((asset) => basename(asset))).toEqual([
+      archiveName(manifest.version),
+      "SHA256SUMS",
+      `metadata-${manifest.version}.json`,
+    ]);
+  }, 180000);
+
+  test("refuses assets whose tag does not match the version", async () => {
+    const directory = await downloadAssets();
+    await expect(
+      prepareReleaseAssets({
+        directory,
+        tag: "v9.9.9",
+        version: manifest.version,
+      }),
+    ).rejects.toThrow(/does not match package.json version/);
+  }, 180000);
+
+  test("refuses a release directory that is missing the archive", async () => {
+    const directory = await downloadAssets();
+    await rm(join(directory, archiveName(manifest.version)));
+    await expect(
+      prepareReleaseAssets({
+        directory,
+        tag: `v${manifest.version}`,
+        version: manifest.version,
+      }),
+    ).rejects.toThrow(new RegExp(archiveName(manifest.version)));
+  }, 180000);
+
+  test("refuses assets whose archive is not the verified one", async () => {
+    const junk = join(workspace, "not-an-archive.txt");
+    await Bun.write(junk, "not a tar archive\n");
+    const directory = await downloadAssets({
+      [archiveName(manifest.version)]: junk,
+    });
+    await expect(
+      prepareReleaseAssets({
+        directory,
+        tag: `v${manifest.version}`,
+        version: manifest.version,
+      }),
+    ).rejects.toThrow(/not a readable tar|did not extract/);
+  }, 180000);
+});
+
 describe("packaging declarations", () => {
   test("package scripts, engine floor and the pinned toolchain", () => {
     expect(manifest.scripts.build).toContain("scripts/build.ts");
@@ -598,19 +865,46 @@ describe("packaging declarations", () => {
     expect(workflow).toContain("run: bun run build");
     expect(workflow).toContain("run: bun run package");
     expect(workflow).toContain("bun run package:verify");
-    // A manual run uploads what it built; a tag run uploads the release assets.
     expect(workflow).toContain("workflow_dispatch");
     expect(workflow).toContain("uses: actions/upload-artifact@v4");
-    expect(workflow).toContain("if: github.event_name == 'workflow_dispatch'");
+    // The draft is cut from the artifacts the build job uploaded and verified,
+    // so it can never carry a second, unreviewed build.
+    const draft = workflow.slice(workflow.indexOf("draft-release:"));
+    expect(draft).toContain("uses: actions/download-artifact@v4");
+    expect(draft).not.toContain("run: bun run build");
+    expect(draft).not.toContain("run: bun run package");
+    expect(draft).toContain(
+      "bun scripts/package.ts release-assets release-assets --tag",
+    );
     // A release is a draft for a human to publish, and only for a matching tag.
     expect(workflow).toContain("--draft");
     expect(workflow).not.toContain("--publish");
-    expect(workflow).toContain("bun run release:tag --");
+    expect(workflow).toContain("bun scripts/package.ts tag");
     expect(workflow).toContain("github.ref_name");
+    // Nothing is installed system-wide: every packaged probe runs from a
+    // temporary directory by absolute path with a PATH that cannot find it.
+    expect(workflow).not.toContain("/usr/local/bin");
+    expect(workflow).toContain("env -i PATH=/usr/bin:/bin HOME=");
+    expect(workflow).toContain("$RUNNER_TEMP/swarmforge-install");
   });
 
-  test("the README documents the manual install and the diagnostics", async () => {
+  test("the README install flow works in a plain shell", async () => {
     const readme = await readFile(join(repositoryRoot, "README.md"), "utf8");
+    const block = readme
+      .split("\n```sh\n")
+      .find((section) => section.includes("mktemp -d"));
+    expect(block).toBeDefined();
+    // The documented block must be copy-pasteable: the version is assigned,
+    // never left as an unquoted placeholder, the archive is extracted with its
+    // manifest, the checksum runs inside the extracted tree, and the binary is
+    // installed with an explicit mode.
+    expect(block).toContain("VERSION=0.1.0");
+    expect(block).not.toContain("<version>");
+    expect(block).toContain('tar -xzf "dist/swarmforge-v$');
+    expect(block).toContain('(cd "$tmp" && sha256sum -c SHA256SUMS)');
+    expect(block).toContain('install -m 755 "$tmp/swarmforge"');
+    expect(block).toContain('"$HOME/.local/bin/swarmforge" --version');
+    expect(block).toContain('install -d "$HOME/.local/bin"');
     expect(readme).toContain("~/.local/bin");
     expect(readme).toContain("PATH");
     expect(readme).toContain("swarmforge serve");
@@ -622,4 +916,37 @@ describe("packaging declarations", () => {
     expect(readme).toContain("Type=exec");
     expect(readme).toContain("TimeoutStopSec=90s");
   });
+
+  test("the documented install block installs a working executable", async () => {
+    // The README block is executed here with a fake home, so a broken block is
+    // a failing test rather than a surprise for an operator.
+    const readme = await readFile(join(repositoryRoot, "README.md"), "utf8");
+    await copyPackaged(basename(readmeDist()));
+    const block = readme
+      .split("\n```sh\n")
+      .find((section) => section.includes("mktemp -d"))!
+      .split("\n```")[0]!
+      .replace(/"dist\//g, `"${readmeDist()}/`);
+    const readmeHome = join(workspace, "readme-home");
+    await Bun.$`mkdir -p ${readmeHome}`.quiet();
+    const shell = Bun.spawn(["bash", "-c", block], {
+      cwd: repositoryRoot,
+      env: { HOME: readmeHome, PATH: minimalPath },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const failure = await new Response(shell.stderr).text();
+    expect(await shell.exited).toBe(0);
+    expect(failure).toBe("");
+    const installed = join(readmeHome, ".local", "bin", executableName);
+    const mode = (await Bun.file(installed).stat()).mode & 0o777;
+    expect(mode).toBe(0o755);
+    const reported = await run([installed, "--version"], { cwd: readmeHome });
+    expect(reported.stdout.trim()).toBe(manifest.version);
+    expect(
+      await Bun.file(
+        join(readmeDist(), archiveName(manifest.version)),
+      ).exists(),
+    ).toBe(true);
+  }, 180000);
 });
