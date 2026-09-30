@@ -1,6 +1,7 @@
 import type { Config } from "./config";
 import type { CodingAgent, WorkerProvider } from "./domain";
 import { renderStartup } from "./runtime";
+import { Redactor } from "./security";
 import { isAbortError, type ServerHandle, startServer } from "./serve";
 
 // Shutdown deadline for the command only. It bounds how long the process may stay alive
@@ -31,21 +32,48 @@ export function shutdownTimeoutMs(
   return value;
 }
 
+// The command has a resolved configuration but no coordinator, so the deployment's own
+// credentials are the secret set. Redactor.text also strips credentials embedded in any
+// URL, so a provider or SDK error that echoes a request target cannot leak through it.
+export function commandRedactor(config: Config) {
+  // Reported lines are JSON, so a secret containing a character JSON escapes is also
+  // redacted in its escaped form.
+  const escaped = (secret: string) => {
+    const json = JSON.stringify(secret);
+    return json.startsWith('"') ? json.slice(1, -1) : secret;
+  };
+  return new Redactor(() =>
+    [
+      config.FREESTYLE_API_TOKEN,
+      config.SWARMFORGE_MODEL_API_KEY,
+      config.SWARMFORGE_API_TOKEN ?? "",
+      config.SWARMFORGE_GIT_PUSH_URL ?? "",
+    ].flatMap((secret) => [secret, escaped(secret)]),
+  );
+}
+
 // Owns signals, logging and exit policy. Startup and shutdown order belong to startServer;
 // this layer only decides when the process ends and what it reports.
 export async function runServe(
   config: Config,
   options: ServeCommandOptions = {},
 ): Promise<number> {
-  const log = options.log ?? ((line: string) => console.log(line));
-  const logError = options.logError ?? ((line: string) => console.error(line));
+  const redactor = commandRedactor(config);
+  const sink = options.log ?? ((line: string) => console.log(line));
+  const errorSink = options.logError ?? ((line: string) => console.error(line));
+  // Every reported payload is redacted before it is serialized: a startup or shutdown error
+  // from a provider, adapter or environment value may echo a live credential. Redacting the
+  // values rather than the finished line also keeps the reported JSON well formed.
+  const report = (payload: Record<string, unknown>) =>
+    JSON.stringify(redactor.value(payload));
+  const log = (payload: Record<string, unknown>) => sink(report(payload));
+  const logError = (payload: Record<string, unknown>) =>
+    errorSink(report(payload));
   let limit: number;
   try {
     limit = shutdownTimeoutMs(options.env);
   } catch (error) {
-    logError(
-      JSON.stringify({ level: "error", message: (error as Error).message }),
-    );
+    logError({ level: "error", message: (error as Error).message });
     return 1;
   }
   const controller = new AbortController();
@@ -65,17 +93,15 @@ export async function runServe(
     try {
       await handle?.stop();
       disarm();
-      log(JSON.stringify({ level: "info", message: "Shutdown complete" }));
+      log({ level: "info", message: "Shutdown complete" });
       resolveExit?.(0);
     } catch (error) {
       disarm();
-      logError(
-        JSON.stringify({
-          level: "error",
-          message: "Shutdown failed while releasing server resources",
-          error: (error as Error).message,
-        }),
-      );
+      logError({
+        level: "error",
+        message: "Shutdown failed while releasing server resources",
+        error: (error as Error).message,
+      });
       resolveExit?.(1);
     }
   };
@@ -85,25 +111,21 @@ export async function runServe(
   const onSignal = (name: string) => {
     if (requested) return;
     requested = name;
-    log(
-      JSON.stringify({
-        level: "info",
-        message: "Shutdown requested",
-        signal: name,
-        timeout_ms: limit,
-      }),
-    );
+    log({
+      level: "info",
+      message: "Shutdown requested",
+      signal: name,
+      timeout_ms: limit,
+    });
     deadline = setTimeout(() => {
       // Durable intent and the lock file stay on disk: no database close, no partial write.
-      logError(
-        JSON.stringify({
-          level: "error",
-          message:
-            "Shutdown deadline exceeded; exiting with durable state intact",
-          signal: name,
-          timeout_ms: limit,
-        }),
-      );
+      logError({
+        level: "error",
+        message:
+          "Shutdown deadline exceeded; exiting with durable state intact",
+        signal: name,
+        timeout_ms: limit,
+      });
       process.exit(forcedShutdownExitCode);
     }, limit);
     if (handle) void stopAndExit();
@@ -124,15 +146,18 @@ export async function runServe(
       return await exited;
     }
     const bound = new URL(handle.url);
-    log(
-      renderStartup(
-        {
-          host: config.SWARMFORGE_HOST,
-          port: Number(bound.port || config.SWARMFORGE_PORT),
-          metricsEnabled: config.SWARMFORGE_METRICS_ENABLED,
-          metricsPort: config.SWARMFORGE_METRICS_PORT,
-        },
-        Boolean(process.stdout.isTTY),
+    // The banner is rendered text rather than a payload, so it is scrubbed as a string.
+    sink(
+      redactor.text(
+        renderStartup(
+          {
+            host: config.SWARMFORGE_HOST,
+            port: Number(bound.port || config.SWARMFORGE_PORT),
+            metricsEnabled: config.SWARMFORGE_METRICS_ENABLED,
+            metricsPort: config.SWARMFORGE_METRICS_PORT,
+          },
+          Boolean(process.stdout.isTTY),
+        ),
       ),
     );
     return await exited;
@@ -140,22 +165,18 @@ export async function runServe(
     disarm();
     if (isAbortError(error)) {
       // The signal cancelled startup; its rollback already released everything acquired.
-      log(
-        JSON.stringify({
-          level: "info",
-          message: "Startup cancelled; no SwarmForge listener is running",
-          signal: requested,
-        }),
-      );
+      log({
+        level: "info",
+        message: "Startup cancelled; no SwarmForge listener is running",
+        signal: requested,
+      });
       return 0;
     }
-    logError(
-      JSON.stringify({
-        level: "error",
-        message: "Startup failed; no SwarmForge listener is running",
-        error: (error as Error).message,
-      }),
-    );
+    logError({
+      level: "error",
+      message: "Startup failed; no SwarmForge listener is running",
+      error: (error as Error).message,
+    });
     return 1;
   } finally {
     process.off("SIGTERM", onTerm);

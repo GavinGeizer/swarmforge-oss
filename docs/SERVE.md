@@ -56,6 +56,8 @@ Repeated `stop()` calls, and a stop after an aborted startup, all return the sam
 
 `SWARMFORGE_SHUTDOWN_TIMEOUT_MS` (positive integer, default `60000`) is a command concern and is not part of `Config`; an invalid value fails startup with exit code `1`. The first signal arms the deadline, including a signal that arrives while startup is blocked.
 
+Every line the command reports is redacted first. `commandRedactor` builds the deployment's resolved credentials — `FREESTYLE_API_TOKEN`, `SWARMFORGE_MODEL_API_KEY`, `SWARMFORGE_API_TOKEN` and `SWARMFORGE_GIT_PUSH_URL`, in both raw and JSON-escaped form — as the secret set for the shared `Redactor` in `security.ts`, which also strips credentials embedded in any URL. Startup failures, shutdown failures, the deadline message and an invalid timeout input all pass through it, so a provider, adapter or environment value that echoes a credential cannot reach a log. Values are scrubbed before serialization, so a reported line stays parseable JSON.
+
 | Exit code | Meaning |
 | --- | --- |
 | `0` | Clean shutdown: drain finished, event log flushed, database closed, lock released. |
@@ -70,3 +72,4 @@ A deadline does not cancel a provider promise that cannot be cancelled. Instead 
 - In-flight HTTP requests are drained only to the extent the coordinator tracks them. A request doing unbounded external I/O of its own is closed with its connection.
 - The shutdown sequence is not transactional. A process killed between the log flush and the lock release leaves a stale lock file, recovered on the next start.
 - `SWARMFORGE_SHUTDOWN_TIMEOUT_MS` only affects the command. Embedded users of `startServer` choose their own deadline.
+- Redaction errs toward over-reporting `[REDACTED]`: a credential of a few characters would also replace those characters in operator messages, exactly as the existing `redactorFor` behaviour does. Secret short enough to damage a diagnostic should be rotated, not logged around.

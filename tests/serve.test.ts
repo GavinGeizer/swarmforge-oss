@@ -16,7 +16,11 @@ import { type Config, loadConfig } from "../src/config";
 import { Coordinator } from "../src/coordinator";
 import { acquireProcessLock } from "../src/runtime";
 import { startServer, startupGate } from "../src/serve";
-import { runServe, shutdownTimeoutMs } from "../src/serve-command";
+import {
+  commandRedactor,
+  runServe,
+  shutdownTimeoutMs,
+} from "../src/serve-command";
 import { Store } from "../src/store";
 import { FakeAgent, FakeProvider, task } from "./helpers";
 
@@ -220,6 +224,7 @@ test("importing the serve modules acquires no resources and installs no signal h
       handles: [],
       exports: [
         "abortError",
+        "commandRedactor",
         "defaultShutdownTimeoutMs",
         "forcedShutdownExitCode",
         "isAbortError",
@@ -702,6 +707,102 @@ test("the serve command reports a startup failure as a nonzero exit code", async
     rmSync(root, { recursive: true, force: true });
   }
 }, 30000);
+
+test("command failure output never carries resolved credentials or URL secrets", async () => {
+  const root = mkdtempSync(join(tmpdir(), "sf-serve-command-redact-"));
+  const dbPath = join(root, "db.sqlite");
+  const port = freePort();
+  const metricsPort = freePort();
+  // Dummy values standing in for live credentials: they must never reach a log.
+  const infra = "sf-live-infra-7f3a91c4d2";
+  const model = "sf-live-model-2b8e6d05aa";
+  const config = serveConfig(dbPath, port, metricsPort, {
+    FREESTYLE_API_TOKEN: infra,
+    SWARMFORGE_MODEL_API_KEY: model,
+  });
+  const provider = new FakeProvider();
+  // A provider failure that echoes its own credentials, a URL with inline userinfo and
+  // token query parameters, and the base64 form a client error can quote back.
+  provider.listWorkers = async () => {
+    throw new Error(
+      `Freestyle rejected ${infra}/${model} at https://lead:${infra}@api.example.test/v1?api_key=${model} (${Buffer.from(model).toString("base64")})`,
+    );
+  };
+  const lines: string[] = [];
+  const errors: string[] = [];
+  try {
+    expect(
+      await runServe(config, {
+        provider,
+        agent: new FakeAgent(),
+        env: {},
+        log: (line) => lines.push(line),
+        logError: (line) => errors.push(line),
+      }),
+    ).toBe(1);
+    const output = [...lines, ...errors].join("\n");
+    expect(output).toMatch(/Startup failed/);
+    expect(output).toContain("[REDACTED]");
+    for (const fragment of [
+      infra,
+      model,
+      encodeURIComponent(infra),
+      Buffer.from(model).toString("base64"),
+    ])
+      expect(output).not.toContain(fragment);
+    // The diagnostic still says what failed, without the credential it echoed.
+    const reported = JSON.parse(errors.at(-1) ?? "{}") as {
+      message: string;
+      error: string;
+    };
+    expect(reported.error).toMatch(/Freestyle rejected \[REDACTED\]/);
+    expect(reported.message).toBe(
+      "Startup failed; no SwarmForge listener is running",
+    );
+    // Every route out of the command is redacted, including an invalid timeout input.
+    errors.length = 0;
+    expect(
+      await runServe(config, {
+        provider: new FakeProvider(),
+        agent: new FakeAgent(),
+        env: { SWARMFORGE_SHUTDOWN_TIMEOUT_MS: infra },
+        logError: (line) => errors.push(line),
+      }),
+    ).toBe(1);
+    expect(errors.join("\n")).toMatch(/positive integer/);
+    expect(errors.join("\n")).not.toContain(infra);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}, 30000);
+
+test("the command redactor scrubs JSON-escaped credentials and secrets in URLs", () => {
+  const quoted = 'sf-live-"quoted"-token';
+  const config = serveConfig(
+    join(tmpdir(), "sf-redact.sqlite"),
+    freePort(),
+    freePort(),
+    {
+      FREESTYLE_API_TOKEN: quoted,
+      SWARMFORGE_MODEL_API_KEY: "sf-live-model-2b8e6d05aa",
+    },
+  );
+  const reported = JSON.stringify(
+    commandRedactor(config).value({
+      error: `failed with ${quoted} at https://lead:hunter2@api.example.test/v1?token=abcdef&api_key=zzz`,
+    }),
+  );
+  // The reported line stays parseable: values are scrubbed before serialization.
+  const parsed = JSON.parse(reported) as { error: string };
+  expect(parsed.error).toContain("[REDACTED]");
+  expect(parsed.error).not.toContain(quoted.slice(0, 8));
+  expect(parsed.error).not.toContain("hunter2");
+  expect(parsed.error).not.toContain("abcdef");
+  expect(parsed.error).not.toContain("zzz");
+  expect(parsed.error).toContain(
+    "https://[REDACTED]@api.example.test/v1?token=[REDACTED]&api_key=[REDACTED]",
+  );
+});
 
 test("the serve command refuses a shutdown deadline that is not a positive integer", async () => {
   expect(shutdownTimeoutMs({})).toBe(60000);
