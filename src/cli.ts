@@ -5,7 +5,12 @@ import { type ParsedCommand, parseArguments } from "./cli/arguments";
 import { connectSwarmForge } from "./cli/client";
 import { renderOverview } from "./cli/overview";
 import { runDashboard } from "./cli/tui";
-import { plain, redact, redactedSettings } from "./settings/inspect";
+import {
+  plain,
+  redact,
+  redactedSettings,
+  redactedText,
+} from "./settings/inspect";
 import {
   type ClientSettings,
   type ResolvedSettings,
@@ -109,35 +114,20 @@ function selection(command: {
  * That context is deliberately private to the settings module, and it is the only
  * place that knows credential material from every layer: the config file, each
  * environment file, the environment, the overrides, and values a later layer
- * superseded. `redactedSettings` is the supported way to reach it, and it renders
- * a client result from its `url` and `token` alone, so the text borrows the `url`
- * slot for the length of one call. The resolved value belongs to this command and
- * is restored on the way out, so nothing else can observe the borrowed field and
- * nothing is rebuilt from selected keys.
+ * superseded. `redactedText` is the supported way to reach it; the resolved
+ * result is only read, so nothing here mutates it and nothing is rebuilt from
+ * selected keys.
  */
 function scrub(
   settings: ResolvedSettings<ClientSettings>,
   text: string,
 ): string {
-  const value = settings.value;
-  const endpoint = value.url;
   try {
-    value.url = text;
-    return redactedSettings(settings).values.url ?? safeText(text);
+    return redactedText(settings, text);
   } catch {
     // A failure while rendering the context must never become the reason a
     // credential is printed; the environment scrubber is the weaker floor.
     return safeText(text);
-  } finally {
-    value.url = endpoint;
-  }
-}
-
-/** An error whose message is already scrubbed against the client credential context. */
-class ScrubbedError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "ScrubbedError";
   }
 }
 
@@ -191,7 +181,7 @@ async function showStatus(
     // A remote error can echo the bearer header it received, and a close failure
     // is raised from the same call, so both are reported through the credential
     // context the resolver collected rather than through the raw message.
-    throw new ScrubbedError(
+    throw new Error(
       scrub(settings, error instanceof Error ? error.message : String(error)),
     );
   }
