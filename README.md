@@ -14,12 +14,14 @@ bun test
 bun run check
 ```
 
-`dev`, `start`, `status` and `serve` run with `--no-env-file --config=/dev/null`, so a `.env` or `bunfig.toml` in the directory you happen to be in cannot change how the command is configured. Configuration is explicit: a `config.toml` from [CONFIGURATION.md](docs/CONFIGURATION.md), its `env_file`, and any `--env-file` you pass. Pass one when you keep credentials in a file:
+`dev`, `start`, `status` and `serve` all run the same `swarmforge` CLI with `--no-env-file --config=/dev/null`, so a `.env` or `bunfig.toml` in the directory you happen to be in cannot change how the command is configured. `start` and `dev` run `serve` under the hood and take the same flags as the packaged binary, so every option documented below works identically from a checkout. Configuration is explicit: a `config.toml` from [CONFIGURATION.md](docs/CONFIGURATION.md), its `env_file`, and any `--env-file` you pass. Pass one when you keep credentials in a file:
 
 ```sh
-bun run start -- --env-file .env
+bun run start -- --env-file .env   # the flags reach the CLI, not the script
 swarmforge serve --env-file .env
 ```
+
+Bun forwards everything after `--` to the script, so `--env-file .env` is parsed by the `serve` command. A configuration error is reported without a stack trace and the process exits 1.
 
 Production starts with `bun start`. The MCP endpoint is `http://127.0.0.1:8787/mcp`, using Streamable HTTP. If configured, clients must send `Authorization: Bearer <SWARMFORGE_API_TOKEN>`. The server is stateless at the MCP transport layer; worker/session state is durable in SQLite. Multiple leads share the same process. Use a persistent local volume, one server process per database, and a unique instance ID per independent deployment.
 
@@ -83,7 +85,7 @@ TimeoutStopSec=90s
 Restart=on-failure
 ```
 
-`Type=exec` gives readiness of the process, not of the service: SwarmForge answers `/health` and refuses mutating requests with `503` until startup finishes, so poll `http://127.0.0.1:8787/health` rather than declaring the service ready on `Type=exec` alone. `SIGTERM` starts the graceful drain; a second signal is not needed. `TimeoutStopSec` is only the outer bound — the command's own `SWARMFORGE_SHUTDOWN_TIMEOUT_MS` (default `60000`) reports the deadline and exits `70` with the database still open.
+`Type=exec` reports that the process was executed successfully; it says nothing about startup progress, and `/health` is a liveness endpoint that answers while the server is still starting. Startup readiness is a property of the MCP surface, not of the process: until recovery and the first provisioning pass finish, every mutating request is refused with `503` and a `Retry-After` header. A client or a readiness probe should therefore wait for startup to complete — retry the mutating call while it receives `503`, and treat any other response as ready — rather than treating `Type=exec` or a `200` from `/health` as "ready". `SIGTERM` starts the graceful drain; a second signal is not needed. `TimeoutStopSec` is only the outer bound — the command's own `SWARMFORGE_SHUTDOWN_TIMEOUT_MS` (default `60000`) reports the deadline and exits `70` with the database still open.
 
 ## Usage
 

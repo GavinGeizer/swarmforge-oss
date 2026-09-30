@@ -11,6 +11,7 @@
  */
 import {
   chmod,
+  mkdir,
   mkdtemp,
   readdir,
   readFile,
@@ -253,6 +254,11 @@ export async function verifyArchive(options: {
  * Builds the executable, writes the metadata and checksums, packs them, and
  * verifies the archive it just produced with the same helper used to verify an
  * archive found on disk.
+ *
+ * `executable` reuses an already compiled and measured binary instead of
+ * compiling a second one. The metadata digest and size are re-measured from the
+ * staged file, so a reused binary still has to describe itself correctly, and
+ * production packaging compiles its own binary.
  */
 export async function packageCli(
   options: {
@@ -260,19 +266,38 @@ export async function packageCli(
     version?: string;
     commit?: string;
     root?: string;
+    executable?: CompiledBinary;
   } = {},
 ): Promise<PackagedRelease> {
   const root = options.root ?? repositoryRoot;
   const outDir = options.outDir ?? distDirectory;
   const version = options.version ?? (await packageVersion(root));
   const commit = options.commit ?? (await repositoryCommit(root));
-  const executable = await compileCli({
-    outfile: join(outDir, executableName),
-    version,
-    commit,
-    root,
-  });
+  // The output directory is created here as well as by the compiler, because a
+  // reused binary is compiled somewhere else.
+  await mkdir(outDir, { recursive: true });
+  const executable =
+    options.executable ??
+    (await compileCli({
+      outfile: join(outDir, executableName),
+      version,
+      commit,
+      root,
+    }));
+  if (executable.version !== version || executable.commit !== commit)
+    throw new Error(
+      `executable was built from ${executable.version} ${executable.commit}, not ${version} ${commit}`,
+    );
   const metadata = buildMetadata({ version, commit, executable });
+  // A reused binary is compiled elsewhere, so the output directory gets the
+  // executable it just packaged as well as the archive that carries it.
+  if (executable.path !== join(outDir, executableName)) {
+    await Bun.write(
+      join(outDir, executableName),
+      await readFile(executable.path),
+    );
+    await chmod(join(outDir, executableName), 0o755);
+  }
   const metadataPath = join(outDir, metadataName(version));
   const checksumsPath = join(outDir, manifestName);
   await writeFile(metadataPath, `${JSON.stringify(metadata, null, 2)}\n`);

@@ -10,8 +10,10 @@ on:
       - "v*"
   workflow_dispatch:
 
+# The default is read-only: the build job only needs the source. Writing is
+# granted to the single job that can create a draft release.
 permissions:
-  contents: write
+  contents: read
 
 env:
   BUN_VERSION: "1.4.2"
@@ -37,9 +39,13 @@ jobs:
 
       - name: Require the tag to match the packaged version
         # Checked before the expensive work, and again before anything is
-        # published, so a mistyped tag fails in seconds instead of after a build.
+        # published, so a mistyped tag fails in seconds instead of after a
+        # build. The tag arrives as an environment variable and is only ever
+        # used as a quoted argument, never interpolated into a shell command.
         if: github.event_name == 'push'
-        run: bun scripts/package.ts tag "${{ github.ref_name }}"
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: bun scripts/package.ts tag "$RELEASE_TAG"
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
@@ -108,6 +114,9 @@ jobs:
     # for a human to review and publish.
     if: github.event_name == 'push'
     runs-on: ubuntu-24.04
+    # The only job that needs to write, and only to create the draft.
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
         with:
@@ -118,7 +127,9 @@ jobs:
           bun-version: "1.4.2"
 
       - name: Require the tag to match the packaged version
-        run: bun scripts/package.ts tag "${{ github.ref_name }}"
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: bun scripts/package.ts tag "$RELEASE_TAG"
 
       - name: Download the verified build artifacts
         uses: actions/download-artifact@v4
@@ -129,14 +140,17 @@ jobs:
       - name: Verify the downloaded release assets
         # The archive a release would carry is the archive the build job
         # verified: it is re-checked here rather than rebuilt.
-        run: bun scripts/package.ts release-assets release-assets --tag "${{ github.ref_name }}"
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: bun scripts/package.ts release-assets release-assets --tag "$RELEASE_TAG"
 
       - name: Create a draft release
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
         run: |
           version="$(bun -e 'console.log(require("./package.json").version)')"
-          gh release create "${{ github.ref_name }}" \
+          gh release create "$RELEASE_TAG" \
             --draft \
             --title "SwarmForge $version" \
             --notes "Linux x64 (glibc) executable for SwarmForge $version, built from $(git rev-parse HEAD) with Bun $(bun --version). Verify with the shipped SHA256SUMS." \

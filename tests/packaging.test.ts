@@ -10,6 +10,7 @@ import {
   compileSettings,
   compileTarget,
   executableName,
+  fileDigest,
   repositoryCommit,
   repositoryRoot,
 } from "../scripts/build";
@@ -142,10 +143,16 @@ beforeAll(async () => {
     "compiled-serve.ts",
     join(workspace, "compiled-serve"),
   );
-  // Packaged once for the whole suite; every archive test below copies this
-  // output instead of compiling another binary.
+  // Packaged once for the whole suite from the binary already compiled above:
+  // packaging re-measures that binary and its metadata is checked against it, so
+  // the suite still compiles the CLI exactly once.
   packagedDist = join(workspace, "packaged");
-  await packageCli({ outDir: packagedDist, version: manifest.version, commit });
+  await packageCli({
+    outDir: packagedDist,
+    version: manifest.version,
+    commit,
+    executable: compiled,
+  });
 }, 300000);
 
 /**
@@ -838,6 +845,12 @@ describe("packaging declarations", () => {
       expect(script).toContain("--no-env-file");
       expect(script).toContain("--config=");
     }
+    // start and dev must run the CLI, which parses argv, so the flags a
+    // deployment passes to the script actually reach the serve command.
+    for (const name of ["start", "dev"]) {
+      expect(manifest.scripts[name]).toContain("src/cli.ts serve");
+      expect(manifest.scripts[name]).not.toContain("src/main.ts");
+    }
     expect(compileSettings.compile.autoloadDotenv).toBe(false);
     expect(compileSettings.compile.autoloadBunfig).toBe(false);
     expect(compileSettings.compile.autoloadTsconfig).toBe(false);
@@ -845,6 +858,136 @@ describe("packaging declarations", () => {
     expect(compileSettings.bytecode).toBe(false);
     expect(compileSettings.compile.target).toBe("bun-linux-x64-baseline");
   });
+
+  test("the documented `bun run start -- --env-file .env` reads that file", async () => {
+    // The invocation is run exactly as the README prints it. The fixture server
+    // configuration is complete but names an in-memory database, so the command
+    // gets all the way to the server and refuses it: a configuration that never
+    // resolved, or a provider call to an unroutable Freestyle endpoint, would
+    // report something else entirely.
+    const envFile = join(workspace, "operator.env");
+    await writeFile(
+      envFile,
+      [
+        "FREESTYLE_API_TOKEN=freestyle-fixture-token",
+        "FREESTYLE_SNAPSHOT_ID=snapshot",
+        "FREESTYLE_API_URL=http://127.0.0.1:1",
+        "SWARMFORGE_MODEL_BASE_URL=https://model.example/v1",
+        "SWARMFORGE_MODEL_API_KEY=model-fixture-key",
+        "SWARMFORGE_MODEL_NAME=qwen",
+        "SWARMFORGE_GIT_TREE=none",
+        "SWARMFORGE_DB_PATH=:memory:",
+        "",
+      ].join("\n"),
+    );
+    const proc = Bun.spawn(
+      [process.execPath, "run", "start", "--", "--env-file", envFile],
+      {
+        cwd: repositoryRoot,
+        env: { PATH: process.env.PATH ?? "", HOME: home },
+        stdout: "pipe",
+        stderr: "pipe",
+      },
+    );
+    const [code, , stderr] = await Promise.all([
+      proc.exited,
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+    ]);
+    expect(stderr).toContain("persistent database");
+    expect(stderr).not.toContain("Unknown option");
+    expect(stderr).not.toContain("freestyle-fixture-token");
+    expect(code).toBe(1);
+  }, 120000);
+
+  test("a release tag is never evaluated by a shell", async () => {
+    // A tag name is attacker-influenced text: a tag that only has to be
+    // compared must never reach a command line unquoted.
+    const malicious = `v${manifest.version}"; touch ${join(workspace, "injected")}; #`;
+    expect(releaseTagMismatch(malicious, manifest.version)).toContain(
+      "not a vMAJOR.MINOR.PATCH tag",
+    );
+    const proc = Bun.spawn(
+      [process.execPath, "scripts/package.ts", "tag", malicious],
+      {
+        cwd: repositoryRoot,
+        env: { PATH: process.env.PATH ?? "", HOME: home },
+        stdout: "pipe",
+        stderr: "pipe",
+      },
+    );
+    const [code, stderr] = await Promise.all([
+      proc.exited,
+      new Response(proc.stderr).text(),
+    ]);
+    expect(code).toBe(1);
+    expect(stderr).toContain("not a vMAJOR.MINOR.PATCH tag");
+    // Nothing the tag contained ran.
+    expect(await Bun.file(join(workspace, "injected")).exists()).toBe(false);
+  }, 120000);
+
+  test("the workflow grants write access only to the draft job", async () => {
+    const workflow = await readFile(
+      join(repositoryRoot, ".github", "workflows", "release.yml"),
+      "utf8",
+    );
+    expect(workflow).toContain("permissions:\n  contents: read");
+    const draft = workflow.slice(workflow.indexOf("draft-release:"));
+    expect(draft).toContain("permissions:\n      contents: write");
+    const build = workflow.slice(
+      workflow.indexOf("  build:"),
+      workflow.indexOf("draft-release:"),
+    );
+    expect(build).not.toContain("contents: write");
+    expect(build).not.toContain("github.token");
+    // No tag value is ever interpolated into a run script.
+    for (const match of workflow.matchAll(/^.*github\.ref_name.*$/gm))
+      expect((match[0] ?? "").trim()).toMatch(
+        /^RELEASE_TAG: \$\{\{ github\.ref_name \}\}$/,
+      );
+    expect(workflow).toContain(
+      'run: bun scripts/package.ts tag "$RELEASE_TAG"',
+    );
+  });
+
+  test("the suite compiles the CLI once and packages that binary", async () => {
+    // Packaging is given the binary the suite already compiled; the archive
+    // still has to describe it correctly, so nothing here is a bypass.
+    const reused = await packageCli({
+      outDir: join(workspace, "reused"),
+      version: manifest.version,
+      commit,
+      executable: {
+        path: binary,
+        version: manifest.version,
+        commit,
+        target: compileTarget,
+        bytes: (await Bun.file(binary).stat()).size,
+        sha256: await fileDigest(binary),
+      },
+    });
+    expect(reused.version).toBe(manifest.version);
+    // The reused binary is measured again, so its metadata is its own.
+    const metadata = JSON.parse(await readFile(reused.metadataPath, "utf8"));
+    expect(metadata.executable.sha256).toBe(await fileDigest(binary));
+    // A binary whose recorded version does not match the release is refused
+    // rather than packaged under the wrong name.
+    await expect(
+      packageCli({
+        outDir: join(workspace, "mismatched"),
+        version: manifest.version,
+        commit,
+        executable: {
+          path: binary,
+          version: "9.9.9",
+          commit,
+          target: compileTarget,
+          bytes: 1,
+          sha256: "",
+        },
+      }),
+    ).rejects.toThrow(/was built from/);
+  }, 120000);
 
   test("dist output is ignored and the lockfile keeps its format", async () => {
     const ignored = await readFile(join(repositoryRoot, ".gitignore"), "utf8");
