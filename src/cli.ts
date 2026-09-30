@@ -7,6 +7,8 @@ import { renderOverview } from "./cli/overview";
 import { runDashboard } from "./cli/tui";
 import { plain, redact, redactedSettings } from "./settings/inspect";
 import {
+  type ClientSettings,
+  type ResolvedSettings,
   resolveClientSettings,
   resolveServerSettings,
   SettingsError,
@@ -101,6 +103,45 @@ function selection(command: {
 }
 
 /**
+ * Scrubs text with the credential context the loader recorded for a resolved
+ * client result.
+ *
+ * That context is deliberately private to the settings module, and it is the only
+ * place that knows credential material from every layer: the config file, each
+ * environment file, the environment, the overrides, and values a later layer
+ * superseded. `redactedSettings` is the supported way to reach it, and it renders
+ * a client result from its `url` and `token` alone, so the text borrows the `url`
+ * slot for the length of one call. The resolved value belongs to this command and
+ * is restored on the way out, so nothing else can observe the borrowed field and
+ * nothing is rebuilt from selected keys.
+ */
+function scrub(
+  settings: ResolvedSettings<ClientSettings>,
+  text: string,
+): string {
+  const value = settings.value;
+  const endpoint = value.url;
+  try {
+    value.url = text;
+    return redactedSettings(settings).values.url ?? safeText(text);
+  } catch {
+    // A failure while rendering the context must never become the reason a
+    // credential is printed; the environment scrubber is the weaker floor.
+    return safeText(text);
+  } finally {
+    value.url = endpoint;
+  }
+}
+
+/** An error whose message is already scrubbed against the client credential context. */
+class ScrubbedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ScrubbedError";
+  }
+}
+
+/**
  * The resolver keeps the endpoint path as written, so a bare origin is still
  * pointed at the MCP surface.
  */
@@ -119,24 +160,40 @@ async function showStatus(
     ...selection(command),
     overrides: command.overrides,
   });
-  const client = await connectSwarmForge(
-    mcpEndpoint(settings.value.url),
-    settings.value.token,
-  );
+  const endpoint = mcpEndpoint(settings.value.url);
   try {
-    const data = await client.overview();
-    if (command.json) write(JSON.stringify(data));
-    else if (command.interactive && process.stdin.isTTY && process.stdout.isTTY)
-      await runDashboard(client, data);
-    else
-      write(
-        renderOverview(data, {
-          color: false,
-          width: process.stdout.columns || 100,
-        }),
-      );
-  } finally {
-    await client.close();
+    const client = await connectSwarmForge(endpoint, settings.value.token);
+    try {
+      const data = await client.overview();
+      // The endpoint is reported as resolved, not as typed: an operator can put a
+      // credential in a query string or in the user information of a URL.
+      data.url = scrub(settings, endpoint);
+      if (command.json) write(JSON.stringify(data));
+      else if (
+        command.interactive &&
+        process.stdin.isTTY &&
+        process.stdout.isTTY
+      )
+        await runDashboard(client, data);
+      else
+        write(
+          renderOverview(data, {
+            color: false,
+            width: process.stdout.columns || 100,
+          }),
+        );
+    } finally {
+      // Closing the client runs even when reading the overview failed, so a
+      // refused connection cannot leave a transport or socket behind.
+      await client.close();
+    }
+  } catch (error) {
+    // A remote error can echo the bearer header it received, and a close failure
+    // is raised from the same call, so both are reported through the credential
+    // context the resolver collected rather than through the raw message.
+    throw new ScrubbedError(
+      scrub(settings, error instanceof Error ? error.message : String(error)),
+    );
   }
   return 0;
 }

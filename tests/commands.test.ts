@@ -866,3 +866,195 @@ test("main resolves server settings and still refuses an in-memory database", as
     fixture.cleanup();
   }
 });
+
+/** A client credential that exists only in configuration, never in the environment. */
+const configToken = "config-only-credential";
+const environmentFileToken = "environment-file-credential";
+
+const denial = (request: Request) =>
+  new Response(`Denied ${request.headers.get("authorization") ?? "none"}`, {
+    status: 401,
+  });
+
+/** A server that refuses every request and echoes the bearer header it received. */
+function denyingServer() {
+  return Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    fetch: (request) => denial(request),
+  });
+}
+
+/**
+ * A real MCP surface that answers the handshake and then refuses every tool call,
+ * which is where an error arrives after the client is already connected.
+ */
+function denyingAfterConnect(h: ReturnType<typeof harness>) {
+  const swarm = createHttpHandler(h.coordinator);
+  const calls: string[] = [];
+  const server = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    fetch: async (request) => {
+      const body = await request.clone().text();
+      calls.push(body);
+      if (body.includes('"initialize"') || body.includes('"notifications/'))
+        return swarm(request);
+      return denial(request);
+    },
+  });
+  return { server, calls };
+}
+
+test("a remote error that echoes a resolved credential never prints it", async () => {
+  const fixture = fixtureRoot();
+  // Nothing credential-shaped is in the process environment, so only the loader's
+  // own resolution context can remove the value the server echoed back.
+  const server = denyingServer();
+  try {
+    const configFile = join(fixture.base, "client.toml");
+    writeFileSync(
+      configFile,
+      [
+        "schema_version = 1",
+        "",
+        "[client]",
+        `url = "http://127.0.0.1:${server.port}/mcp"`,
+        `token = "${configToken}"`,
+        "",
+      ].join("\n"),
+    );
+    const refused = await run(["status", "--config", configFile, "--json"], {
+      fixture,
+    });
+    expect(refused.exitCode).toBe(1);
+    expect(refused.stdout).toBe("");
+    expect(refused.stderr).toContain("Denied");
+    expect(refused.stderr).toContain("[REDACTED]");
+    expect(refused.stderr).not.toContain(configToken);
+
+    // The same refusal once the client is connected, while reading the overview.
+    const h = harness();
+    const { server: swarm, calls } = denyingAfterConnect(h);
+    const midwayConfig = join(fixture.base, "midway.toml");
+    writeFileSync(
+      midwayConfig,
+      [
+        "schema_version = 1",
+        "",
+        "[client]",
+        `url = "http://127.0.0.1:${swarm.port}/mcp"`,
+        `token = "${configToken}"`,
+        "",
+      ].join("\n"),
+    );
+    try {
+      const midway = await run(
+        ["status", "--config", midwayConfig, "--no-interactive"],
+        { fixture },
+      );
+      expect(midway.exitCode).toBe(1);
+      expect(midway.stdout).toBe("");
+      expect(midway.stderr).toContain("Denied");
+      expect(midway.stderr).not.toContain(configToken);
+      // The refusal arrived at a tool call, so the failure was raised after the
+      // handshake and not while connecting.
+      expect(calls.some((body) => body.includes('"tools/call"'))).toBe(true);
+    } finally {
+      await swarm.stop(true);
+      h.store.close();
+    }
+
+    // A credential layered over the first one is removed as well, and so is the
+    // value it superseded.
+    const envFile = join(fixture.base, "client.env");
+    writeFileSync(envFile, `SWARMFORGE_API_TOKEN=${environmentFileToken}\n`);
+    const superseded = await run(
+      ["status", "--config", configFile, "--env-file", envFile, "--json"],
+      { fixture },
+    );
+    expect(superseded.exitCode).toBe(1);
+    expect(superseded.stderr).not.toContain(environmentFileToken);
+    expect(superseded.stderr).not.toContain(configToken);
+  } finally {
+    await server.stop(true);
+    fixture.cleanup();
+  }
+});
+
+test("the printed endpoint carries no credential from any layer", async () => {
+  const fixture = fixtureRoot();
+  const h = harness();
+  h.store.create({ ...task, timeout_seconds: 60 });
+  const server = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    fetch: createHttpHandler(h.coordinator),
+  });
+  const endpoint = `http://127.0.0.1:${server.port}/mcp`;
+  try {
+    const configFile = join(fixture.base, "client.toml");
+    writeFileSync(
+      configFile,
+      [
+        "schema_version = 1",
+        "",
+        "[client]",
+        `token = "${configToken}"`,
+        "",
+      ].join("\n"),
+    );
+    // The endpoint the operator typed repeats the credential the resolver knows.
+    const query = await run(
+      [
+        "status",
+        "--config",
+        configFile,
+        "--url",
+        `${endpoint}?token=${configToken}`,
+        "--json",
+      ],
+      { fixture },
+    );
+    expect(query.exitCode).toBe(0);
+    expect(query.stderr).toBe("");
+    const reported = JSON.parse(query.stdout).url as string;
+    expect(reported).not.toContain(configToken);
+    expect(reported).toContain("token=[REDACTED]");
+    // The connection still used the endpoint exactly as it was written.
+    expect(reported.startsWith(`${endpoint}?`)).toBe(true);
+
+    // User information in the endpoint is a credential too.
+    const userinfo = await run(
+      [
+        "status",
+        "--url",
+        `http://operator:${configToken}@127.0.0.1:${server.port}/mcp`,
+        "--json",
+      ],
+      { fixture },
+    );
+    expect(userinfo.exitCode).toBe(0);
+    expect(JSON.parse(userinfo.stdout).url).not.toContain(configToken);
+
+    // The rendered snapshot prints the endpoint as well.
+    const snapshot = await run(
+      [
+        "status",
+        "--config",
+        configFile,
+        "--url",
+        `${endpoint}?token=${configToken}`,
+        "--no-interactive",
+      ],
+      { fixture },
+    );
+    expect(snapshot.exitCode).toBe(0);
+    expect(snapshot.stdout).not.toContain(configToken);
+    expect(snapshot.stdout).toContain("MCP");
+  } finally {
+    await server.stop(true);
+    h.store.close();
+    fixture.cleanup();
+  }
+});
