@@ -190,9 +190,11 @@ async function compileFixture(fixture: string, outfile: string) {
   return outfile;
 }
 
+// Removing the compiled binaries and archive fixtures can exceed the default
+// five-second hook timeout on disk; teardown has its own bounded budget.
 afterAll(async () => {
   if (workspace) await rm(workspace, { recursive: true, force: true });
-});
+}, 60000);
 
 describe("compiled CLI", () => {
   test("reports the version and commit the build defined, and the source falls back", async () => {
