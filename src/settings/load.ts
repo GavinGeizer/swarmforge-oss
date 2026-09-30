@@ -452,6 +452,26 @@ function collectSecrets(text: string, secrets: Set<string>) {
   }
 }
 
+/**
+ * Every key that carries a credential, including the client aliases, so the
+ * value is known before any file is read.
+ */
+const credentialKeys = [
+  ...new Set([
+    ...SECRET_KEYS,
+    ...clientFields.flatMap((field) =>
+      field.key === "token" ? field.env : [],
+    ),
+  ]),
+];
+
+function seedCredentials(collector: Collector, source: EnvView) {
+  for (const key of credentialKeys) {
+    const value = source[key];
+    if (value) collector.secrets.add(value);
+  }
+}
+
 async function readDocument(
   path: string,
   required: boolean,
@@ -477,28 +497,33 @@ async function readDocument(
     );
   }
   collectSecrets(raw, secrets);
+  // The read above is the raw path; every diagnostic from here is scrubbed with
+  // what the file itself revealed about the credentials it holds.
   let parsed: unknown;
   try {
     parsed = Bun.TOML.parse(raw);
   } catch (error) {
+    const safe = redact(path, secrets);
     throw new SettingsError(
       "config_invalid",
-      `Invalid TOML in ${path}: ${redact(message(error), secrets)}`,
-      path,
+      `Invalid TOML in ${safe}: ${redact(message(error), secrets)}`,
+      safe,
     );
   }
   const result = documentSchema.safeParse(parsed);
-  if (!result.success)
+  if (!result.success) {
+    const safe = redact(path, secrets);
     throw new SettingsError(
       "config_invalid",
-      `Invalid configuration file ${path}: ${redact(
+      `Invalid configuration file ${safe}: ${redact(
         result.error.issues
           .map((issue) => `${issue.path.join(".") || "root"}: ${issue.message}`)
           .join("; "),
         secrets,
       )}`,
-      path,
+      safe,
     );
+  }
   return result.data;
 }
 
@@ -623,7 +648,8 @@ async function readEnvFile(
     );
   }
   collectSecrets(raw, secrets);
-  return { path, values: parseEnvFile(raw, path, scope) };
+  // Only the diagnostic path is scrubbed; the file read is the raw path.
+  return { path, values: parseEnvFile(raw, redact(path, secrets), scope) };
 }
 
 /** An empty value means unset, exactly as the existing environment loader treats it. */
@@ -705,6 +731,10 @@ async function prepare(options: SettingsOptions): Promise<Prepared> {
     provenance: {},
     secrets: new Set(),
   };
+  // Credentials in the environment and the overrides are known before any read,
+  // so an early failure cannot echo a selected path that repeats one.
+  seedCredentials(collector, env);
+  seedCredentials(collector, options.overrides ?? {});
   const selected = options.configPath ?? selector(options, env);
   const path =
     selected === undefined

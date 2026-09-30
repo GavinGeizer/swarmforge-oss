@@ -1145,6 +1145,99 @@ metrics_teams = "team\\u001b[31m\\u0007"
     }
   });
 
+  test("scrubs a credential repeated in a selected config path", async () => {
+    const token = "path-credential-value-55";
+    const shapes = [
+      { env: { ...validEnv(), FREESTYLE_API_TOKEN: token } },
+      { env: { ...validEnv(), SWARMFORGE_API_TOKEN: token } },
+      { env: { ...validEnv(), SWARMFORGE_MODEL_API_KEY: token } },
+      { env: validEnv(), overrides: { FREESTYLE_API_TOKEN: token } },
+    ];
+    for (const shape of shapes) {
+      const dir = sandbox();
+      const error = await failure(
+        resolveServerSettings({
+          ...shape,
+          cwd: dir,
+          configPath: join(dir, `${token}-missing.toml`),
+        }),
+      );
+      expect((error as SettingsError).code).toBe("config_not_found");
+      expect(error.message).toContain("[REDACTED]");
+      expect(`${error.message} ${(error as SettingsError).path}`).not.toContain(
+        token,
+      );
+    }
+  });
+
+  test("scrubs a client alias credential from a selected config path", async () => {
+    const token = "client-path-credential-66";
+    const dir = sandbox();
+    const error = await failure(
+      resolveClientSettings({
+        cwd: dir,
+        configPath: join(dir, `${token}-missing.toml`),
+        env: { HOME: dir, SWARMFORGE_MCP_TOKEN: token },
+      }),
+    );
+    expect((error as SettingsError).code).toBe("config_not_found");
+    expect(`${error.message} ${(error as SettingsError).path}`).not.toContain(
+      token,
+    );
+  });
+
+  test("scrubs a credential repeated in a rejected config file name", async () => {
+    const token = "file-name-credential-77";
+    const dir = sandbox({
+      [`${token}-broken.toml`]: `schema_version = 1
+[client]
+url = "http://127.0.0.1:8787/mcp"
+token = "${token}"
+model = { broken
+`,
+      [`${token}-unknown.toml`]: `schema_version = 1
+[client]
+token = "${token}"
+[surprise]
+value = 1
+`,
+    });
+    for (const name of [`${token}-broken.toml`, `${token}-unknown.toml`]) {
+      const error = await failure(
+        resolveServerSettings({
+          cwd: dir,
+          configPath: join(dir, name),
+          env: { HOME: join(dir, "home") },
+        }),
+      );
+      expect((error as SettingsError).code).toBe("config_invalid");
+      expect(error.message).toContain("[REDACTED]");
+      expect(`${error.message} ${(error as SettingsError).path}`).not.toContain(
+        token,
+      );
+    }
+  });
+
+  test("scrubs a credential repeated in a rejected environment file name", async () => {
+    const token = "env-file-credential-88";
+    const dir = sandbox({
+      [`${token}.env`]: `FREESTYLE_API_TOKEN=${token}
+not an assignment
+`,
+    });
+    const error = await failure(
+      resolveServerSettings({
+        cwd: dir,
+        env: validEnv(),
+        envFiles: [`${token}.env`],
+      }),
+    );
+    expect((error as SettingsError).code).toBe("env_file_invalid");
+    expect(`${error.message} ${(error as SettingsError).path}`).not.toContain(
+      token,
+    );
+  });
+
   test("reports values and sources for exactly the same keys", async () => {
     const dir = sandbox();
     const client = redactedSettings(

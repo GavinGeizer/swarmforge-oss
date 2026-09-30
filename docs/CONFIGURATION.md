@@ -189,7 +189,11 @@ resolvers are not safe to print; render them with `redactedSettings`.
 
 Validation and parse errors are scrubbed the same way, including credential material that a
 later layer superseded and credential material in the file path of a failed read, so a
-diagnostic can be printed without leaking a token that appears in an unexpected field. Every
+diagnostic can be printed without leaking a token that appears in an unexpected field. Credential
+values in the environment, in the overrides and in the config or environment file being read are
+collected before any file is opened, so even a failure to read a selected file reports a scrubbed
+path. Only emitted text is scrubbed: the path that is read and `ResolvedSettings.configPath` are
+the real paths. Every
 message, path and rendered field also has C0 and C1 control characters removed, so a value
 carrying an escape sequence cannot drive the terminal of whoever reads the output. Diagnostics
 report file paths and line numbers, never file content.
