@@ -26,6 +26,10 @@ export class Coordinator {
   private ticking = false;
   private stopped = false;
   private lastReconcile = Date.now();
+  private inFlight = 0;
+  private idle: Promise<void> | undefined;
+  private wakeIdle: (() => void) | undefined;
+  private stopWaiters = new Set<() => void>();
   readonly inference = new Map<string, number>();
   readonly excerpts = new Map<string, ResponseExcerpt>();
   constructor(
@@ -74,6 +78,15 @@ export class Coordinator {
       if (!options.signal) return;
       onAbort = () => resolve("aborted");
       options.signal.addEventListener("abort", onAbort, { once: true });
+    });
+    // A shutdown wakes this wait instead of leaving it polling a database that is closing.
+    let onStop: (() => void) | undefined;
+    const stopping = new Promise<"stopping">((resolve) => {
+      if (this.stopped) resolve("stopping");
+      else {
+        onStop = () => resolve("stopping");
+        this.stopWaiters.add(onStop);
+      }
     });
     const result = (change: StateChange | null): StateChangeResult => {
       if (!change) {
@@ -133,15 +146,16 @@ export class Coordinator {
         const expired = new Promise<"expired">((resolve) => {
           timer = setTimeout(() => resolve("expired"), deadline - Date.now());
         });
-        let outcome: "expired" | "aborted" | "wake";
+        let outcome: "expired" | "aborted" | "stopping" | "wake";
         try {
-          outcome = await Promise.race([wake, expired, aborted]);
+          outcome = await Promise.race([wake, expired, aborted, stopping]);
         } finally {
           clearTimeout(timer);
           notify = undefined;
         }
         // A timeout still reports the cursor reached, so the next wait resumes past it.
         if (outcome === "aborted") throw new Error("Wait aborted");
+        if (outcome === "stopping") throw new Error("Server is stopping");
         if (outcome === "expired") {
           const last = next();
           return result(last);
@@ -150,6 +164,7 @@ export class Coordinator {
     } finally {
       unsubscribe();
       if (onAbort) options.signal?.removeEventListener("abort", onAbort);
+      if (onStop) this.stopWaiters.delete(onStop);
     }
   }
   spawn(input: unknown) {
@@ -240,9 +255,35 @@ export class Coordinator {
     this.locks.set(id, running);
     return running;
   }
+  // Every operation that can still write is counted, so a shutdown can prove no writer is
+  // running before the caller closes the database underneath it.
+  private async track<T>(operation: Promise<T>): Promise<T> {
+    if (this.inFlight === 0)
+      this.idle = new Promise<void>((resolve) => {
+        this.wakeIdle = resolve;
+      });
+    this.inFlight++;
+    try {
+      return await operation;
+    } finally {
+      this.inFlight--;
+      if (this.inFlight === 0) {
+        const wake = this.wakeIdle;
+        this.idle = undefined;
+        this.wakeIdle = undefined;
+        wake?.();
+      }
+    }
+  }
   async start() {
     await this.recover();
-    this.timer = setInterval(
+    await this.startProvisioning();
+  }
+  // Periodic provisioning is armed separately from recovery so the server can reserve its
+  // listeners first: a port conflict is reported before any worker VM is requested.
+  async startProvisioning() {
+    if (this.stopped) return;
+    this.timer ??= setInterval(
       () => void this.tick().catch(() => {}),
       this.config.SWARMFORGE_POLL_INTERVAL_MS,
     );
@@ -251,10 +292,17 @@ export class Coordinator {
   async stop() {
     this.stopped = true;
     clearInterval(this.timer);
+    this.timer = undefined;
+    for (const wake of this.stopWaiters) wake();
+    this.stopWaiters.clear();
+    while (this.idle) await this.idle;
     await Promise.allSettled([...this.locks.values()]);
   }
   async tick() {
     if (this.ticking || this.stopped) return;
+    await this.track(this.runTick());
+  }
+  private async runTick() {
     this.ticking = true;
     try {
       if (Date.now() - this.lastReconcile > 30000) {
@@ -308,6 +356,9 @@ export class Coordinator {
     }
   }
   async recover() {
+    await this.track(this.runRecover());
+  }
+  private async runRecover() {
     const vms = await this.bounded(this.provider.listWorkers());
     const all = this.store.all();
     const byId = new Map(all.map((w) => [w.worker_id, w]));
@@ -757,6 +808,15 @@ export class Coordinator {
     id: string,
     intent: "pause" | "resume" | "cancel" | "destroy",
     force = false,
+  ) {
+    if (this.stopped) throw new Error("Coordinator is stopping");
+    await this.track(this.runControl(id, intent, force));
+    return this.store.get(id);
+  }
+  private async runControl(
+    id: string,
+    intent: "pause" | "resume" | "cancel" | "destroy",
+    force: boolean,
   ) {
     const w = this.store.get(id);
     if (w.state === "destroyed") {
