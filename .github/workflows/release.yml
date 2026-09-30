@@ -1,0 +1,134 @@
+# Builds the standalone SwarmForge executable and its versioned archive.
+#
+# The toolchain is pinned: packaging needs the Bun 1.4.x compile API, and a
+# different Bun can silently produce a different binary from the same source.
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build and verify the executable
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.2"
+
+      - name: Verify the pinned toolchain
+        run: |
+          bun --version
+          test "$(bun --version)" = "1.4.2"
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Test
+        run: bun test
+
+      - name: Static checks
+        run: bun run check
+
+      - name: Build the executable
+        run: bun run build
+
+      - name: Package the versioned archive
+        run: bun run package
+
+      - name: Verify the packaged runtime
+        # A packaged artifact that cannot answer for itself is not a release:
+        # the executable must run with no Bun and no node_modules on PATH, and
+        # it must report the version and commit it was built from.
+        run: |
+          bun run package:verify
+          install -m 755 dist/swarmforge /usr/local/bin/swarmforge
+          env -i PATH=/usr/bin:/bin HOME=/root swarmforge --version
+          test "$(env -i PATH=/usr/bin:/bin HOME=/root swarmforge --version)" = "$(bun -e 'console.log(require("./package.json").version)')"
+          env -i PATH=/usr/bin:/bin HOME=/root swarmforge --help | grep "build $(git rev-parse HEAD)"
+          env -i PATH=/usr/bin:/bin HOME=/root swarmforge config path
+
+      - name: Extract the archive and check the installed mode
+        run: |
+          mkdir -p /tmp/swarmforge-release
+          tar -xzf "dist/swarmforge-v$(bun -e 'console.log(require("./package.json").version)')-linux-x64-glibc.tar.gz" -C /tmp/swarmforge-release
+          test -x /tmp/swarmforge-release/swarmforge
+          (cd /tmp/swarmforge-release && sha256sum -c SHA256SUMS)
+          install -m 755 /tmp/swarmforge-release/swarmforge /usr/local/bin/swarmforge-extracted
+          env -i PATH=/usr/bin:/bin HOME=/root swarmforge-extracted --version
+
+      - name: Upload build artifacts
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: swarmforge-linux-x64-glibc
+          path: |
+            dist/swarmforge
+            dist/SHA256SUMS
+            dist/metadata-*.json
+            dist/swarmforge-v*-linux-x64-glibc.tar.gz
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload release assets
+        if: github.event_name == 'push'
+        uses: actions/upload-artifact@v4
+        with:
+          name: swarmforge-linux-x64-glibc
+          path: |
+            dist/SHA256SUMS
+            dist/metadata-*.json
+            dist/swarmforge-v*-linux-x64-glibc.tar.gz
+          if-no-files-found: error
+          retention-days: 14
+
+  draft-release:
+    name: Draft the release for a matching tag
+    needs: build
+    # Only a pushed v* tag can create a release, and only when the tag names the
+    # packaged version. Nothing here publishes a release: the draft is created
+    # for a human to review and publish.
+    if: github.event_name == 'push'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.2"
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Build and package the release archive
+        run: |
+          bun run build
+          bun run package
+
+      - name: Require the tag to match the packaged version
+        run: bun run release:tag -- "${{ github.ref_name }}"
+
+      - name: Create a draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="$(bun -e 'console.log(require("./package.json").version)')"
+          gh release create "${{ github.ref_name }}" \
+            --draft \
+            --title "SwarmForge $version" \
+            --notes "Linux x64 (glibc) executable for SwarmForge $version, built from $(git rev-parse HEAD) with Bun $(bun --version). Verify with the shipped SHA256SUMS." \
+            "dist/swarmforge-v${version}-linux-x64-glibc.tar.gz" \
+            "dist/SHA256SUMS" \
+            "dist/metadata-${version}.json"
