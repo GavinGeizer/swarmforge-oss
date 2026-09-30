@@ -24,8 +24,8 @@ afterAll(() => {
 });
 
 // Every fixture is private to this suite; nothing is shared with other test files.
-function sandbox(files: Record<string, string> = {}) {
-  const dir = mkdtempSync(join(tmpdir(), "sf-settings-"));
+function sandbox(files: Record<string, string> = {}, prefix = "sf-settings-") {
+  const dir = mkdtempSync(join(tmpdir(), prefix));
   created.push(dir);
   for (const [name, content] of Object.entries(files)) {
     const path = join(dir, name);
@@ -906,7 +906,10 @@ db_path = "data/${secret}.sqlite"${host}
 describe("credential redaction regressions", () => {
   test("removes short credentials from unrelated values", async () => {
     for (const secret of lengths) {
-      const dir = sandbox({ "conf/c.toml": credentialConfig(secret) });
+      const dir = sandbox(
+        { "conf/c.toml": credentialConfig(secret) },
+        `sf-settings-${secret}-`,
+      );
       const resolved = await resolveServerSettings({
         cwd: dir,
         configPath: "conf/c.toml",
@@ -918,9 +921,11 @@ describe("credential redaction regressions", () => {
       expect(redacted.values.FREESTYLE_API_TOKEN).toBe("[REDACTED]");
       expect(redacted.values.SWARMFORGE_MODEL_API_KEY).toBe("[REDACTED]");
       expect(redacted.values.SWARMFORGE_METRICS_TEAMS).toBe("[REDACTED]");
-      expect(redacted.values.SWARMFORGE_DB_PATH).toBe(
-        join(dir, "conf/data/[REDACTED].sqlite"),
-      );
+      expect(
+        redacted.values.SWARMFORGE_DB_PATH?.endsWith(
+          join("conf", "data", "[REDACTED].sqlite"),
+        ),
+      ).toBe(true);
       expect(withoutRoot(rendered(redacted), dir)).not.toContain(secret);
     }
   });
