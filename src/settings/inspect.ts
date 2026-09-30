@@ -47,6 +47,59 @@ export function plain(value: string): string {
     .join("");
 }
 
+/** Credential keys whose value is a credential on the given settings surface. */
+function secretKeysFor(value: Record<string, unknown>): Set<string> {
+  return new Set(isServer(value) ? SECRET_KEYS : ["token"]);
+}
+
+/**
+ * The credential keys of a result that actually carry a value.
+ *
+ * Every nonempty value counts, including a short one: the loader accepts any
+ * string, so a one-character credential is still a credential.
+ */
+function reportedCredentials(value: Record<string, unknown>): string[] {
+  return [...secretKeysFor(value)].filter(
+    (key) => typeof value[key] === "string" && value[key] !== "",
+  );
+}
+
+/**
+ * The redactor a resolved result carries: the credential material collected from
+ * every source layer, including values a later layer superseded, plus the
+ * credential values the result itself currently holds.
+ */
+function resultRedactor(
+  settings: ResolvedSettings<Config> | ResolvedSettings<ClientSettings>,
+  value: Record<string, unknown>,
+): Redactor {
+  return new Redactor(() => [
+    ...(credentialContexts.get(settings) ?? []),
+    ...reportedCredentials(value).map((key) => String(value[key])),
+  ]);
+}
+
+/**
+ * Removes credential material and control characters from text, using the
+ * credential context recorded for a resolved result.
+ *
+ * A command that reports something the loader produced - a remote error that
+ * echoed a bearer header, a URL an operator typed - needs the same context
+ * `redactedSettings` uses, without rebuilding it from selected fields and
+ * without changing the result it was handed. The result is only read, so it is
+ * never mutated and can be reported as often as needed.
+ */
+export function redactedText(
+  settings: ResolvedSettings<Config> | ResolvedSettings<ClientSettings>,
+  text: string,
+): string {
+  return plain(
+    resultRedactor(settings, settings.value as Record<string, unknown>).text(
+      text,
+    ),
+  );
+}
+
 /**
  * Renders resolved settings as plain JSON-serializable data.
  *
@@ -59,16 +112,9 @@ export function redactedSettings(
   settings: ResolvedSettings<Config> | ResolvedSettings<ClientSettings>,
 ): RedactedSettings {
   const value = settings.value as Record<string, unknown>;
-  const secretKeys = new Set(isServer(value) ? SECRET_KEYS : ["token"]);
-  // Every nonempty value counts, including a short one: the loader accepts any
-  // string, so a one-character credential is still a credential.
-  const reported = [...secretKeys].filter(
-    (key) => typeof value[key] === "string" && value[key] !== "",
-  );
-  const redactor = new Redactor(() => [
-    ...(credentialContexts.get(settings) ?? []),
-    ...reported.map((key) => String(value[key])),
-  ]);
+  const secretKeys = secretKeysFor(value);
+  const reported = reportedCredentials(value);
+  const redactor = resultRedactor(settings, value);
   const entries: [string, unknown][] = isServer(value)
     ? Object.entries(value)
     : (["url", "token"] as const).map((key) => [key, value[key]]);
