@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { z } from "zod";
 import { type Config, loadConfig } from "../config";
-import { plain, redact, SECRET_KEYS } from "./inspect";
+import { plain, redact, SECRET_KEYS, withRedactionContext } from "./inspect";
 import {
   anchorPath,
   defaultConfigPath,
@@ -849,11 +849,14 @@ export async function resolveServerSettings(
       redact(message(error), collector.secrets),
     );
   }
-  return {
-    value,
-    configPath: prepared.configPath,
-    provenance: collector.provenance,
-  };
+  return withRedactionContext(
+    {
+      value,
+      configPath: prepared.configPath,
+      provenance: collector.provenance,
+    },
+    collector.secrets,
+  );
 }
 
 /**
@@ -883,9 +886,12 @@ export async function resolveClientSettings(
       ),
     );
   const token = collector.values.token;
-  return {
-    value: token === undefined ? { url } : { url, token },
-    configPath: prepared.configPath,
-    provenance: collector.provenance,
-  };
+  return withRedactionContext(
+    {
+      value: token === undefined ? { url } : { url, token },
+      configPath: prepared.configPath,
+      provenance: collector.provenance,
+    },
+    collector.secrets,
+  );
 }

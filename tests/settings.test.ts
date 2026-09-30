@@ -1389,3 +1389,47 @@ describe("read-only diagnostics", () => {
     expect(existsSync(join(dir, "env/secret.env.lock"))).toBe(false);
   });
 });
+
+test("diagnostics share credential context across client and server settings", async () => {
+  const clientCredential = "independent-client-bearer";
+  const providerCredential = "separate-provider-access";
+  const modelCredential = "distinct-model-access";
+  const dir = sandbox({
+    "config.toml": `schema_version = 1
+[client]
+token = "${clientCredential}"
+url = "https://mcp.example/${providerCredential}/${modelCredential}/mcp"
+[server]
+metrics_teams = "${clientCredential}"
+`,
+  });
+  const options = {
+    configPath: join(dir, "config.toml"),
+    env: {
+      ...validEnv(),
+      FREESTYLE_API_TOKEN: providerCredential,
+      SWARMFORGE_MODEL_API_KEY: modelCredential,
+      SWARMFORGE_MCP_TOKEN: "replacement-client-bearer",
+    },
+  };
+  for (const settings of [
+    await resolveServerSettings(options),
+    await resolveClientSettings(options),
+  ]) {
+    const rendered = JSON.stringify(redactedSettings(settings));
+    for (const credential of [
+      clientCredential,
+      providerCredential,
+      modelCredential,
+      options.env.SWARMFORGE_MCP_TOKEN,
+    ]) {
+      expect(rendered).not.toContain(credential);
+    }
+    // The private redaction context never adds credential-bearing result fields.
+    expect(Object.keys(settings).sort()).toEqual([
+      "configPath",
+      "provenance",
+      "value",
+    ]);
+  }
+});

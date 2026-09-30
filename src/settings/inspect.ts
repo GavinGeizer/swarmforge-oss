@@ -9,6 +9,18 @@ export const SECRET_KEYS = [
   "SWARMFORGE_API_TOKEN",
 ];
 
+// Keep credentials from every source layer and both settings surfaces private.
+// They must never become an enumerable property of a resolved settings object.
+const credentialContexts = new WeakMap<object, string[]>();
+
+export function withRedactionContext<T>(
+  settings: ResolvedSettings<T>,
+  credentials: Iterable<string>,
+): ResolvedSettings<T> {
+  credentialContexts.set(settings, [...credentials].filter(Boolean));
+  return settings;
+}
+
 export interface RedactedSettings {
   /** Config file that contributed values, or null when none was read. */
   config_path: string | null;
@@ -53,9 +65,10 @@ export function redactedSettings(
   const reported = [...secretKeys].filter(
     (key) => typeof value[key] === "string" && value[key] !== "",
   );
-  const redactor = new Redactor(() =>
-    reported.map((key) => String(value[key])),
-  );
+  const redactor = new Redactor(() => [
+    ...(credentialContexts.get(settings) ?? []),
+    ...reported.map((key) => String(value[key])),
+  ]);
   const entries: [string, unknown][] = isServer(value)
     ? Object.entries(value)
     : (["url", "token"] as const).map((key) => [key, value[key]]);

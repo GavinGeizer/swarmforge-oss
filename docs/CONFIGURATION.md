@@ -177,6 +177,10 @@ JSON-serializable data: `config_path`, `values`, `sources` and `secrets`. Creden
 material, so a token copied into another setting, an endpoint, a file name or a path is still
 removed.
 
+Resolver results retain private credential context from both client and server source layers,
+including superseded values. Render the original result rather than rebuilding it from selected
+fields; this context is not serialized or exposed as a result property.
+
 Every nonempty credential counts, however short. The loader accepts any string, so a
 one-character credential is a credential and is removed from every field, source and message.
 The cost is over-redaction: a very short credential also matches ordinary characters, and text
