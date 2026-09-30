@@ -42,17 +42,32 @@ bun run package:verify              # re-check the checksums and run the package
 Install it manually into your own home directory. Nothing is installed system-wide and no service is created. Set `VERSION` to the version in the archive name you downloaded (for example `0.1.0`); quoting it matters, an unquoted `<version>` would be read by the shell as a redirection:
 
 ```sh
-VERSION=0.1.0
-tmp="$(mktemp -d)"
-tar -xzf "dist/swarmforge-v${VERSION}-linux-x64-glibc.tar.gz" -C "$tmp"
-(cd "$tmp" && sha256sum -c SHA256SUMS)
-install -d "$HOME/.local/bin"
-install -m 755 "$tmp/swarmforge" "$HOME/.local/bin/swarmforge"
-rm -rf "$tmp"
-"$HOME/.local/bin/swarmforge" --version
+(
+  set -eu
+  VERSION=0.1.0
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' EXIT
+  tar -xzf "dist/swarmforge-v${VERSION}-linux-x64-glibc.tar.gz" -C "$tmp"
+  (cd "$tmp" && sha256sum -c SHA256SUMS)
+  install -d "$HOME/.local/bin"
+  install -m 755 "$tmp/swarmforge" "$HOME/.local/bin/swarmforge"
+  "$HOME/.local/bin/swarmforge" --version
+)
 ```
 
-The checksum is verified inside the extracted archive, where `SHA256SUMS` and the executable sit together, before anything is installed. Add `~/.local/bin` to `PATH` in the shell profile you already use, for example `export PATH="$HOME/.local/bin:$PATH"` in `~/.bashrc`, then open a new shell and `swarmforge` resolves by name. The executable needs no Bun, no `node_modules` and no checkout: it does not read `.env`, `bunfig.toml`, `tsconfig.json` or `package.json` from the directory it runs in, so a foreign directory cannot reconfigure it. Only Linux x64 with glibc is built and verified; `dist/` is ignored by Git.
+The whole block runs in a subshell with `set -e`, so a checksum that does not
+verify stops it there: the shell does not carry on to `install`, and a copy-paste
+fails with a nonzero status instead of reporting success. Running the subshell
+also leaves your own shell's `errexit` setting alone, and the trap removes the
+temporary directory whether the block succeeds or fails. The checksum is verified
+inside the extracted archive, where `SHA256SUMS` and the executable sit together,
+before anything is installed. Add `~/.local/bin` to `PATH` in the shell profile
+you already use, for example `export PATH="$HOME/.local/bin:$PATH"` in `~/.bashrc`,
+then open a new shell and `swarmforge` resolves by name. The executable needs no
+Bun, no `node_modules` and no checkout: it does not read `.env`, `bunfig.toml`,
+`tsconfig.json` or `package.json` from the directory it runs in, so a foreign
+directory cannot reconfigure it. Only Linux x64 with glibc is built and verified;
+`dist/` is ignored by Git.
 
 Check what you installed:
 

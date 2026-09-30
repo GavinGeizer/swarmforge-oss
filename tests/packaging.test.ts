@@ -1,6 +1,13 @@
 import { Database } from "bun:sqlite";
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  mkdtemp,
+  readdir,
+  readFile,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import type { Subprocess } from "bun";
@@ -1063,24 +1070,13 @@ describe("packaging declarations", () => {
   test("the documented install block installs a working executable", async () => {
     // The README block is executed here with a fake home, so a broken block is
     // a failing test rather than a surprise for an operator.
-    const readme = await readFile(join(repositoryRoot, "README.md"), "utf8");
     await copyPackaged(basename(readmeDist()));
-    const block = readme
-      .split("\n```sh\n")
-      .find((section) => section.includes("mktemp -d"))!
-      .split("\n```")[0]!
-      .replace(/"dist\//g, `"${readmeDist()}/`);
+    const { block } = await installBlock(readmeDist());
     const readmeHome = join(workspace, "readme-home");
     await Bun.$`mkdir -p ${readmeHome}`.quiet();
-    const shell = Bun.spawn(["bash", "-c", block], {
-      cwd: repositoryRoot,
-      env: { HOME: readmeHome, PATH: minimalPath },
-      stdout: "pipe",
-      stderr: "pipe",
-    });
-    const failure = await new Response(shell.stderr).text();
-    expect(await shell.exited).toBe(0);
-    expect(failure).toBe("");
+    const shell = await runBlock(block, readmeHome);
+    expect(shell.code).toBe(0);
+    expect(shell.stderr).toBe("");
     const installed = join(readmeHome, ".local", "bin", executableName);
     const mode = (await Bun.file(installed).stat()).mode & 0o777;
     expect(mode).toBe(0o755);
@@ -1092,4 +1088,84 @@ describe("packaging declarations", () => {
       ).exists(),
     ).toBe(true);
   }, 180000);
+
+  test("the documented install block refuses an archive with a bad checksum", async () => {
+    // A controlled archive: the same packaged binary, with a manifest whose
+    // digest does not match it. The block must fail, and must not install.
+    const tampered = await copyPackaged("tampered-install");
+    const badManifest = join(tampered, manifestName);
+    await Bun.write(badManifest, `${"0".repeat(64)}  ${executableName}\n`);
+    const staging = join(tampered, "restage");
+    await rm(staging, { recursive: true, force: true });
+    await Bun.$`mkdir -p ${staging}`.quiet();
+    for (const file of [
+      executableName,
+      manifestName,
+      `metadata-${manifest.version}.json`,
+    ])
+      await Bun.write(
+        join(staging, file),
+        await readFile(join(tampered, file)),
+      );
+    const archive = join(tampered, archiveName(manifest.version));
+    await Bun.spawn([
+      "tar",
+      "-czf",
+      archive,
+      "-C",
+      staging,
+      executableName,
+      manifestName,
+      `metadata-${manifest.version}.json`,
+    ]).exited;
+
+    const { block } = await installBlock(tampered);
+    const readmeHome = join(workspace, "bad-checksum-home");
+    await Bun.$`mkdir -p ${readmeHome}`.quiet();
+    const shell = await runBlock(block, readmeHome);
+    // A checksum that does not verify is reported and stops the block.
+    expect(shell.code).not.toBe(0);
+    // `sha256sum -c` names the file that failed, on stdout and on stderr.
+    expect(shell.stdout).toContain(`${executableName}: FAILED`);
+    expect(shell.stderr).toContain("did NOT match");
+    // And nothing is installed: no copy follows a rejected checksum.
+    const installed = join(readmeHome, ".local", "bin", executableName);
+    expect(await Bun.file(installed).exists()).toBe(false);
+    // The version probe at the end of the block never ran.
+    expect(shell.stdout).not.toContain(manifest.version);
+    // The temporary directory is cleaned up even though the block failed.
+    const leftovers = await readdir("/tmp").then((entries) =>
+      entries.filter((entry) => entry.startsWith("tmp.")),
+    );
+    expect(leftovers).toEqual([]);
+  }, 180000);
 });
+
+/**
+ * The install block exactly as the README prints it, with `dist/` pointed at a
+ * specific directory so a test can supply its own archive.
+ */
+async function installBlock(dist: string) {
+  const readme = await readFile(join(repositoryRoot, "README.md"), "utf8");
+  const block = readme
+    .split("\n```sh\n")
+    .find((section) => section.includes("mktemp -d"))!
+    .split("\n```")[0]!;
+  return { block: block.replace(/"dist\//g, `"${dist}/`) };
+}
+
+/** Runs a block in a clean shell with only HOME and PATH set. */
+async function runBlock(block: string, home: string) {
+  const shell = Bun.spawn(["bash", "-c", block], {
+    cwd: repositoryRoot,
+    env: { HOME: home, PATH: minimalPath },
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const [code, stdout, stderr] = await Promise.all([
+    shell.exited,
+    new Response(shell.stdout).text(),
+    new Response(shell.stderr).text(),
+  ]);
+  return { code, stdout, stderr };
+}
