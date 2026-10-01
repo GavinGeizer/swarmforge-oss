@@ -47,7 +47,7 @@ export function bootstrap(c: Config, w: Worker, d: Dispatch) {
   return `Worker ${w.worker_id}, task ${w.task_id}, role ${w.role}. Run ID: ${d.run_id}.
 Your starting workspace is ${c.SWARMFORGE_WORKSPACE}. ${source}
 Run relevant tests and report failures honestly. ${persistence} Report git.workspace if you work elsewhere, branch/commit/dirty/persisted when known. Never report credentials.
-Return the requested structured result with worker_id=${w.worker_id}, task_id=${w.task_id}, run_id=${d.run_id}. Also atomically write the same JSON to ${c.SWARMFORGE_WORKSPACE}/.swarmforge/result.json before your final response. Put non-source artifacts under .swarmforge/artifacts and task logs under .swarmforge/logs. Preserve failures and warnings; don't claim tests you didn't run.
+Return the requested structured result with worker_id=${w.worker_id}, task_id=${w.task_id}, run_id=${d.run_id}. Also atomically write the same JSON to ${c.SWARMFORGE_WORKSPACE}/.swarmforge/result.json before your final response. Put non-source artifacts under .swarmforge/artifacts and task logs under .swarmforge/logs, always relative to ${c.SWARMFORGE_WORKSPACE}. Artifact paths a task declares are workspace relative, and SwarmForge copies those files into private coordinator storage itself before the VM can be destroyed, so capture does not depend on you copying, summarizing or encoding anything. Preserve failures and warnings; don't claim tests you didn't run.
 Respond with exactly one JSON object and no markdown. It must match this JSON Schema: ${JSON.stringify(resultSchema.toJSONSchema())}
 The team lead's task follows.`;
 }

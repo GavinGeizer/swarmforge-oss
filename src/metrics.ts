@@ -1,5 +1,23 @@
 import { Counter, Gauge, Histogram, Registry } from "prom-client";
 import type { Coordinator } from "./coordinator";
+
+// Artifact kinds are recorded by the capture path, so the label set is fixed here: an
+// unexpected kind becomes "other" instead of creating unbounded metric cardinality.
+const artifactKinds = new Set([
+  "file",
+  "directory",
+  "snapshot",
+  "diagnostics",
+  "log",
+]);
+const finalizationStates = [
+  "pending",
+  "collecting",
+  "preserved",
+  "failed",
+  "abandoned",
+] as const;
+const artifactPages = 200;
 export class Metrics {
   constructor(readonly c: Coordinator) {}
   async render() {
@@ -71,6 +89,41 @@ export class Metrics {
       buckets: [1, 10, 60, 300, 900, 3600, 14400],
       registers: [registry],
     });
+    const preserved = new Counter({
+      name: "swarmforge_artifacts_preserved_total",
+      help: "Artifacts captured from workers and verified in coordinator storage",
+      labelNames: ["kind"],
+      registers: [registry],
+    });
+    const bytes = new Counter({
+      name: "swarmforge_artifacts_bytes_total",
+      help: "Verified artifact bytes stored by the coordinator",
+      labelNames: ["kind"],
+      registers: [registry],
+    });
+    const captureFailures = new Counter({
+      name: "swarmforge_artifacts_failed_total",
+      help: "Artifact captures that failed or were abandoned",
+      labelNames: ["kind"],
+      registers: [registry],
+    });
+    const collection = new Histogram({
+      name: "swarmforge_artifact_collection_duration_seconds",
+      help: "Time from capture start to a verified preserved artifact",
+      buckets: [0.1, 0.5, 1, 5, 15, 60, 300, 900],
+      registers: [registry],
+    });
+    const finalizations = new Gauge({
+      name: "swarmforge_finalizations",
+      help: "Worker artifact finalization records by stage",
+      labelNames: ["state"],
+      registers: [registry],
+    });
+    const salvage = new Counter({
+      name: "swarmforge_finalization_attempts_total",
+      help: "Automatic and operator-triggered artifact collection attempts",
+      registers: [registry],
+    });
     const all = this.c.store.all();
     active.set(
       all.filter((w) => ["running", "waiting"].includes(w.state)).length,
@@ -128,6 +181,53 @@ export class Metrics {
         if (end) duration.observe((end.at - d.sent_at) / 1000);
       }
     }
+    await this.artifacts(preserved, bytes, captureFailures, collection);
+    let attempts = 0;
+    for (const w of all) {
+      const finalization = w.finalization;
+      if (!finalization) continue;
+      finalizations.inc({
+        state: finalizationStates.includes(finalization.state)
+          ? finalization.state
+          : "pending",
+      });
+      attempts += Math.max(0, finalization.attempts);
+    }
+    salvage.inc(attempts);
     return registry.metrics();
+  }
+  // Preserved records and their finalization attempts are reconstructed from durable
+  // storage on every scrape, so restarts and manual retries keep the same totals. Nothing
+  // worker-, task-, path- or content-specific is used as a label or a value.
+  private async artifacts(
+    preserved: Counter<"kind">,
+    bytes: Counter<"kind">,
+    failed: Counter<"kind">,
+    collection: Histogram,
+  ) {
+    const kind = (value: string) =>
+      artifactKinds.has(value) ? value : "other";
+    let offset = 0;
+    for (let page = 0; page < artifactPages; page++) {
+      let listed: Awaited<ReturnType<Coordinator["artifacts"]["list"]>>;
+      try {
+        listed = await this.c.artifacts.list({ offset, limit: 100 });
+      } catch {
+        return;
+      }
+      for (const record of listed.artifacts) {
+        const label = { kind: kind(record.kind) };
+        if (record.state === "preserved") {
+          preserved.inc(label);
+          bytes.inc(label, Math.max(0, record.size));
+          if (record.retrieved_at && record.retrieved_at >= record.created_at)
+            collection.observe(
+              (record.retrieved_at - record.created_at) / 1000,
+            );
+        } else failed.inc(label);
+      }
+      if (listed.next_offset === null || listed.next_offset <= offset) return;
+      offset = listed.next_offset;
+    }
   }
 }

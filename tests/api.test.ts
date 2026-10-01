@@ -51,8 +51,37 @@ test("MCP client can create, observe, message, query team/task and collect a str
   await server.connect(a);
   await client.connect(b);
   const tools = await client.listTools();
-  expect(tools.tools).toHaveLength(17);
+  expect(tools.tools).toHaveLength(24);
   expect(tools.tools.map((t) => t.name)).toContain("wait_for_state_change");
+  expect(tools.tools.map((t) => t.name)).toEqual(
+    expect.arrayContaining([
+      "list_artifacts",
+      "get_artifact_metadata",
+      "preserve_artifact",
+      "read_artifact",
+      "snapshot_worker",
+      "retry_worker_finalization",
+      "list_worker_files",
+    ]),
+  );
+  // Retrieval is read-only; only explicit preservation and retry may mutate a worker.
+  for (const name of [
+    "list_artifacts",
+    "get_artifact_metadata",
+    "read_artifact",
+    "list_worker_files",
+  ])
+    expect(
+      tools.tools.find((t) => t.name === name)?.annotations?.readOnlyHint,
+    ).toBe(true);
+  for (const name of [
+    "preserve_artifact",
+    "snapshot_worker",
+    "retry_worker_finalization",
+  ])
+    expect(
+      tools.tools.find((t) => t.name === name)?.annotations?.readOnlyHint,
+    ).toBe(false);
   const created = await client.callTool({
     name: "spawn_worker",
     arguments: task,
