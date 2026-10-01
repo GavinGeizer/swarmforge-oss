@@ -1,0 +1,224 @@
+// Shared artifact contracts. This module is decided once here: the transport,
+// the storage backend, the service and the lifecycle/API layers all speak these
+// types, so a change belongs in this file rather than in a caller's scratch copy.
+
+/**
+ * One bounded byte stream out of a worker guest, already staged privately
+ * inside it. `size` and `sha256` describe the staged bytes exactly, so storage
+ * can refuse a truncated or corrupted transfer without buffering it. `cleanup`
+ * removes the private staging copy and is safe to call more than once.
+ */
+export interface ArtifactTransfer {
+  stream: ReadableStream<Uint8Array>;
+  size: number;
+  sha256: string;
+  filename: string;
+  cleanup(): Promise<void>;
+}
+
+export interface ArtifactEntry {
+  name: string;
+  kind: "file" | "directory" | "symlink" | "other";
+  /** Present for regular files only. */
+  size?: number;
+}
+
+export interface ArtifactListing {
+  entries: ArtifactEntry[];
+  next_offset: number | null;
+  /** Entries beyond `maxEntries` exist and were not described. */
+  truncated?: boolean;
+  /** Entries in the directory, bounded by `maxEntries`. */
+  total?: number;
+}
+
+export interface ArtifactListingOptions {
+  offset?: number;
+  limit?: number;
+  signal?: AbortSignal;
+  maxEntries?: number;
+  maxDepth?: number;
+}
+
+export interface ArtifactOpenOptions {
+  /** Hard cap on the staged bytes. A larger source is refused, never cut. */
+  maxBytes: number;
+  signal?: AbortSignal;
+  /** Stage only this window instead of the whole file. */
+  offset?: number;
+  length?: number;
+}
+
+export interface ArtifactSnapshotOptions {
+  paths?: string[];
+  maxBytes: number;
+  maxEntries: number;
+  maxDepth: number;
+  signal?: AbortSignal;
+}
+
+export interface ArtifactDiagnosticsOptions {
+  maxBytes: number;
+  signal?: AbortSignal;
+}
+
+export interface ArtifactDiagnostic {
+  /** Logical name of the capture, for example `logs/opencode-journal.txt`. */
+  path: string;
+  transfer: ArtifactTransfer;
+}
+
+/**
+ * The only way artifact bytes leave a worker guest. Providers that cannot offer
+ * it fail clearly; there is no stat/read fallback, because re-resolving a path
+ * per component is the race this interface exists to remove.
+ */
+export interface WorkerArtifactTransport {
+  list(
+    vmId: string,
+    root: string,
+    path: string,
+    options?: ArtifactListingOptions,
+  ): Promise<ArtifactListing>;
+  open(
+    vmId: string,
+    root: string,
+    path: string,
+    options: ArtifactOpenOptions,
+  ): Promise<ArtifactTransfer>;
+  snapshot(
+    vmId: string,
+    root: string,
+    options: ArtifactSnapshotOptions,
+  ): Promise<ArtifactTransfer & { truncated?: boolean; entries?: number }>;
+  diagnostics(
+    vmId: string,
+    root: string,
+    options: ArtifactDiagnosticsOptions,
+  ): Promise<ArtifactDiagnostic[]>;
+}
+
+export type ArtifactState = "preserving" | "preserved" | "failed";
+
+export interface ArtifactRecord {
+  artifact_id: string;
+  task_id: string;
+  worker_id: string;
+  run_id: string | null;
+  original_path: string;
+  storage_key: string | null;
+  filename: string;
+  size: number;
+  sha256: string | null;
+  created_at: number;
+  retrieved_at: number | null;
+  state: ArtifactState;
+  attempts: number;
+  error: string | null;
+  kind: string;
+}
+
+export interface ArtifactListQuery {
+  worker_id?: string;
+  task_id?: string;
+  offset?: number;
+  limit?: number;
+}
+
+export interface ArtifactListResult {
+  artifacts: ArtifactRecord[];
+  next_offset: number | null;
+}
+
+export interface ArtifactPreserveOptions {
+  signal?: AbortSignal;
+  runId?: string | null;
+  kind?: string;
+}
+
+export interface ArtifactSnapshotRequest {
+  signal?: AbortSignal;
+  paths?: string[];
+  runId?: string | null;
+}
+
+/** Model-facing reads are bounded; raw storage stays faithful. */
+export const safeReadLimit = 32768;
+
+/** Workspace-relative artifact paths: no traversal, no absolute, no surprises. */
+export const maxArtifactPathBytes = 1024;
+export const maxArtifactPathComponents = 32;
+
+export class ArtifactPathError extends Error {}
+
+/** C0 controls, DEL and C1 controls: never legitimate in a path or entry name. */
+export function hasControlCharacter(value: string): boolean {
+  for (const character of value) {
+    const code = character.codePointAt(0) ?? 0;
+    if (code < 32 || code === 127 || (code >= 128 && code <= 159)) return true;
+  }
+  return false;
+}
+
+/**
+ * Validates a workspace-relative path. Deliberately stricter than the kernel:
+ * a path that is safe on one host may still be unsafe when it reaches a guest,
+ * and a rejected path must never reach the filesystem at all.
+ */
+export function validateRelativePath(path: unknown): string {
+  if (typeof path !== "string" || path.length === 0)
+    throw new ArtifactPathError("Artifact path must be a non-empty string");
+  if (Buffer.byteLength(path) > maxArtifactPathBytes)
+    throw new ArtifactPathError("Artifact path exceeds 1024 bytes");
+  if (path.startsWith("/") || path.startsWith("~"))
+    throw new ArtifactPathError("Artifact path must be workspace-relative");
+  if (path.includes("\\"))
+    throw new ArtifactPathError("Artifact path must not contain backslashes");
+  const parts = path.split("/");
+  if (parts.length > maxArtifactPathComponents)
+    throw new ArtifactPathError(
+      `Artifact path has more than ${maxArtifactPathComponents} components`,
+    );
+  for (const part of parts) {
+    if (!part || part === "." || part === "..")
+      throw new ArtifactPathError(
+        "Artifact path must not be empty or traverse directories",
+      );
+    if (hasControlCharacter(part))
+      throw new ArtifactPathError("Artifact path contains a control character");
+  }
+  return parts.join("/");
+}
+
+/**
+ * The absolute root a transport may open under. It comes from configuration,
+ * never from a request, and it is opened with O_NOFOLLOW by the guest helper.
+ */
+export function validateRoot(root: unknown): string {
+  if (typeof root !== "string" || !root.startsWith("/"))
+    throw new ArtifactPathError("Artifact root must be an absolute path");
+  if (root.includes("\\") || root.includes("\0"))
+    throw new ArtifactPathError("Artifact root contains an invalid character");
+  if (Buffer.byteLength(root) > 4096)
+    throw new ArtifactPathError("Artifact root exceeds 4096 bytes");
+  const parts = root.split("/").filter((part) => part && part !== ".");
+  if (parts.some((part) => part === ".." || hasControlCharacter(part)))
+    throw new ArtifactPathError("Artifact root must not traverse directories");
+  return `/${parts.join("/")}`;
+}
+
+/** A storage filename: no separators, no traversal, bounded length. */
+export function safeFilename(name: unknown, fallback = "artifact.bin"): string {
+  const raw = typeof name === "string" ? name : "";
+  const cleaned = raw
+    .split("/")
+    .at(-1)!
+    .replace(/[^A-Za-z0-9._-]+/g, "_")
+    .replace(/^\.+/, "")
+    .slice(0, 96);
+  return cleaned.length >= 1 ? cleaned : fallback;
+}
+
+export function isSha256(value: unknown): value is string {
+  return typeof value === "string" && /^[0-9a-f]{64}$/.test(value);
+}
