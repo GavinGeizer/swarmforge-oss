@@ -373,5 +373,7 @@ function artifactTimeout(config: Config) {
   const raw = (config as unknown as Record<string, unknown>)
     .SWARMFORGE_ARTIFACT_TIMEOUT_MS;
   const value = typeof raw === "number" ? raw : Number(raw);
-  return Number.isSafeInteger(value) && value > 0 ? value : 120000;
+  // The guest API accepts 1–300000 ms for one exec.
+  if (!Number.isSafeInteger(value) || value <= 0) return 120000;
+  return Math.min(value, 300000);
 }
