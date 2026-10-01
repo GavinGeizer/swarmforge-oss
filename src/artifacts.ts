@@ -145,7 +145,7 @@ export class ArtifactService {
   readonly limits: ArtifactLimits;
   readonly storage: ArtifactStorage;
   readonly repository: ArtifactRepository;
-  private readonly root: string;
+  private readonly roots = new Map<string, string>();
   private readonly redactor: ReturnType<typeof redactorFor>;
   private active = 0;
   private waiting: (() => void)[] = [];
@@ -156,7 +156,7 @@ export class ArtifactService {
     readonly provider: WorkerProvider,
   ) {
     this.limits = artifactLimits(config);
-    this.root = validateRoot(config.SWARMFORGE_WORKSPACE);
+    this.root();
     this.storage = new LocalArtifactStorage(artifactStorageDir(config));
     this.repository = new ArtifactRepository(store.db);
     this.redactor = redactorFor({ config, store } as unknown as Coordinator);
@@ -187,6 +187,23 @@ export class ArtifactService {
         code,
       );
     }
+  }
+
+  /**
+   * The absolute root a transport may open under, as configured right now.
+   *
+   * It is read from configuration per capture rather than frozen at
+   * construction: the value is the boundary of every path this service opens, so
+   * a coordinator that is pointed at a different workspace must not keep serving
+   * the old one. Validation is pure, so the result is remembered per value.
+   */
+  private root(): string {
+    const configured = this.config.SWARMFORGE_WORKSPACE;
+    const known = this.roots.get(configured);
+    if (known) return known;
+    const validated = validateRoot(configured);
+    this.roots.set(configured, validated);
+    return validated;
   }
 
   private transport(): WorkerArtifactTransport {
@@ -345,7 +362,7 @@ export class ArtifactService {
       record,
       async (transport, vmId, signal) => {
         const transfer = await this.classify(() =>
-          transport.open(vmId, this.root, requested, {
+          transport.open(vmId, this.root(), requested, {
             maxBytes: this.limits.maxBytes,
             signal,
           }),
@@ -384,7 +401,7 @@ export class ArtifactService {
       record,
       async (transport, vmId, signal) => {
         const transfer = await this.classify(() =>
-          transport.snapshot(vmId, this.root, {
+          transport.snapshot(vmId, this.root(), {
             ...(paths.length ? { paths } : {}),
             maxBytes: this.limits.maxBytes,
             maxEntries: this.limits.maxEntries,
@@ -420,7 +437,7 @@ export class ArtifactService {
         workerId,
         async (transport, vmId, signal) => {
           const captured = await this.classify(() =>
-            transport.diagnostics(vmId, this.root, {
+            transport.diagnostics(vmId, this.root(), {
               maxBytes: this.limits.maxBytes,
               signal,
             }),
@@ -466,14 +483,15 @@ export class ArtifactService {
   }
 
   /**
-   * Every regular file in one live guest directory level.
+   * Every regular file in one live guest directory, with each nested directory
+   * archived as its own snapshot.
    *
    * The whole level is paged in, not just the first page, and a listing that
    * reached a cap is refused rather than reported as a complete collection: the
    * caller keeps the source instead of concluding that everything was salvaged.
-   * A nested directory is not flattened and not silently dropped either; it is
-   * left to an explicit request, which is the only thing that can decide how deep
-   * a salvage should go.
+   * A nested directory is neither flattened into the parent nor dropped: it
+   * becomes its own bounded archive, which is the only way a directory
+   * collection can carry a tree without pretending it captured one.
    */
   async collectDirectory(
     workerId: string,
@@ -484,14 +502,23 @@ export class ArtifactService {
     const entries = await this.everyEntry(workerId, directory, options);
     const records: ArtifactRecord[] = [];
     for (const entry of entries) {
-      if (!listable(entry) || entry.kind !== "file") continue;
+      if (!listable(entry)) continue;
       const child = `${directory}/${entry.name}`;
-      records.push(
-        await this.preserve(workerId, child, {
-          ...(options.signal ? { signal: options.signal } : {}),
-          ...(options.runId === undefined ? {} : { runId: options.runId }),
-        }),
-      );
+      if (entry.kind === "file")
+        records.push(
+          await this.preserve(workerId, child, {
+            ...(options.signal ? { signal: options.signal } : {}),
+            ...(options.runId === undefined ? {} : { runId: options.runId }),
+          }),
+        );
+      else if (entry.kind === "directory")
+        records.push(
+          await this.snapshot(workerId, {
+            paths: [child],
+            ...(options.signal ? { signal: options.signal } : {}),
+            ...(options.runId === undefined ? {} : { runId: options.runId }),
+          }),
+        );
     }
     return records;
   }
@@ -553,7 +580,7 @@ export class ArtifactService {
       workerId,
       async (transport, vmId, signal) =>
         this.classify(() =>
-          transport.open(vmId, this.root, requested, {
+          transport.open(vmId, this.root(), requested, {
             maxBytes: Math.max(1, options.length),
             offset: options.offset,
             length: options.length,
@@ -583,7 +610,7 @@ export class ArtifactService {
       this.limits.maxEntries,
     );
     return this.classify(() =>
-      transport.list(worker.vm_id!, this.root, relative, {
+      transport.list(worker.vm_id!, this.root(), relative, {
         offset: options.offset ?? 0,
         limit: Math.min(options.limit ?? 100, maxEntries),
         maxEntries,

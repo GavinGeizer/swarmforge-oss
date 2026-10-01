@@ -372,10 +372,13 @@ test("collecting a directory stores each regular file and skips the rest", async
   expect(records.map((r) => r.original_path).sort()).toEqual([
     ".swarmforge/artifacts/one.txt",
     ".swarmforge/artifacts/two.bin",
+    "snapshot:.swarmforge/artifacts/nested",
   ]);
-  // One level is what a directory declaration means; a nested directory is left
-  // to an explicit request rather than silently flattened or silently dropped.
-  expect(records.some((r) => r.original_path.includes("nested"))).toBe(false);
+  // A nested directory becomes its own bounded archive rather than being
+  // flattened into the parent or dropped, so a tree is not silently truncated.
+  expect(records.find((r) => r.original_path.endsWith("nested"))?.kind).toBe(
+    "snapshot",
+  );
   for (const record of records) expect(record.state).toBe("preserved");
 });
 
