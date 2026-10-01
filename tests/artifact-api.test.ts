@@ -1,3 +1,4 @@
+import { Database } from "bun:sqlite";
 import { expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import {
@@ -1005,5 +1006,90 @@ test.skipIf(!(await smokeModule))(
     expect(
       smoke.safeMessage(new Error("y".repeat(5000)), secret).length,
     ).toBeLessThanOrEqual(500);
+  },
+);
+
+// Optional until the package 1 local fixture exists: the smoke module imports it directly.
+const salvageModule = import(
+  "../scripts/artifact-salvage-smoke" as string
+).catch(() => null) as Promise<{
+  safeMessage: (error: unknown, ...secrets: string[]) => string;
+  redactReport: (value: unknown) => unknown;
+  rememberSecrets: (...values: (string | undefined)[]) => void;
+  consistentCopy: (source: string, target: string) => void;
+} | null>;
+
+test.skipIf(!(await salvageModule))(
+  "every reported field is scrubbed recursively, not only top-level strings",
+  async () => {
+    const smoke = (await salvageModule)!;
+    const secret = "nested-report-secret-4c1e";
+    smoke.rememberSecrets(secret, "second-known-secret-7a2b");
+    const payload = {
+      path: `logs/${secret}.log`,
+      nested: { deeper: [`prefix ${secret} suffix`, "token=also-secret"] },
+      count: 7,
+      flag: true,
+      nothing: null,
+    };
+    const redacted = smoke.redactReport(payload) as {
+      path: string;
+      nested: { deeper: string[] };
+      count: number;
+      flag: boolean;
+      nothing: null;
+    };
+    expect(redacted.path).toBe("logs/[REDACTED].log");
+    expect(redacted.nested.deeper[0]).toBe("prefix [REDACTED] suffix");
+    expect(redacted.nested.deeper[1]).toBe("token=[REDACTED]");
+    expect(redacted.count).toBe(7);
+    expect(redacted.flag).toBe(true);
+    expect(redacted.nothing).toBeNull();
+    const serialized = JSON.stringify(redacted);
+    expect(serialized).not.toContain(secret);
+    expect(serialized).not.toContain("second-known-secret-7a2b");
+    expect(serialized).not.toContain("also-secret");
+    // Long provider text is truncated after scrubbing, not before.
+    expect(
+      (smoke.redactReport("x".repeat(4000)) as string).length,
+    ).toBeLessThanOrEqual(500);
+  },
+);
+
+test.skipIf(!(await salvageModule))(
+  "the freestyle probe snapshots a live WAL database consistently and never writes to it",
+  async () => {
+    const smoke = (await salvageModule)!;
+    const root = mkdtempSync(join(tmpdir(), "swarmforge-snapshot-"));
+    const live = join(root, "live.sqlite");
+    const copy = join(root, "copy.sqlite");
+    // A database whose rows are still only in the write-ahead log: copying the file alone
+    // would miss them, and any write to the source here would disturb the running process.
+    const db = new Database(live, { create: true });
+    try {
+      db.exec("PRAGMA journal_mode=WAL");
+      db.exec("CREATE TABLE workers(worker_id TEXT PRIMARY KEY, vm_id TEXT)");
+      db.run("INSERT INTO workers VALUES(?,?)", ["w-wal", "vm-wal"]);
+      smoke.consistentCopy(live, copy);
+    } finally {
+      db.close();
+    }
+    const snapshot = new Database(copy, { readonly: true });
+    const rows = snapshot.query("SELECT worker_id, vm_id FROM workers").all();
+    snapshot.close();
+    expect(rows).toEqual([{ worker_id: "w-wal", vm_id: "vm-wal" }]);
+    // The live database is untouched: it still accepts writes and still reports WAL mode.
+    const live2 = new Database(live);
+    expect(live2.query("PRAGMA journal_mode").get()).toEqual({
+      journal_mode: "wal",
+    });
+    live2.run("INSERT INTO workers VALUES(?,?)", ["w-after", "vm-after"]);
+    expect(live2.query("SELECT count(*) n FROM workers").get()).toEqual({
+      n: 2,
+    });
+    live2.close();
+    // A snapshot is never overwritten in place.
+    expect(() => smoke.consistentCopy(live, copy)).toThrow();
+    rmSync(root, { recursive: true, force: true });
   },
 );

@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { Database } from "bun:sqlite";
 // End-to-end artifact salvage smoke.
 //
 // Local mode (default) drives the capture contract end to end: a worker writes findings.json
@@ -23,7 +24,6 @@
 // writes to the live database: it works on a private copy of it.
 import { createHash } from "node:crypto";
 import {
-  copyFileSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -113,19 +113,42 @@ const digest = (bytes: Uint8Array | string) =>
   createHash("sha256").update(bytes).digest("hex");
 class SmokeFailure extends Error {}
 // Known secrets for the run, so every reported message is scrubbed before it is printed.
+// Configured credentials and per-worker OpenCode passwords both count, and the whole payload is
+// scrubbed recursively: no reported field is trusted to be free of a secret.
 const known: string[] = [];
+const passwordSources: (() => { server_password: string }[])[] = [];
 function report(error: unknown) {
-  return safeMessage(error, ...known);
+  return safeMessage(error, ...secrets());
+}
+export function rememberSecrets(...values: (string | undefined)[]) {
+  known.push(...values.filter((value): value is string => Boolean(value)));
+}
+function secrets(): string[] {
+  return [
+    ...known,
+    ...passwordSources.flatMap((all) => all().map((w) => w.server_password)),
+    ...Object.entries(process.env)
+      .filter(([key]) => /TOKEN|KEY|SECRET|PASSWORD/.test(key))
+      .map(([, value]) => value ?? ""),
+  ].filter(Boolean);
+}
+// Scrubs every string anywhere in a reported payload, then truncates.
+export function redactReport(value: unknown): unknown {
+  if (typeof value === "string") return report(value).slice(0, 500);
+  if (Array.isArray(value)) return value.map(redactReport);
+  if (value && typeof value === "object")
+    return Object.fromEntries(
+      Object.entries(value).map(([key, entry]) => [key, redactReport(entry)]),
+    );
+  return value;
 }
 type ArtifactRecord = Awaited<ReturnType<Coordinator["artifacts"]["preserve"]>>;
+// Provider and lifecycle errors are scrubbed and truncated before they reach a report.
+function describe(error: unknown) {
+  return report(error);
+}
 function note(event: string, detail: Record<string, unknown> = {}) {
-  const scrubbed = Object.fromEntries(
-    Object.entries(detail).map(([k, v]) => [
-      k,
-      typeof v === "string" ? report(v) : v,
-    ]),
-  );
-  console.log(JSON.stringify({ event, ...scrubbed }));
+  console.log(JSON.stringify(redactReport({ event, ...detail })));
 }
 // Thrown rather than exiting so temporary guest databases and workspaces are still removed.
 function fail(message: string): never {
@@ -145,12 +168,14 @@ export function safeMessage(error: unknown, ...secrets: string[]) {
     .slice(0, 500);
 }
 
-// Reads a preserved artifact back over the authenticated HTTP download, the same route a
-// lead uses, and returns the bytes plus the verified checksum.
+// Reads a preserved artifact back over the authenticated HTTP download, the same route a lead
+// uses. The stream is hashed in chunks, so a retained VM's artifact is never buffered whole;
+// only a small preview of a bounded artifact is kept for the report.
+const previewLimit = 4096;
 async function downloadVerified(
   c: Coordinator,
   record: ArtifactRecord,
-): Promise<{ bytes: Uint8Array; sha256: string }> {
+): Promise<{ bytes: Uint8Array; sha256: string; size: number }> {
   const token = c.config.SWARMFORGE_API_TOKEN;
   const server = Bun.serve({
     hostname: "127.0.0.1",
@@ -165,15 +190,27 @@ async function downloadVerified(
     if (!response.ok) throw new Error(`download returned ${response.status}`);
     if ((response.headers.get("x-content-type-options") ?? "") !== "nosniff")
       throw new Error("download response is not marked nosniff");
-    const bytes = new Uint8Array(await response.arrayBuffer());
-    const sha256 = digest(bytes);
-    if (bytes.length !== record.size)
+    const hash = createHash("sha256");
+    const preview: Uint8Array[] = [];
+    let size = 0;
+    for await (const chunk of response.body as ReadableStream<Uint8Array>) {
+      const bytes = new Uint8Array(chunk);
+      hash.update(bytes);
+      size += bytes.length;
+      if (size <= previewLimit) preview.push(bytes);
+    }
+    const sha256 = hash.digest("hex");
+    if (size !== record.size)
       throw new Error("downloaded length does not match the preserved record");
     if (!record.sha256 || sha256 !== record.sha256)
       throw new Error(
         "downloaded checksum does not match the preserved record",
       );
-    return { bytes, sha256 };
+    return {
+      bytes: new Uint8Array(Buffer.concat(preview)),
+      sha256,
+      size,
+    };
   } finally {
     await server.stop(true);
   }
@@ -202,7 +239,7 @@ async function localSmoke(opts: Options) {
     SWARMFORGE_API_TOKEN: "salvage-smoke-token-with-enough-characters",
     SWARMFORGE_METRICS_ENABLED: "false",
   });
-  known.push(
+  rememberSecrets(
     config.FREESTYLE_API_TOKEN,
     config.SWARMFORGE_MODEL_API_KEY,
     config.SWARMFORGE_API_TOKEN ?? "",
@@ -213,6 +250,7 @@ async function localSmoke(opts: Options) {
       "capture fixture exposes no artifact transport; salvage cannot be proven",
     );
   const store = new Store(dbPath);
+  passwordSources.push(() => store.all());
   const agent = new DeadOpenCode();
   const coordinator = new Coordinator(config, store, provider, agent);
   const findings = `${JSON.stringify(
@@ -399,7 +437,7 @@ async function localSmoke(opts: Options) {
     const before = await downloadVerified(coordinator, record);
     note("download_verified", {
       stage: "pre-destruction",
-      bytes: before.bytes.length,
+      bytes: before.size,
       sha256: before.sha256,
     });
     await coordinator.control(settled.worker_id, "destroy");
@@ -417,6 +455,11 @@ async function localSmoke(opts: Options) {
     const reread = await downloadVerified(coordinator, after);
     if (reread.sha256 !== findingsDigest)
       fail("post-destruction checksum mismatch");
+    if (
+      Buffer.from(reread.bytes).toString("utf8") !==
+      findings.slice(0, reread.bytes.length)
+    )
+      fail("post-destruction preview does not match the worker output");
     const listedAfter = await client.callTool({
       name: "list_artifacts",
       arguments: { worker_id: destroyed.worker_id },
@@ -429,7 +472,7 @@ async function localSmoke(opts: Options) {
       fail("artifact metadata did not survive worker destruction");
     note("download_verified", {
       stage: "post-destruction",
-      bytes: reread.bytes.length,
+      bytes: reread.size,
       sha256: reread.sha256,
     });
     note("smoke_passed", {
@@ -454,22 +497,51 @@ async function localSmoke(opts: Options) {
   }
 }
 
+// A consistent, private copy of the live database. `VACUUM INTO` reads through the WAL and
+// writes a fresh snapshot, unlike copying the file, and the source is opened read-only so the
+// running coordinator's database is never written, checkpointed or locked by this probe.
+export function consistentCopy(source: string, target: string) {
+  if (existsSync(target))
+    throw new SmokeFailure("private snapshot already exists");
+  let live: Database | undefined;
+  try {
+    live = new Database(source, { readonly: true });
+    live.exec("VACUUM INTO ?", [target] as never);
+  } catch (error) {
+    throw new SmokeFailure(
+      `could not take a consistent snapshot of the configured database: ${describe(error)}`,
+    );
+  } finally {
+    live?.close();
+  }
+}
+
 async function freestyleSmoke(opts: Options) {
   if (!opts.freestyle) fail("--freestyle requires a VM identifier");
-  const config = loadConfig();
-  known.push(
-    config.FREESTYLE_API_TOKEN,
-    config.SWARMFORGE_MODEL_API_KEY,
-    config.SWARMFORGE_API_TOKEN ?? "",
+  const live = loadConfig();
+  rememberSecrets(
+    live.FREESTYLE_API_TOKEN,
+    live.SWARMFORGE_MODEL_API_KEY,
+    live.SWARMFORGE_API_TOKEN ?? "",
   );
-  if (!config.SWARMFORGE_API_TOKEN)
+  if (!live.SWARMFORGE_API_TOKEN)
     fail("freestyle mode requires SWARMFORGE_API_TOKEN for the download check");
-  // Work on a private copy of the database and a private storage root: a retained VM must
-  // never be disturbed by a salvage probe.
+  if (live.SWARMFORGE_DB_PATH === ":memory:")
+    fail(
+      "freestyle mode needs a configured database file to locate the worker",
+    );
+  // Everything this mode writes stays under one private root: the database copy, the artifact
+  // storage and any staging. The live database is read through a consistent snapshot only.
   const root = mkdtempSync(join(tmpdir(), "swarmforge-salvage-vm-"));
   const dbPath = join(root, "swarmforge.sqlite");
-  copyFileSync(config.SWARMFORGE_DB_PATH, dbPath);
+  consistentCopy(live.SWARMFORGE_DB_PATH, dbPath);
+  const config = {
+    ...live,
+    SWARMFORGE_DB_PATH: dbPath,
+    SWARMFORGE_ARTIFACT_DIR: join(root, "artifacts"),
+  };
   const store = new Store(dbPath);
+  passwordSources.push(() => store.all());
   const provider: WorkerProvider = new FreestyleProvider(config);
   const coordinator = new Coordinator(
     config,
@@ -494,6 +566,8 @@ async function freestyleSmoke(opts: Options) {
       worker_id: workerId,
       vm_id: vm.id,
       vm_state: vm.state,
+      snapshot_of: dbPath,
+      storage: join(root, "artifacts"),
     });
     const preserved: ArtifactRecord[] = [];
     if (opts.snapshot) {
@@ -515,10 +589,7 @@ async function freestyleSmoke(opts: Options) {
             await coordinator.artifacts.preserve(workerId, path, {}),
           );
         } catch (error) {
-          note("preserve_failed", {
-            path,
-            error: error instanceof Error ? error.message : "unknown error",
-          });
+          note("preserve_failed", { path, error: describe(error) });
         }
       }
     }
@@ -526,13 +597,21 @@ async function freestyleSmoke(opts: Options) {
       fail("nothing could be preserved from the retained VM");
     const checked: Record<string, unknown>[] = [];
     for (const record of preserved) {
-      const { bytes, sha256 } = await downloadVerified(coordinator, record);
+      // Streamed and hashed in chunks: a retained VM's artifact is never buffered whole.
+      const { bytes, sha256, size } = await downloadVerified(
+        coordinator,
+        record,
+      );
       checked.push({
         artifact_id: record.artifact_id,
         original_path: record.original_path,
-        size: record.size,
+        size,
         sha256,
-        verified: sha256 === record.sha256 && bytes.length === record.size,
+        verified: sha256 === record.sha256 && size === record.size,
+        // A bounded preview of a small artifact only; nothing large is ever printed or kept.
+        ...(size <= previewLimit
+          ? { preview: Buffer.from(bytes).toString("utf8").slice(0, 200) }
+          : {}),
       });
     }
     note("vm_salvaged", {

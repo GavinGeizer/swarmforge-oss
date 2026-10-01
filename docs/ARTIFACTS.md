@@ -73,7 +73,7 @@ provider is asked to delete anything.
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
-| `SWARMFORGE_ARTIFACT_DIR` | `artifacts` beside the database | Private storage root. A memory database uses temporary private storage. |
+| `SWARMFORGE_ARTIFACT_DIR` | `artifacts` beside the database | Private storage root, set as an absolute path. A memory database uses temporary private storage. |
 | `SWARMFORGE_ARTIFACT_MAX_BYTES` | `1073741824` | Maximum bytes for one captured file or archive. |
 | `SWARMFORGE_ARTIFACT_MAX_ENTRIES` | `10000` | Maximum entries in one directory or snapshot. |
 | `SWARMFORGE_ARTIFACT_MAX_DEPTH` | `32` | Maximum directory depth. |
@@ -195,7 +195,11 @@ as a subprocess over the real raw byte streaming transport, a dead OpenCode serv
 database, normal destruction of the workspace and a checksum comparison. The run refuses to
 report success unless it can see helper commands executed, guest staging left empty and the
 checksum matching after destruction, and it prints which capture implementation it used. `bun scripts/artifact-salvage-smoke.ts --freestyle <vm-id>` performs the same
-read-and-verify pass against one retained Freestyle VM without a worker model; it never
-destroys the VM. A local filesystem run proves the coordinator and manager surfaces, not the
+read-and-verify pass against one retained Freestyle VM without a worker model. It never destroys
+the VM: it reads the live database through a consistent read-only snapshot taken with SQLite's
+`VACUUM INTO`, redirects its own database path and `SWARMFORGE_ARTIFACT_DIR` into a private
+temporary root, streams and hashes every download in bounded chunks, and prints only metadata and
+a small text preview. Destroying a retained VM stays an explicit operator action, exercised
+separately. A local filesystem run proves the coordinator and manager surfaces, not the
 guest helper: the descriptor-relative capture itself is proven by the provider tests and by the
 `--freestyle` mode.
