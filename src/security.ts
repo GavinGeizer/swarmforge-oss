@@ -142,6 +142,9 @@ export function publicWorker(c: Coordinator, id: string, detail = false) {
     deadline_at: w.deadline_at,
     error: w.error,
     pending_control: w.intent,
+    // Preservation is reported separately so completed, failed and cancelled keep their own
+    // meaning for clients, and an exhausted collection is visible with its attempts and error.
+    finalization: w.finalization ?? null,
     tokens: c.store.tokens({ worker_id: id }),
     pending_messages: c.store
       .dispatches(id)

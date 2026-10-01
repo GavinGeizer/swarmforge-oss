@@ -1,0 +1,881 @@
+import { expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { WorkerArtifactTransport } from "../src/artifact-types";
+import { loadConfig } from "../src/config";
+import { Coordinator } from "../src/coordinator";
+import { publicWorker } from "../src/security";
+import { Store } from "../src/store";
+import {
+  config,
+  FakeAgent,
+  FakeProvider,
+  harness,
+  runToRunning,
+  sha256,
+  task,
+} from "./helpers";
+
+// Collection is bounded and retried on a short clock so behavioural tests stay deterministic.
+const fast = {
+  SWARMFORGE_FINALIZATION_RETRY_MS: 1,
+  SWARMFORGE_ARTIFACT_TIMEOUT_MS: 500,
+};
+const settledStates = ["preserved", "failed", "abandoned"];
+const decode = (bytes: Uint8Array) => new TextDecoder().decode(bytes);
+
+async function within<T>(ms: number, promise: Promise<T>): Promise<T> {
+  return Promise.race([
+    promise,
+    Bun.sleep(ms).then(() => {
+      throw new Error(`operation did not settle within ${ms}ms`);
+    }),
+  ]);
+}
+
+// Drives the coordinator tick and the bounded preservation attempt until the finalization
+// record reaches a terminal state, exactly as the poll loop would.
+async function finalized(h: ReturnType<typeof harness>, id: string) {
+  for (let attempt = 0; attempt < 14; attempt++) {
+    await h.coordinator.tick();
+    await h.coordinator.finalize(id);
+    const record = h.store.get(id).finalization;
+    if (record && settledStates.includes(record.state)) return h.store.get(id);
+    await Bun.sleep(2);
+  }
+  return h.store.get(id);
+}
+
+async function started(h: ReturnType<typeof harness>, taskId = "task") {
+  const worker = h.coordinator.spawn({ ...task, task_id: taskId });
+  await runToRunning(h, worker.worker_id);
+  const current = h.store.get(worker.worker_id);
+  return {
+    id: worker.worker_id,
+    vm: current.vm_id!,
+    run: h.store.dispatch(worker.worker_id)!.run_id,
+  };
+}
+
+function records(h: ReturnType<typeof harness>, id: string) {
+  return h.coordinator.artifacts.list({ worker_id: id }).artifacts;
+}
+
+test("completion preserves the default collection under the settled run id", async () => {
+  const h = harness(fast);
+  const { id, vm, run } = await started(h);
+  await h.provider.writeFile(
+    vm,
+    "/workspace/.swarmforge/artifacts/report.txt",
+    "regression-body",
+  );
+  await h.provider.writeFile(
+    vm,
+    "/workspace/.swarmforge/logs/build.log",
+    "log",
+  );
+  await h.provider.writeFile(vm, "/workspace/.swarmforge/diagnostics", "diag");
+  h.agent.complete(h.store.get(id));
+  await h.coordinator.tick();
+  const settled = await finalized(h, id);
+  // The task outcome keeps its own meaning; preservation is visible separately.
+  expect(settled.state).toBe("completed");
+  expect(settled.finalization?.state).toBe("preserved");
+  expect(settled.finalization?.run_id).toBe(run);
+  expect(settled.finalization?.attempts).toBe(1);
+  expect(settled.finalization?.error).toBeNull();
+  expect(settled.finalization?.completed_at).toBeTruthy();
+  const byPath = new Map(records(h, id).map((r) => [r.original_path, r]));
+  expect([...byPath.keys()].sort()).toEqual([
+    ".swarmforge/artifacts/report.txt",
+    ".swarmforge/diagnostics",
+    ".swarmforge/logs/build.log",
+    ".swarmforge/result.json",
+  ]);
+  const report = byPath.get(".swarmforge/artifacts/report.txt")!;
+  expect(report.state).toBe("preserved");
+  expect(report.sha256).toBe(sha256("regression-body"));
+  expect(report.size).toBe(Buffer.byteLength("regression-body"));
+  expect(report.run_id).toBe(run);
+  expect(decode(h.coordinator.artifacts.read(report.artifact_id))).toBe(
+    "regression-body",
+  );
+  // Opt-in only: no workspace snapshot and no artifact bytes through exec output.
+  expect(h.provider.transportSnapshots).toBe(0);
+  expect(
+    h.provider.execCommands.some((command) => /base64/i.test(command)),
+  ).toBe(false);
+  h.store.close();
+});
+
+test("declared findings survive a malformed result with no model assistance", async () => {
+  const h = harness(fast);
+  const worker = h.coordinator.spawn({
+    ...task,
+    artifacts: [{ path: ".swarmforge/findings.json", required: true }],
+  });
+  await runToRunning(h, worker.worker_id);
+  const vm = h.store.get(worker.worker_id).vm_id!;
+  const run = h.store.dispatch(worker.worker_id)!.run_id;
+  await h.provider.writeFile(
+    vm,
+    "/workspace/.swarmforge/findings.json",
+    JSON.stringify({ findings: ["regression"] }),
+  );
+  h.agent.complete(h.store.get(worker.worker_id), { bad: true });
+  const settled = await finalized(h, worker.worker_id);
+  expect(settled.state).toBe("failed");
+  expect(settled.error).toBe("Missing or malformed structured result");
+  expect(settled.finalization?.state).toBe("preserved");
+  const finding = records(h, worker.worker_id).find(
+    (r) => r.original_path === ".swarmforge/findings.json",
+  );
+  expect(finding?.run_id).toBe(run);
+  expect(
+    JSON.parse(decode(h.coordinator.artifacts.read(finding!.artifact_id))),
+  ).toEqual({
+    findings: ["regression"],
+  });
+  h.store.close();
+});
+
+test("a configured failure snapshots the workspace and an ordinary completion does not", async () => {
+  const h = harness({ ...fast, SWARMFORGE_ARTIFACT_TIMEOUT_MS: 2000 });
+  const worker = h.coordinator.spawn({ ...task, snapshot_on_failure: true });
+  await runToRunning(h, worker.worker_id);
+  const vm = h.store.get(worker.worker_id).vm_id!;
+  await h.provider.writeFile(vm, "/workspace/repo/main.ts", "export {};");
+  h.agent.complete(h.store.get(worker.worker_id), {
+    status: "failed",
+    summary: "model reported a failure",
+  });
+  const settled = await finalized(h, worker.worker_id);
+  expect(settled.state).toBe("failed");
+  expect(settled.error).toBe("model reported a failure");
+  expect(settled.finalization?.state).toBe("preserved");
+  expect(h.provider.transportSnapshots).toBe(1);
+  const snapshot = records(h, worker.worker_id).find(
+    (r) => r.kind === "snapshot",
+  );
+  expect(snapshot?.original_path).toBe("workspace.tar.gz");
+  expect(snapshot?.sha256).toBeTruthy();
+  h.store.close();
+
+  const plain = harness(fast);
+  const other = await started(plain);
+  await plain.provider.writeFile(
+    other.vm,
+    "/workspace/repo/main.ts",
+    "export {};",
+  );
+  plain.agent.complete(plain.store.get(other.id));
+  expect((await finalized(plain, other.id)).finalization?.state).toBe(
+    "preserved",
+  );
+  expect(plain.provider.transportSnapshots).toBe(0);
+  plain.store.close();
+});
+
+test("an OpenCode outage keeps the task running until its deadline and then finalizes", async () => {
+  const h = harness(fast);
+  const { id, vm } = await started(h);
+  await h.provider.writeFile(
+    vm,
+    "/workspace/.swarmforge/artifacts/partial.txt",
+    "partial",
+  );
+  h.agent.broken = true;
+  await h.coordinator.tick();
+  const running = h.store.get(id);
+  expect(running.state).toBe("running");
+  expect(running.error).toContain("retrying within deadline");
+  expect(running.finalization).toBeUndefined();
+  h.store.patch(id, { deadline_at: Date.now() - 1 });
+  const settled = await finalized(h, id);
+  expect(settled.state).toBe("failed");
+  expect(settled.error).toBe("Worker task timed out");
+  expect(settled.finalization?.state).toBe("preserved");
+  expect(
+    records(h, id).find(
+      (r) => r.original_path === ".swarmforge/artifacts/partial.txt",
+    ),
+  ).toBeTruthy();
+  h.store.close();
+});
+
+test("a token-idle quiesce finalizes the retained workspace", async () => {
+  const h = harness({
+    ...fast,
+    SWARMFORGE_TOKEN_IDLE_TIMEOUT_SECONDS: 1,
+  });
+  const { id, vm } = await started(h);
+  await h.provider.writeFile(vm, "/workspace/.swarmforge/logs/run.log", "tail");
+  h.store.patch(id, { token_progress_at: Date.now() - 5000 });
+  const settled = await finalized(h, id);
+  expect(settled.state).toBe("failed");
+  expect(settled.error).toContain("No token progress");
+  expect(settled.finalization?.state).toBe("preserved");
+  expect(
+    records(h, id).find((r) => r.original_path === ".swarmforge/logs/run.log"),
+  ).toBeTruthy();
+  h.store.close();
+});
+
+test("a workspace result salvages a turn whose OpenCode session is gone", async () => {
+  const h = harness(fast);
+  const { id, vm, run } = await started(h);
+  await h.provider.writeFile(
+    vm,
+    "/workspace/.swarmforge/result.json",
+    JSON.stringify({
+      worker_id: id,
+      run_id: run,
+      status: "completed",
+      summary: "salvaged from disk",
+    }),
+  );
+  h.agent.broken = true;
+  const settled = await finalized(h, id);
+  expect(settled.state).toBe("completed");
+  expect(settled.finalization?.state).toBe("preserved");
+  expect(h.store.result(id)?.summary).toBe("salvaged from disk");
+  h.store.close();
+});
+
+test("cancellation stops production promptly and never waits on preservation", async () => {
+  const h = harness(fast);
+  const { id, vm } = await started(h);
+  await h.provider.writeFile(
+    vm,
+    "/workspace/.swarmforge/artifacts/notes.txt",
+    "notes",
+  );
+  h.provider.transportFailure = "helper unavailable";
+  const cancelled = await within(2000, h.coordinator.control(id, "cancel"));
+  expect(cancelled.state).toBe("cancelled");
+  expect(cancelled.finalization?.state).toBe("pending");
+  expect(cancelled.finalization?.attempts).toBe(0);
+  expect(cancelled.finalization?.completed_at).toBeNull();
+  // The attempt is bounded, fails and backs off; the production stop did not wait for any of it.
+  const backing = await h.coordinator.finalize(id);
+  expect(backing.state).toBe("cancelled");
+  expect(backing.finalization?.attempts).toBe(3);
+  expect(backing.finalization?.error ?? "").toContain("helper unavailable");
+  expect(h.provider.vms.has(vm)).toBe(true);
+  // A scheduled retry far in the future does not delay another cancellation.
+  h.store.patch(id, {
+    finalization: {
+      ...backing.finalization!,
+      next_retry_at: Date.now() + 600000,
+    },
+  });
+  expect((await within(2000, h.coordinator.control(id, "cancel"))).state).toBe(
+    "cancelled",
+  );
+  h.store.patch(id, {
+    finalization: {
+      ...backing.finalization!,
+      next_retry_at: Date.now() + 600000,
+    },
+  });
+  await expect(h.coordinator.retryFinalization(id)).rejects.toThrow(
+    "already scheduled",
+  );
+  h.provider.transportFailure = "";
+  h.store.patch(id, {
+    finalization: { ...backing.finalization!, next_retry_at: null },
+  });
+  const recovered = await within(5000, h.coordinator.retryFinalization(id));
+  expect(recovered.finalization?.state).toBe("preserved");
+  expect(
+    decode(
+      h.coordinator.artifacts.read(
+        records(h, id).find(
+          (r) => r.original_path === ".swarmforge/artifacts/notes.txt",
+        )!.artifact_id,
+      ),
+    ),
+  ).toBe("notes");
+  h.store.close();
+});
+
+test("an interrupted boot records a preservation failure instead of hanging", async () => {
+  const h = harness(fast);
+  const worker = h.coordinator.spawn(task);
+  // The guest never existed, so there is nothing to preserve and nothing to wait for.
+  h.store.transition(worker.worker_id, "provisioning", {
+    provision_started_at: Date.now() - 3600_000,
+  });
+  const settled = await finalized(h, worker.worker_id);
+  expect(settled.state).toBe("failed");
+  expect(settled.error).toBe("Provisioning timed out");
+  expect(settled.finalization?.state).toBe("failed");
+  expect(settled.finalization?.error ?? "").toContain("VM");
+  expect(settled.finalization?.completed_at).toBeTruthy();
+  // Nothing to collect settles immediately, so destruction is not stranded.
+  const destroyed = await within(
+    2000,
+    h.coordinator.control(worker.worker_id, "destroy"),
+  );
+  expect(destroyed.state).toBe("destroyed");
+  h.store.close();
+});
+
+test("a vanished VM records the lost workspace and leaves destruction unblocked", async () => {
+  const h = harness(fast);
+  const { id, vm } = await started(h);
+  await h.provider.writeFile(
+    vm,
+    "/workspace/.swarmforge/artifacts/lost.txt",
+    "x",
+  );
+  h.provider.vms.delete(vm);
+  await h.coordinator.recover();
+  const settled = await finalized(h, id);
+  expect(settled.state).toBe("failed");
+  expect(settled.vm_missing).toBe(true);
+  expect(settled.error).toBe("VM disappeared; local workspace is lost");
+  expect(settled.finalization?.state).toBe("failed");
+  expect((await within(2000, h.coordinator.control(id, "destroy"))).state).toBe(
+    "destroyed",
+  );
+  h.store.close();
+});
+
+test("normal destruction refuses an unpreserved workspace and succeeds once it settles", async () => {
+  const h = harness(fast);
+  const { id, vm } = await started(h);
+  await h.provider.writeFile(
+    vm,
+    "/workspace/.swarmforge/artifacts/keep.txt",
+    "keep",
+  );
+  h.agent.complete(h.store.get(id));
+  await h.coordinator.tick();
+  h.provider.transportFailure = "helper unavailable";
+  expect((await finalized(h, id)).finalization?.state).toBe("failed");
+  const refused = await within(5000, h.coordinator.control(id, "destroy"));
+  // Nothing is deleted while preservation is unsettled or has failed.
+  expect(refused.state).toBe("recovery_required");
+  expect(refused.error).toContain("Artifact preservation has not settled");
+  expect(refused.finalization?.state).not.toBe("abandoned");
+  expect(h.provider.vms.has(vm)).toBe(true);
+  expect(refused.intent).toBeNull();
+  // A deliberate retry restores preservation, and then normal destruction proceeds.
+  h.provider.transportFailure = "";
+  expect(
+    (await within(5000, h.coordinator.retryFinalization(id))).finalization
+      ?.state,
+  ).toBe("preserved");
+  const destroyed = await within(5000, h.coordinator.control(id, "destroy"));
+  expect(destroyed.state).toBe("destroyed");
+  expect(h.provider.vms.has(vm)).toBe(false);
+  expect(
+    decode(
+      h.coordinator.artifacts.read(
+        records(h, id).find(
+          (r) => r.original_path === ".swarmforge/artifacts/keep.txt",
+        )!.artifact_id,
+      ),
+    ),
+  ).toBe("keep");
+  h.store.close();
+});
+
+test("force destruction abandons a live collection before deleting the VM", async () => {
+  const h = harness({ ...fast, SWARMFORGE_ARTIFACT_TIMEOUT_MS: 400 });
+  const { id, vm } = await started(h);
+  await h.provider.writeFile(
+    vm,
+    "/workspace/.swarmforge/artifacts/keep.txt",
+    "keep",
+  );
+  h.agent.complete(h.store.get(id));
+  await h.coordinator.tick();
+  const transferring = new Promise<void>((resolve) => {
+    h.provider.slowStarted = resolve;
+  });
+  h.provider.transportSlow = true;
+  await h.coordinator.tick();
+  await transferring;
+  // Collecting is never preserved: an unfinished attempt is not a preserved workspace.
+  expect(h.store.get(id).finalization?.state).toBe("collecting");
+  const forced = await within(5000, h.coordinator.control(id, "destroy", true));
+  expect(forced.state).toBe("destroyed");
+  expect(forced.finalization?.state).toBe("abandoned");
+  expect(h.provider.vms.has(vm)).toBe(false);
+  expect(h.provider.transportAborted).toBeGreaterThan(0);
+  h.provider.transportSlow = false;
+  await finalized(h, id);
+  expect(h.store.get(id).finalization?.state).toBe("abandoned");
+  const events = h.store.events(id).map((event) => event.type);
+  expect(events).toContain("finalization.abandoned");
+  expect(events).not.toContain("finalization.preserved");
+  // A destroyed worker is a closed decision and cannot be reopened.
+  await expect(h.coordinator.retryFinalization(id)).rejects.toThrow(
+    "Worker destroyed",
+  );
+  h.store.close();
+});
+
+test("a restart retries an interrupted collection and never marks it preserved early", async () => {
+  const root = mkdtempSync(join(tmpdir(), "sf-finalization-"));
+  const path = join(root, "db.sqlite");
+  const provider = new FakeProvider();
+  const agent = new FakeAgent();
+  const settings = { ...config, ...fast, SWARMFORGE_ARTIFACT_TIMEOUT_MS: 500 };
+  let store = new Store(path);
+  try {
+    let c = new Coordinator(settings, store, provider, agent);
+    const worker = c.spawn(task);
+    for (let i = 0; i < 4; i++) await c.tick();
+    const run = store.dispatch(worker.worker_id)!.run_id;
+    agent.complete(store.get(worker.worker_id));
+    await c.tick();
+    expect(["pending", "collecting"]).toContain(
+      store.get(worker.worker_id).finalization?.state ?? "",
+    );
+    store.patch(worker.worker_id, {
+      finalization: {
+        state: "collecting",
+        run_id: run,
+        attempts: 1,
+        error: null,
+        next_retry_at: null,
+        started_at: Date.now(),
+        completed_at: null,
+      },
+    });
+    store.close();
+    store = new Store(path);
+    c = new Coordinator(settings, store, provider, agent);
+    const openedBefore = provider.transportOpens.length;
+    await c.tick();
+    await c.finalize(worker.worker_id);
+    const collected = store.get(worker.worker_id);
+    expect(collected.finalization?.state).toBe("preserved");
+    // The interrupted attempt was already counted, so the restart adds one, not two.
+    expect(collected.finalization?.attempts).toBe(2);
+    expect(provider.transportOpens.length).toBeGreaterThan(openedBefore);
+    const opens = provider.transportOpens.length;
+    store.close();
+    store = new Store(path);
+    c = new Coordinator(settings, store, provider, agent);
+    await c.tick();
+    await c.tick();
+    expect(provider.transportOpens.length).toBe(opens);
+    expect(store.get(worker.worker_id).finalization?.state).toBe("preserved");
+  } finally {
+    store.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("exhausted retries retain the VM and a deliberate retry recovers it", async () => {
+  const h = harness({ ...fast, SWARMFORGE_FINALIZATION_MAX_ATTEMPTS: 2 });
+  const { id, vm } = await started(h);
+  await h.provider.writeFile(
+    vm,
+    "/workspace/.swarmforge/artifacts/keep.txt",
+    "keep",
+  );
+  h.provider.transportFailure = "helper unavailable";
+  h.agent.complete(h.store.get(id));
+  await h.coordinator.tick();
+  const settled = await finalized(h, id);
+  expect(settled.state).toBe("completed");
+  expect(settled.finalization?.state).toBe("failed");
+  expect(settled.finalization?.attempts).toBe(2);
+  expect(settled.finalization?.error ?? "").toContain("helper unavailable");
+  expect(h.provider.vms.has(vm)).toBe(true);
+  const events = h.store.events(id);
+  expect(
+    events.filter((event) => event.type === "finalization.collecting"),
+  ).toHaveLength(2);
+  h.provider.transportFailure = "";
+  const recovered = await within(5000, h.coordinator.retryFinalization(id));
+  expect(recovered.finalization?.state).toBe("preserved");
+  expect(recovered.finalization?.attempts).toBe(1);
+  expect(recovered.finalization?.error).toBeNull();
+  expect(
+    h.store.events(id).filter((e) => e.type === "finalization.preserved"),
+  ).toHaveLength(1);
+  h.store.close();
+});
+
+test("a provider without artifact transport fails preservation clearly", async () => {
+  const h = harness(fast);
+  const { id, vm } = await started(h);
+  await h.provider.writeFile(
+    vm,
+    "/workspace/.swarmforge/artifacts/report.txt",
+    "x",
+  );
+  const transport = h.provider.artifactTransport;
+  h.provider.artifactTransport =
+    undefined as unknown as WorkerArtifactTransport;
+  h.agent.complete(h.store.get(id));
+  await h.coordinator.tick();
+  const settled = await finalized(h, id);
+  expect(settled.finalization?.state).toBe("failed");
+  expect(settled.finalization?.error ?? "").toContain("transport");
+  expect(settled.finalization?.attempts).toBe(3);
+  expect(h.provider.vms.has(vm)).toBe(true);
+  expect(
+    (await within(5000, h.coordinator.retryFinalization(id))).finalization
+      ?.state,
+  ).toBe("failed");
+  h.provider.artifactTransport = transport;
+  const recovered = await within(5000, h.coordinator.retryFinalization(id));
+  expect(recovered.finalization?.state).toBe("preserved");
+  expect(h.provider.transportOpens).toContain(
+    ".swarmforge/artifacts/report.txt",
+  );
+  h.store.close();
+});
+
+test("a partially collected run keeps what it captured and a retry completes it", async () => {
+  const h = harness(fast);
+  const worker = h.coordinator.spawn({
+    ...task,
+    artifacts: [
+      { path: "out/first.txt" },
+      { path: "out/second.txt", required: true },
+    ],
+  });
+  await runToRunning(h, worker.worker_id);
+  const vm = h.store.get(worker.worker_id).vm_id!;
+  await h.provider.writeFile(vm, "/workspace/out/first.txt", "one");
+  h.provider.transportMissing.add(`${vm}:/workspace/out/second.txt`);
+  h.agent.complete(h.store.get(worker.worker_id));
+  await h.coordinator.tick();
+  const partial = await finalized(h, worker.worker_id);
+  expect(partial.finalization?.state).toBe("failed");
+  expect(partial.finalization?.error ?? "").toContain("out/second.txt");
+  // What the attempt did capture is already durable and readable.
+  const first = records(h, worker.worker_id).find(
+    (r) => r.original_path === "out/first.txt",
+  );
+  expect(first?.state).toBe("preserved");
+  expect(first?.sha256).toBe(sha256("one"));
+  expect(decode(h.coordinator.artifacts.read(first!.artifact_id))).toBe("one");
+
+  h.provider.transportMissing.clear();
+  await h.provider.writeFile(vm, "/workspace/out/second.txt", "two");
+  const recovered = await within(
+    5000,
+    h.coordinator.retryFinalization(worker.worker_id),
+  );
+  expect(recovered.finalization?.state).toBe("preserved");
+  const kept = records(h, worker.worker_id).find(
+    (r) => r.original_path === "out/first.txt",
+  );
+  // The same worker, run, path and content is captured once, not again.
+  expect(kept?.artifact_id).toBe(first?.artifact_id);
+  expect(
+    decode(
+      h.coordinator.artifacts.read(
+        records(h, worker.worker_id).find(
+          (r) => r.original_path === "out/second.txt",
+        )!.artifact_id,
+      ),
+    ),
+  ).toBe("two");
+  h.store.close();
+});
+
+test("a follow-up queued during collection is delivered only after preservation settles", async () => {
+  const h = harness({ ...fast, SWARMFORGE_ARTIFACT_TIMEOUT_MS: 400 });
+  const { id, vm } = await started(h);
+  await h.provider.writeFile(
+    vm,
+    "/workspace/.swarmforge/artifacts/first.txt",
+    "one",
+  );
+  h.agent.complete(h.store.get(id));
+  await h.coordinator.tick();
+  const transferring = new Promise<void>((resolve) => {
+    h.provider.slowStarted = resolve;
+  });
+  h.provider.transportSlow = true;
+  await h.coordinator.tick();
+  await transferring;
+  expect(h.store.get(id).finalization?.state).toBe("collecting");
+  // A deliberate retry refuses to race a live collection.
+  await expect(h.coordinator.retryFinalization(id)).rejects.toThrow(
+    "already running",
+  );
+  // The follow-up is accepted durably while the previous run is still being collected.
+  expect(h.coordinator.message(id, "second task").delivery).toBe("queued");
+  await h.coordinator.tick();
+  await h.coordinator.tick();
+  expect(h.agent.submitted).toHaveLength(1);
+  expect(h.store.get(id).state).not.toBe("running");
+  h.provider.transportSlow = false;
+  const settled = await within(5000, h.coordinator.finalize(id));
+  expect(settled.finalization?.state).toBe("preserved");
+  expect(h.agent.submitted).toHaveLength(1);
+  await h.coordinator.tick();
+  await h.coordinator.tick();
+  expect(h.agent.submitted).toHaveLength(2);
+  expect(h.store.get(id).state).toBe("running");
+  h.store.close();
+});
+
+test("each run keeps its own artifacts and run id while events retain both outcomes", async () => {
+  const h = harness(fast);
+  const { id, vm, run: first } = await started(h);
+  await h.provider.writeFile(
+    vm,
+    "/workspace/.swarmforge/artifacts/first.txt",
+    "one",
+  );
+  h.agent.complete(h.store.get(id));
+  await h.coordinator.tick();
+  expect((await finalized(h, id)).finalization?.state).toBe("preserved");
+  h.coordinator.message(id, "second task");
+  await h.coordinator.tick();
+  await h.coordinator.tick();
+  const second = h.store.dispatch(id)!.run_id;
+  expect(second).not.toBe(first);
+  await h.provider.writeFile(
+    vm,
+    "/workspace/.swarmforge/artifacts/second.txt",
+    "two",
+  );
+  h.agent.complete(h.store.get(id));
+  await h.coordinator.tick();
+  const settled = await finalized(h, id);
+  expect(settled.finalization?.run_id).toBe(second);
+  const found = records(h, id);
+  expect(
+    found
+      .filter((r) => r.original_path === ".swarmforge/artifacts/first.txt")
+      .map((r) => r.run_id)
+      .sort(),
+  ).toEqual([first, second].sort());
+  expect(
+    found
+      .filter((r) => r.original_path === ".swarmforge/artifacts/second.txt")
+      .map((r) => r.run_id),
+  ).toEqual([second]);
+  const types = h.store.events(id).map((event) => event.type);
+  expect(types.filter((t) => t === "finalization.pending")).toHaveLength(2);
+  expect(types.filter((t) => t === "finalization.preserved")).toHaveLength(2);
+  h.store.close();
+});
+
+test("required declarations fail preservation while optional ones are skipped", async () => {
+  const h = harness(fast);
+  const worker = h.coordinator.spawn({
+    ...task,
+    artifacts: [
+      { path: "reports/**" },
+      { path: "out/missing.txt", required: true },
+    ],
+  });
+  await runToRunning(h, worker.worker_id);
+  h.agent.complete(h.store.get(worker.worker_id));
+  await h.coordinator.tick();
+  const settled = await finalized(h, worker.worker_id);
+  expect(settled.finalization?.state).toBe("failed");
+  expect(settled.finalization?.error ?? "").toContain("out/missing.txt");
+  // The optional directory was skipped rather than failing the attempt.
+  expect(records(h, worker.worker_id)).toHaveLength(0);
+  h.store.close();
+
+  const other = harness(fast);
+  const declared = other.coordinator.spawn({
+    ...task,
+    artifacts: [{ path: "reports/**", required: true }],
+  });
+  await runToRunning(other, declared.worker_id);
+  await other.provider.writeFile(
+    other.store.get(declared.worker_id).vm_id!,
+    "/workspace/reports/summary.md",
+    "# summary",
+  );
+  other.agent.complete(other.store.get(declared.worker_id));
+  await other.coordinator.tick();
+  const kept = await finalized(other, declared.worker_id);
+  expect(kept.finalization?.state).toBe("preserved");
+  expect(
+    records(other, declared.worker_id).map((r) => r.original_path),
+  ).toContain("reports/summary.md");
+  other.store.close();
+});
+
+test("declared artifact paths are validated before a worker exists", () => {
+  const h = harness(fast);
+  const rejected = [
+    "/etc/passwd",
+    "../escape",
+    "a/../b",
+    "./a",
+    "back\\slash",
+    "wild*card",
+    "deep/**/*.txt",
+    "nul\u0000byte",
+    "control\u0007bell",
+    "a".repeat(1025),
+    "/leading",
+  ];
+  for (const path of rejected)
+    expect(() =>
+      h.coordinator.spawn({ ...task, artifacts: [{ path }] }),
+    ).toThrow();
+  expect(h.store.all()).toHaveLength(0);
+  expect(h.provider.created).toBe(0);
+  expect(
+    h.coordinator.spawn({
+      ...task,
+      artifacts: [
+        { path: "out/report.txt" },
+        { path: "reports/**", required: true },
+      ],
+    }).worker_id,
+  ).toBeTruthy();
+  expect(() =>
+    h.coordinator.spawn({
+      ...task,
+      artifacts: Array.from({ length: 101 }, (_, i) => ({ path: `f${i}.txt` })),
+    }),
+  ).toThrow();
+  expect(() =>
+    h.coordinator.spawn({
+      ...task,
+      artifacts: [
+        { path: Array.from({ length: 33 }, (_, i) => `d${i}`).join("/") },
+      ],
+    }),
+  ).toThrow();
+  h.store.close();
+});
+
+test("a control requested while a step holds the worker lock is applied without another tick", async () => {
+  const h = harness(fast);
+  const { id } = await started(h);
+  let release: () => void = () => {};
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  h.agent.gate = () => held;
+  const ticking = h.coordinator.tick();
+  await Bun.sleep(5);
+  const cancelling = h.coordinator.control(id, "cancel");
+  release();
+  await ticking;
+  const cancelled = await within(2000, cancelling);
+  expect(cancelled.state).toBe("cancelled");
+  expect(cancelled.intent).toBeNull();
+  h.agent.gate = null;
+  h.store.close();
+});
+
+test("finalization is visible on the public worker view", async () => {
+  const h = harness(fast);
+  const { id } = await started(h);
+  h.agent.complete(h.store.get(id));
+  await h.coordinator.tick();
+  expect(["pending", "collecting"]).toContain(
+    h.store.get(id).finalization?.state ?? "",
+  );
+  expect(["pending", "collecting"]).toContain(
+    publicWorker(h.coordinator, id).finalization?.state ?? "",
+  );
+  await finalized(h, id);
+  expect(publicWorker(h.coordinator, id).finalization?.state).toBe("preserved");
+  h.store.close();
+});
+
+test("finalization and direct artifact calls share the configured bound", async () => {
+  const h = harness({ ...fast, SWARMFORGE_ARTIFACT_CONCURRENCY: 1 });
+  h.provider.transportDelayMs = 2;
+  const first = await started(h, "one");
+  const second = await started(h, "two");
+  h.agent.complete(h.store.get(first.id));
+  h.agent.complete(h.store.get(second.id));
+  await h.coordinator.tick();
+  await Promise.all([
+    h.coordinator.finalize(first.id),
+    h.coordinator.finalize(second.id),
+    h.coordinator.artifacts.snapshot(first.id),
+    h.coordinator.artifacts.diagnostics(second.id),
+  ]);
+  expect(h.provider.maxConcurrent).toBe(1);
+  expect(h.store.get(first.id).finalization?.state).toBe("preserved");
+  expect(h.store.get(second.id).finalization?.state).toBe("preserved");
+  h.store.close();
+
+  // Two slots really are two: the bound releases instead of serializing everything.
+  const wider = harness({ ...fast, SWARMFORGE_ARTIFACT_CONCURRENCY: 4 });
+  wider.provider.transportDelayMs = 2;
+  const third = await started(wider, "three");
+  const fourth = await started(wider, "four");
+  wider.agent.complete(wider.store.get(third.id));
+  wider.agent.complete(wider.store.get(fourth.id));
+  await wider.coordinator.tick();
+  await Promise.all([
+    wider.coordinator.finalize(third.id),
+    wider.coordinator.finalize(fourth.id),
+  ]);
+  expect(wider.provider.maxConcurrent).toBeGreaterThan(1);
+  wider.store.close();
+});
+
+test("artifact and finalization configuration defaults and bounds match the plan", () => {
+  const env = {
+    FREESTYLE_API_TOKEN: "infra-secret",
+    FREESTYLE_SNAPSHOT_ID: "snapshot",
+    SWARMFORGE_MODEL_BASE_URL: "https://model.example/v1",
+    SWARMFORGE_MODEL_API_KEY: "model-secret",
+    SWARMFORGE_MODEL_NAME: "qwen",
+    SWARMFORGE_GIT_TREE: "opaque-tree",
+  };
+  const c = loadConfig(env);
+  expect(c.SWARMFORGE_ARTIFACT_MAX_BYTES).toBe(1073741824);
+  expect(c.SWARMFORGE_ARTIFACT_MAX_ENTRIES).toBe(10000);
+  expect(c.SWARMFORGE_ARTIFACT_MAX_DEPTH).toBe(32);
+  expect(c.SWARMFORGE_ARTIFACT_TIMEOUT_MS).toBe(120000);
+  expect(c.SWARMFORGE_ARTIFACT_CONCURRENCY).toBe(4);
+  expect(c.SWARMFORGE_FINALIZATION_MAX_ATTEMPTS).toBe(3);
+  expect(c.SWARMFORGE_FINALIZATION_RETRY_MS).toBe(2000);
+  // Default storage sits beside the database; an in-memory database gets a private temporary root.
+  expect(
+    loadConfig({
+      ...env,
+      SWARMFORGE_DB_PATH: "/srv/swarmforge/db.sqlite",
+    }).SWARMFORGE_ARTIFACT_DIR,
+  ).toBe("/srv/swarmforge/artifacts");
+  expect(
+    loadConfig({
+      ...env,
+      SWARMFORGE_DB_PATH: ":memory:",
+    }).SWARMFORGE_ARTIFACT_DIR.startsWith(tmpdir()),
+  ).toBe(true);
+  expect(
+    loadConfig({ ...env, SWARMFORGE_ARTIFACT_DIR: "/var/artifacts" })
+      .SWARMFORGE_ARTIFACT_DIR,
+  ).toBe("/var/artifacts");
+  for (const key of [
+    "SWARMFORGE_ARTIFACT_MAX_BYTES",
+    "SWARMFORGE_ARTIFACT_MAX_ENTRIES",
+    "SWARMFORGE_ARTIFACT_MAX_DEPTH",
+    "SWARMFORGE_ARTIFACT_TIMEOUT_MS",
+    "SWARMFORGE_ARTIFACT_CONCURRENCY",
+    "SWARMFORGE_FINALIZATION_MAX_ATTEMPTS",
+    "SWARMFORGE_FINALIZATION_RETRY_MS",
+  ]) {
+    expect(() => loadConfig({ ...env, [key]: "1.5" })).toThrow();
+    expect(() => loadConfig({ ...env, [key]: "0" })).toThrow();
+    expect(() => loadConfig({ ...env, [key]: "-2" })).toThrow();
+    expect(() =>
+      loadConfig({ ...env, [key]: "99999999999999999999" }),
+    ).toThrow();
+  }
+  expect(
+    loadConfig({ ...env, SWARMFORGE_FINALIZATION_MAX_ATTEMPTS: "9" })
+      .SWARMFORGE_FINALIZATION_MAX_ATTEMPTS,
+  ).toBe(9);
+});

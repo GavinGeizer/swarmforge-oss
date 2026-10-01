@@ -30,6 +30,8 @@ test("spawn returns queued before provisioning and preserves session for follow-
   h.agent.complete(h.store.get(w.worker_id));
   await h.coordinator.tick();
   expect(h.store.get(w.worker_id).state).toBe("completed");
+  // A follow-up dispatch waits for the finished run's artifact preservation to settle.
+  await h.coordinator.finalize(w.worker_id);
   h.coordinator.message(w.worker_id, "fix race");
   await h.coordinator.tick();
   expect(h.store.get(w.worker_id).state).toBe("running");
@@ -61,6 +63,7 @@ test("running messages queue durably instead of resetting active context", async
   expect(h.agent.submitted).toHaveLength(1);
   h.agent.complete(h.store.get(w.worker_id));
   await h.coordinator.tick();
+  await h.coordinator.finalize(w.worker_id);
   await h.coordinator.tick();
   expect(h.agent.submitted).toHaveLength(2);
   h.store.close();
@@ -243,6 +246,8 @@ test("persisting a completion atomically makes queued follow-ups runnable after 
   });
   const fresh = new Coordinator(config, h.store, h.provider, h.agent);
   await fresh.recover();
+  // The restarted process also re-runs the interrupted run's artifact preservation.
+  await fresh.finalize(w.worker_id);
   await fresh.tick();
   expect(h.agent.submitted).toHaveLength(2);
   h.store.close();
@@ -289,6 +294,7 @@ test("follow-up queued while completed worker is paused becomes runnable on resu
   await runToRunning(h, w.worker_id);
   h.agent.complete(h.store.get(w.worker_id));
   await h.coordinator.tick();
+  await h.coordinator.finalize(w.worker_id);
   await h.coordinator.control(w.worker_id, "pause");
   h.coordinator.message(w.worker_id, "next");
   await h.coordinator.control(w.worker_id, "resume");

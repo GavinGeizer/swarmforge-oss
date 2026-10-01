@@ -1,8 +1,10 @@
+import { ArtifactService } from "./artifacts";
 import type { Config } from "./config";
 import {
   type AgentSnapshot,
   type CodingAgent,
   type Dispatch,
+  finalizationSettled,
   lifecycleState,
   type ResponseExcerpt,
   resultSchema,
@@ -15,17 +17,29 @@ import {
   type WorkerProvider,
   type WorkerResult,
 } from "./domain";
+import {
+  boundedArtifacts,
+  ConcurrencyLimiter,
+  Finalizer,
+  sleep,
+} from "./finalization";
 import { GitHandoffError } from "./git-handoff";
 import { inspectPersistence } from "./safety";
 import { excerptText, redactorFor } from "./security";
 import type { Store } from "./store";
 export class Coordinator {
   private locks = new Map<string, Promise<void>>();
+  private steps = new Map<string, number>();
   private tearingDown = new Map<string, number>();
   private timer: ReturnType<typeof setInterval> | undefined;
   private ticking = false;
   private stopped = false;
   private lastReconcile = Date.now();
+  private readonly limiter: ConcurrencyLimiter;
+  private readonly finalizer: Finalizer;
+  // The data plane service, and the bounded facade every caller and API surface uses.
+  readonly artifactService: ArtifactService;
+  readonly artifacts: ArtifactService;
   readonly inference = new Map<string, number>();
   readonly excerpts = new Map<string, ResponseExcerpt>();
   constructor(
@@ -33,7 +47,19 @@ export class Coordinator {
     readonly store: Store,
     readonly provider: WorkerProvider,
     readonly agent: CodingAgent,
-  ) {}
+  ) {
+    this.limiter = new ConcurrencyLimiter(
+      config.SWARMFORGE_ARTIFACT_CONCURRENCY,
+    );
+    this.artifactService = new ArtifactService(config, store, provider);
+    this.artifacts = boundedArtifacts(this.artifactService, this.limiter);
+    this.finalizer = new Finalizer(
+      config,
+      store,
+      this.artifactService,
+      this.limiter,
+    );
+  }
   async bounded<T>(
     operation: Promise<T>,
     timeoutMs = this.config.SWARMFORGE_API_TIMEOUT_MS,
@@ -236,9 +262,22 @@ export class Coordinator {
   private exclusive(id: string, fn: () => Promise<void>): Promise<void> {
     const existing = this.locks.get(id);
     if (existing) return existing;
+    this.steps.set(id, (this.steps.get(id) ?? 0) + 1);
     const running = fn().finally(() => this.locks.delete(id));
     this.locks.set(id, running);
     return running;
+  }
+  // A control intent is durable before this runs, so waiting on the worker lock can never lose
+  // it: this loop re-steps until the step it awaits is the one that observed the intent. The
+  // bound keeps a permanently busy worker from spinning, and the tick still applies the intent.
+  private async applyIntent(id: string) {
+    for (let guard = 0; guard < 8; guard++) {
+      const before = this.steps.get(id) ?? 0;
+      await this.exclusive(id, () => this.step(id));
+      if ((this.steps.get(id) ?? 0) !== before) return;
+      const w = this.store.get(id);
+      if (!w.intent || w.state === "destroyed") return;
+    }
   }
   async start() {
     await this.recover();
@@ -251,7 +290,11 @@ export class Coordinator {
   async stop() {
     this.stopped = true;
     clearInterval(this.timer);
+    // Bounded: an in-flight transfer is aborted and left retryable rather than waited on, and
+    // it is awaited so it can never write to a closed store during shutdown.
+    this.finalizer.abortAll();
     await Promise.allSettled([...this.locks.values()]);
+    await Promise.allSettled(this.finalizer.liveRuns());
   }
   async tick() {
     if (this.ticking || this.stopped) return;
@@ -303,6 +346,10 @@ export class Coordinator {
             this.exclusive(w.worker_id, () => this.step(w.worker_id)),
           ),
       );
+      // Preservation runs beside the lifecycle steps and holds no worker lock, so a slow or
+      // failing collection can never delay provisioning, dispatch or another worker's step.
+      for (const w of this.store.finalizing())
+        void this.finalizer.run(w.worker_id).catch(() => {});
     } finally {
       this.ticking = false;
     }
@@ -334,6 +381,8 @@ export class Coordinator {
           role: "recovery",
           prompt: "Orphan retained for operator inspection",
           timeout_seconds: this.config.SWARMFORGE_DEFAULT_TIMEOUT_SECONDS,
+          artifacts: [],
+          snapshot_on_failure: false,
         });
         this.store.cancelDispatches(orphan.worker_id);
         this.store.transition(orphan.worker_id, "recovery_required", {
@@ -358,12 +407,19 @@ export class Coordinator {
               this.inference.delete(w.worker_id);
               this.excerpts.delete(w.worker_id);
               this.store.cancelDispatches(w.worker_id);
-              this.store.transition(w.worker_id, "failed", {
-                error: "VM disappeared; local workspace is lost",
-                vm_missing: true,
-                deadline_at: null,
-                intent: null,
-              });
+              // The lost VM is recorded as a preservation failure too, so an operator sees why
+              // nothing could be salvaged instead of finding a silently absent workspace.
+              this.store.settle(
+                w.worker_id,
+                "failed",
+                {
+                  error: "VM disappeared; local workspace is lost",
+                  vm_missing: true,
+                  deadline_at: null,
+                  intent: null,
+                },
+                this.store.dispatch(w.worker_id)?.run_id ?? null,
+              );
               return;
             }
             if (terminal.has(w.state)) return;
@@ -422,6 +478,9 @@ export class Coordinator {
         return;
       }
       if (w.state === "ready") {
+        // A new dispatch waits for the previous run's preservation to settle: collecting from a
+        // workspace that is still being written would capture a torn snapshot.
+        if (this.store.finalizationUnsettled(id)) return;
         const d = this.store.dispatch(id);
         if (d?.state === "pending") await this.deliver(w, d);
         else if (d) {
@@ -435,12 +494,17 @@ export class Coordinator {
       if (w.state === "running" || w.state === "waiting") {
         const vm = await this.bounded(this.provider.getWorker(w.vm_id!));
         if (!vm) {
+          this.store.settle(
+            id,
+            "failed",
+            {
+              error: "VM disappeared; local workspace is lost",
+              vm_missing: true,
+              deadline_at: null,
+            },
+            this.store.dispatch(id)?.run_id ?? null,
+          );
           this.store.cancelDispatches(id);
-          this.store.transition(id, "failed", {
-            error: "VM disappeared; local workspace is lost",
-            vm_missing: true,
-            deadline_at: null,
-          });
           return;
         }
         if (vm.state === "paused" || vm.state === "pausing") {
@@ -717,18 +781,26 @@ export class Coordinator {
     await this.teardown(w.worker_id, async () => {
       this.inference.delete(w.worker_id);
       this.excerpts.delete(w.worker_id);
+      // Captured before the dispatches are cancelled: the preservation record belongs to the run
+      // that ended, and it is written in the same transaction as the outcome.
+      const run = this.store.dispatch(w.worker_id)?.run_id ?? null;
       const outcome = await this.quiesce(w);
       if (outcome === "missing") {
         // The guest is gone, so retention protects nothing and reconciliation already owns
         // this outcome: fail the worker, record the lost VM and release its capacity.
         this.store.cancelDispatches(w.worker_id);
-        this.store.transition(w.worker_id, "failed", {
-          error: "VM disappeared; local workspace is lost",
-          vm_missing: true,
-          completed_at: Date.now(),
-          deadline_at: null,
-          intent: null,
-        });
+        this.store.settle(
+          w.worker_id,
+          "failed",
+          {
+            error: "VM disappeared; local workspace is lost",
+            vm_missing: true,
+            completed_at: Date.now(),
+            deadline_at: null,
+            intent: null,
+          },
+          run,
+        );
         return;
       }
       const safety =
@@ -746,10 +818,11 @@ export class Coordinator {
               reason: "Persistence check timed out",
             }));
       this.store.cancelDispatches(w.worker_id);
-      this.store.transition(
+      this.store.settle(
         w.worker_id,
         w.vm_id && !safety.safe ? "recovery_required" : "failed",
         { error: reason, completed_at: Date.now(), deadline_at: null },
+        run,
       );
     });
   }
@@ -771,8 +844,80 @@ export class Coordinator {
       throw new Error("Worker is not paused");
     if (intent === "pause" && w.state === "paused") return w;
     this.store.patch(id, { intent, force_destroy: force });
-    await this.exclusive(id, () => this.step(id));
+    await this.applyIntent(id);
     return this.store.get(id);
+  }
+  // Runs or joins preservation for a worker and resolves once its record has settled. Bounded by
+  // the configured attempt, transfer and backoff budgets, so it never waits indefinitely.
+  async finalize(id: string): Promise<Worker> {
+    const { SWARMFORGE_ARTIFACT_TIMEOUT_MS: transfer } = this.config;
+    const { SWARMFORGE_FINALIZATION_MAX_ATTEMPTS: attempts } = this.config;
+    const { SWARMFORGE_FINALIZATION_RETRY_MS: retry } = this.config;
+    const budget = transfer * attempts + retry * 2 * attempts + 1000;
+    const deadline = Date.now() + budget;
+    while (Date.now() < deadline) {
+      const w = this.store.get(id);
+      const f = w.finalization;
+      if (w.state === "destroyed" || !f || finalizationSettled.has(f.state))
+        return w;
+      const wait =
+        f.state === "pending" && f.next_retry_at
+          ? Math.min(
+              Math.max(1, f.next_retry_at - Date.now()),
+              deadline - Date.now(),
+            )
+          : 0;
+      await this.finalizer.run(id);
+      if (wait > 0) await sleep(wait);
+    }
+    return this.store.get(id);
+  }
+  private preservationSettled(w: Worker) {
+    const f = w.finalization;
+    if (!f) return false;
+    if (f.state === "preserved" || f.state === "abandoned") return true;
+    // A failed record with no collectable workspace has nothing left to lose, so it cannot
+    // strand the worker. Any other failure retains the VM and blocks destruction.
+    return f.state === "failed" && !this.finalizer.collectable(w);
+  }
+  // Normal destruction requires preservation to settle first. The wait is bounded; an unsettled
+  // record keeps the VM and asks for inspection instead of deleting an unpreserved workspace.
+  private async ensurePreserved(id: string) {
+    // Destroying a worker that never settled still records what happened to its workspace:
+    // an absent or confirmed-missing guest settles immediately as a recorded failure.
+    if (!this.store.get(id).finalization)
+      this.store.beginFinalization(id, this.store.dispatch(id)?.run_id ?? null);
+    await this.finalize(id);
+    return this.preservationSettled(this.store.get(id));
+  }
+  // Deliberate operator retry of an exhausted or interrupted preservation. The record is reset
+  // only when it is safe to retry: a live collection, an explicit abandonment and a worker with
+  // no workspace all refuse rather than reopening a settled decision.
+  async retryFinalization(id: string): Promise<Worker> {
+    const w = this.store.get(id);
+    if (w.state === "destroyed") throw new Error("Worker destroyed");
+    const f = w.finalization;
+    if (!f) throw new Error("Worker has no artifact preservation to retry");
+    if (f.state === "abandoned")
+      throw new Error("Artifact preservation was explicitly abandoned");
+    if (f.state === "preserved")
+      throw new Error("Artifact preservation already succeeded");
+    if (!this.finalizer.collectable(w))
+      throw new Error(
+        "Worker VM is unavailable; there is no workspace to preserve",
+      );
+    if (this.finalizer.live(id))
+      throw new Error("Artifact preservation is already running");
+    if (f.next_retry_at && Date.now() < f.next_retry_at)
+      throw new Error("Artifact preservation retry is already scheduled");
+    this.store.setFinalization(id, {
+      state: "pending",
+      attempts: 0,
+      error: null,
+      next_retry_at: null,
+      completed_at: null,
+    });
+    return this.finalize(id);
   }
   private async applyControl(w: Worker) {
     const id = w.worker_id;
@@ -815,6 +960,10 @@ export class Coordinator {
     if (w.intent === "cancel") {
       await this.teardown(id, async () => {
         let missing = false;
+        // Production stops first and never waits on preservation: a live collection is aborted so
+        // it cannot keep pulling bytes from a guest that is being cancelled.
+        this.finalizer.abort(id);
+        const run = this.store.dispatch(id)?.run_id ?? null;
         if (w.vm_id) {
           // A paused guest has to run again before it can be stopped, and it may have been
           // deleted out of band. Only a confirmed absence settles the cancellation here; an
@@ -832,17 +981,22 @@ export class Coordinator {
         this.inference.delete(id);
         this.excerpts.delete(id);
         this.store.cancelDispatches(id);
-        this.store.transition(id, "cancelled", {
-          deadline_at: null,
-          completed_at: Date.now(),
-          intent: null,
-          ...(missing
-            ? {
-                vm_missing: true,
-                error: "VM disappeared; local workspace is lost",
-              }
-            : {}),
-        });
+        this.store.settle(
+          id,
+          "cancelled",
+          {
+            deadline_at: null,
+            completed_at: Date.now(),
+            intent: null,
+            ...(missing
+              ? {
+                  vm_missing: true,
+                  error: "VM disappeared; local workspace is lost",
+                }
+              : {}),
+          },
+          run,
+        );
       });
       return;
     }
@@ -855,6 +1009,8 @@ export class Coordinator {
               if (["paused", "stopped"].includes(vm.state))
                 await this.bounded(this.provider.resumeWorker(w.vm_id));
               const outcome = await this.quiesce(w);
+              if (outcome === "missing")
+                this.store.patch(id, { vm_missing: true });
               if (outcome === "paused") {
                 this.store.transition(id, "recovery_required", {
                   intent: null,
@@ -899,7 +1055,31 @@ export class Coordinator {
                   return;
                 }
               }
+              // Existing Git safety protections above stay in force; preservation is the
+              // additional requirement that a settled workspace survives outside the guest. A
+              // guest confirmed gone already recorded the lost workspace, so this settles
+              // immediately as a recorded failure instead of retrying against nothing.
+              if (!(await this.ensurePreserved(id))) {
+                this.store.cancelDispatches(id);
+                this.store.transition(id, "recovery_required", {
+                  intent: null,
+                  deadline_at: null,
+                  error:
+                    "Artifact preservation has not settled; retry it or destroy with force to abandon it",
+                });
+                return;
+              }
             }
+          } else {
+            // Forced destruction: the live collection is aborted without waiting for the worker
+            // lock, and the abandonment is durable before the provider deletes anything.
+            this.finalizer.abort(id);
+            this.store.setFinalization(id, {
+              state: "abandoned",
+              error: "Artifact preservation abandoned by forced destruction",
+              next_retry_at: null,
+              completed_at: Date.now(),
+            });
           }
           await this.bounded(this.provider.destroyWorker(w.vm_id));
         }
