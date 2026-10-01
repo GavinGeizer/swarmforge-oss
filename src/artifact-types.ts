@@ -14,6 +14,14 @@ export interface ArtifactTransfer {
   sha256: string;
   filename: string;
   cleanup(): Promise<void>;
+  /**
+   * Set when the capture itself reports that what it staged is bounded evidence
+   * rather than the whole source: a command that hit its byte bound, or a
+   * deadline that arrived before a source finished. The bytes are still worth
+   * keeping, and they are kept with this stated rather than presented as the
+   * complete report.
+   */
+  incomplete?: string;
 }
 
 export interface ArtifactEntry {
@@ -128,6 +136,13 @@ export interface ArtifactRecord {
    * that was already verified.
    */
   superseded_by?: string | null;
+  /**
+   * Set when the stored bytes are a bounded prefix of what was asked for, with
+   * the reason. The artifact is readable and its hash matches its bytes, but it
+   * is not the whole source, and a caller that must not act on partial evidence
+   * has to be able to see that.
+   */
+  incomplete?: string | null;
 }
 
 export interface ArtifactListQuery {
@@ -162,6 +177,93 @@ export const maxArtifactPathBytes = 1024;
 export const maxArtifactPathComponents = 32;
 
 export class ArtifactPathError extends Error {}
+
+/**
+ * The refusal taxonomy a capture reports, as stable codes.
+ *
+ * A caller classifies a refusal by code and never by its message text: an absent
+ * source, a path that is not a directory, a path that is not permitted, a source
+ * that is larger than its bound, a source that changed under the capture and a
+ * plain transport failure are six different outcomes, and a salvage decision
+ * that has to tell an optional missing file from a permission or symlink refusal
+ * cannot be made from English.
+ */
+export const artifactErrorCodes = {
+  notFound: "not_found",
+  notDirectory: "not_directory",
+  unsafePath: "unsafe_path",
+  limitExceeded: "limit_exceeded",
+  sourceChanged: "source_changed",
+  transport: "transport",
+} as const;
+
+export type ArtifactErrorCode =
+  (typeof artifactErrorCodes)[keyof typeof artifactErrorCodes];
+
+const artifactErrorCodeValues: ReadonlySet<string> = new Set(
+  Object.values(artifactErrorCodes),
+);
+
+/** True only for one of the six codes, never for an arbitrary string. */
+export function isArtifactErrorCode(
+  value: unknown,
+): value is ArtifactErrorCode {
+  return typeof value === "string" && artifactErrorCodeValues.has(value);
+}
+
+/** One canonical phrase per code, so a message always names its own class. */
+export function describeArtifactError(code: ArtifactErrorCode): string {
+  return {
+    not_found: "no such file or directory",
+    not_directory: "path is not a directory",
+    unsafe_path: "path is not permitted",
+    limit_exceeded: "artifact exceeds a configured limit",
+    source_changed: "source changed during capture",
+    transport: "artifact transport failed",
+  }[code];
+}
+
+/** A refusal from a capture, carrying the code a caller can classify on. */
+export class ArtifactCaptureError extends Error {
+  constructor(
+    message: string,
+    readonly code: ArtifactErrorCode = artifactErrorCodes.transport,
+  ) {
+    super(message);
+    this.name = "ArtifactCaptureError";
+  }
+}
+
+/**
+ * The code of any error that came from a capture, whatever raised it.
+ *
+ * A transport that is not the guest helper still produces something a salvage
+ * decision can act on: an absence is not a permission failure, and neither is a
+ * limit. Anything unrecognised stays a plain transport failure rather than being
+ * guessed into a more specific class.
+ */
+export function artifactErrorCode(error: unknown): ArtifactErrorCode {
+  const code = (error as { code?: unknown })?.code;
+  if (isArtifactErrorCode(code)) return code;
+  const text = String(
+    error instanceof Error ? error.message : (error ?? ""),
+  ).toLowerCase();
+  if (/(no such|not found|enoent|does not exist)/.test(text))
+    return artifactErrorCodes.notFound;
+  if (/(not a directory|enotdir)/.test(text))
+    return artifactErrorCodes.notDirectory;
+  if (
+    /(symlink|not permitted|permission denied|eacces|eperm|too many levels)/.test(
+      text,
+    )
+  )
+    return artifactErrorCodes.unsafePath;
+  if (/(exceeds|out of range|limit|too large|truncat)/.test(text))
+    return artifactErrorCodes.limitExceeded;
+  if (/changed during capture/.test(text))
+    return artifactErrorCodes.sourceChanged;
+  return artifactErrorCodes.transport;
+}
 
 /** C0 controls, DEL and C1 controls: never legitimate in a path or entry name. */
 export function hasControlCharacter(value: string): boolean {

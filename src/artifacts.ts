@@ -9,6 +9,7 @@ import {
   storageKeyFor,
 } from "./artifact-store";
 import {
+  ArtifactCaptureError,
   type ArtifactEntry,
   type ArtifactListing,
   type ArtifactListQuery,
@@ -17,7 +18,9 @@ import {
   type ArtifactRecord,
   type ArtifactSnapshotRequest,
   type ArtifactTransfer,
+  artifactErrorCode,
   cancelTransfers,
+  describeArtifactError,
   hasControlCharacter,
   isSha256,
   safeFilename,
@@ -160,6 +163,30 @@ export class ArtifactService {
     // A crash can leave a half-written temporary object; drop them once at
     // start rather than letting them accumulate on the coordinator host.
     void this.storage.sweepStale(this.limits.timeoutMs).catch(() => 0);
+  }
+
+  /**
+   * Runs one transport operation and returns a refusal a caller can classify.
+   *
+   * Whatever transport is in use, an error leaves here as a code plus a message
+   * that names the same class: an absent source reads as an absence, a permission
+   * or symlink failure as an unsafe path, and neither is ever reported as the
+   * other. An unrecognised failure stays a transport failure rather than being
+   * guessed into a more specific class.
+   */
+  private async classify<T>(operation: () => Promise<T>): Promise<T> {
+    try {
+      return await operation();
+    } catch (error) {
+      if (error instanceof ArtifactCaptureError) throw error;
+      const code = artifactErrorCode(error);
+      throw new ArtifactCaptureError(
+        `${describeArtifactError(code)}: ${
+          error instanceof Error ? error.message : String(error)
+        }`.slice(0, 500),
+        code,
+      );
+    }
   }
 
   private transport(): WorkerArtifactTransport {
@@ -317,10 +344,12 @@ export class ArtifactService {
     return this.attempt(
       record,
       async (transport, vmId, signal) => {
-        const transfer = await transport.open(vmId, this.root, requested, {
-          maxBytes: this.limits.maxBytes,
-          signal,
-        });
+        const transfer = await this.classify(() =>
+          transport.open(vmId, this.root, requested, {
+            maxBytes: this.limits.maxBytes,
+            signal,
+          }),
+        );
         return this.ingest(record, existing, transfer, signal);
       },
       options,
@@ -354,13 +383,15 @@ export class ArtifactService {
     return this.attempt(
       record,
       async (transport, vmId, signal) => {
-        const transfer = await transport.snapshot(vmId, this.root, {
-          ...(paths.length ? { paths } : {}),
-          maxBytes: this.limits.maxBytes,
-          maxEntries: this.limits.maxEntries,
-          maxDepth: this.limits.maxDepth,
-          signal,
-        });
+        const transfer = await this.classify(() =>
+          transport.snapshot(vmId, this.root, {
+            ...(paths.length ? { paths } : {}),
+            maxBytes: this.limits.maxBytes,
+            maxEntries: this.limits.maxEntries,
+            maxDepth: this.limits.maxDepth,
+            signal,
+          }),
+        );
         // An archive that stopped at the entry or depth cap is not the snapshot
         // that was asked for, and reporting it as preserved would let a caller
         // conclude that everything was salvaged.
@@ -388,10 +419,12 @@ export class ArtifactService {
       return await this.capture(
         workerId,
         async (transport, vmId, signal) => {
-          const captured = await transport.diagnostics(vmId, this.root, {
-            maxBytes: this.limits.maxBytes,
-            signal,
-          });
+          const captured = await this.classify(() =>
+            transport.diagnostics(vmId, this.root, {
+              maxBytes: this.limits.maxBytes,
+              signal,
+            }),
+          );
           const records: ArtifactRecord[] = [];
           for (const [index, item] of captured.entries()) {
             const existing = this.repository.find({
@@ -448,20 +481,9 @@ export class ArtifactService {
     options: PreserveInput = {},
   ): Promise<ArtifactRecord[]> {
     const directory = validateRelativePath(path);
-    const listing = await this.listing(workerId, directory, {
-      limit: this.limits.maxEntries,
-      maxEntries: this.limits.maxEntries,
-      ...(options.signal ? { signal: options.signal } : {}),
-    });
-    // A directory that hit the entry cap is provably only partly collected.
-    // Returning the files that fitted would report completeness that does not
-    // exist, so the collection fails and the caller keeps the source.
-    if (listing.truncated)
-      throw new Error(
-        "Artifact collection is incomplete: the directory reached the entry limit",
-      );
+    const entries = await this.everyEntry(workerId, directory, options);
     const records: ArtifactRecord[] = [];
-    for (const entry of listing.entries) {
+    for (const entry of entries) {
       if (!listable(entry) || entry.kind !== "file") continue;
       const child = `${directory}/${entry.name}`;
       records.push(
@@ -472,6 +494,45 @@ export class ArtifactService {
       );
     }
     return records;
+  }
+
+  /**
+   * Every entry of one live directory, paged to the end.
+   *
+   * A transport may answer with fewer entries than were asked for and still have
+   * more to give, so the listing is followed to its end rather than trusted: a
+   * collection that stopped at the transport's first page would report a
+   * directory of two hundred files as complete when it holds a thousand. A
+   * listing that reached the entry cap, or that stopped advancing, is refused
+   * instead, because neither is a complete directory.
+   */
+  private async everyEntry(
+    workerId: string,
+    path: string,
+    options: { signal?: AbortSignal },
+  ): Promise<ArtifactEntry[]> {
+    const budget = this.limits.maxEntries;
+    const entries: ArtifactEntry[] = [];
+    let offset = 0;
+    while (true) {
+      const listing = await this.listing(workerId, path, {
+        offset,
+        limit: budget,
+        maxEntries: budget,
+        ...(options.signal ? { signal: options.signal } : {}),
+      });
+      if (listing.truncated)
+        throw new Error(
+          "Artifact collection is incomplete: the directory reached the entry limit",
+        );
+      entries.push(...listing.entries);
+      if (listing.next_offset === null) return entries;
+      if (listing.next_offset <= offset || entries.length > budget)
+        throw new Error(
+          "Artifact collection is incomplete: the directory listing did not advance",
+        );
+      offset = listing.next_offset;
+    }
   }
 
   /**
@@ -491,12 +552,14 @@ export class ArtifactService {
     return this.capture(
       workerId,
       async (transport, vmId, signal) =>
-        transport.open(vmId, this.root, requested, {
-          maxBytes: Math.max(1, options.length),
-          offset: options.offset,
-          length: options.length,
-          signal,
-        }),
+        this.classify(() =>
+          transport.open(vmId, this.root, requested, {
+            maxBytes: Math.max(1, options.length),
+            offset: options.offset,
+            length: options.length,
+            signal,
+          }),
+        ),
       options,
     );
   }
@@ -519,13 +582,15 @@ export class ArtifactService {
       options.maxEntries ?? this.limits.maxEntries,
       this.limits.maxEntries,
     );
-    return transport.list(worker.vm_id!, this.root, relative, {
-      offset: options.offset ?? 0,
-      limit: Math.min(options.limit ?? 100, maxEntries),
-      maxEntries,
-      maxDepth: this.limits.maxDepth,
-      ...(options.signal ? { signal: options.signal } : {}),
-    });
+    return this.classify(() =>
+      transport.list(worker.vm_id!, this.root, relative, {
+        offset: options.offset ?? 0,
+        limit: Math.min(options.limit ?? 100, maxEntries),
+        maxEntries,
+        maxDepth: this.limits.maxDepth,
+        ...(options.signal ? { signal: options.signal } : {}),
+      }),
+    );
   }
 
   /**
@@ -730,6 +795,7 @@ export class ArtifactService {
               storage_key: existing.storage_key,
               size: transfer.size,
               sha256: transfer.sha256,
+              incomplete: transfer.incomplete ?? null,
             });
       await transfer.cleanup().catch(() => {});
       return unchanged;
@@ -760,6 +826,7 @@ export class ArtifactService {
         storage_key: key,
         size: transfer.size,
         sha256: transfer.sha256,
+        incomplete: transfer.incomplete ?? null,
       });
       // The replaced copy is no longer the current one for this source, so it is
       // dropped only now that a verified replacement exists under its own key.

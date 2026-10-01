@@ -11,6 +11,8 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
+import { type ArtifactErrorCode, validateRoot } from "../src/artifact-types";
+import { artifactErrorCode } from "../src/providers/artifact-transport";
 import { type LocalWorkspace, localWorkspace } from "./local-artifact-provider";
 
 let ws: LocalWorkspace;
@@ -570,7 +572,7 @@ test("a missing or symlinked git directory is reported, never followed", async (
   const report = Buffer.from(await collect(git.transfer.stream)).toString();
   // The absence itself is preserved as evidence rather than silently empty.
   expect(report).toMatch(/git/i);
-  expect(report).toMatch(/missing|absent|not found|no \.git/i);
+  expect(report).toMatch(/not-applicable|missing|absent|not found/i);
   await git.transfer.cleanup();
   for (const item of missing) await item.transfer.cleanup();
 
@@ -650,4 +652,127 @@ test("installing the helper never loosens the guest's own directory", async () =
     ws.host.commands.some((command) => command.includes("chmod 755")),
   ).toBe(false);
   expect(readdirSync(ws.staging)).toHaveLength(1);
+});
+
+test("a refusal carries a code, so an absence is never a permission failure", async () => {
+  writeFileSync(join(ws.root, "present.txt"), "a real file\n");
+  mkdirSync(join(ws.root, "present-dir"), { recursive: true });
+  const cases: {
+    path: string;
+    code: ArtifactErrorCode;
+    message: RegExp;
+  }[] = [
+    { path: "absent.txt", code: "not_found", message: /no such file/i },
+    { path: "absent-dir/file", code: "not_found", message: /no such file/i },
+    // A path that exists but is a file is not an absence: the two are separate
+    // outcomes, and a caller that has to skip an optional path and fail a
+    // present one cannot tell them apart from a message alone.
+    { path: "present.txt", code: "not_directory", message: /not a directory/i },
+  ];
+  for (const item of cases) {
+    const error = await ws.transport
+      .list(ws.vmId, ws.root, item.path, {})
+      .then(() => null)
+      .catch((thrown: unknown) => thrown as Error & { code?: string });
+    expect(error).toBeTruthy();
+    expect(error?.code).toBe(item.code);
+    expect(error?.message).toMatch(item.message);
+    expect(artifactErrorCode(error)).toBe(item.code);
+  }
+  // A capture of a directory is refused with the same taxonomy, never as a
+  // transport failure and never as an absence.
+  const open = await ws.transport
+    .open(ws.vmId, ws.root, "present-dir", { maxBytes: 1024 })
+    .then(() => null)
+    .catch((thrown: unknown) => thrown as Error & { code?: string });
+  expect(open?.code).toBe("not_directory");
+  // A size bound is a limit, not an absence and not a transport failure.
+  writeFileSync(join(ws.root, "big.bin"), Buffer.alloc(4096));
+  const bounded = await ws.transport
+    .open(ws.vmId, ws.root, "big.bin", { maxBytes: 16 })
+    .then(() => null)
+    .catch((thrown: unknown) => thrown as Error & { code?: string });
+  expect(bounded?.code).toBe("limit_exceeded");
+});
+
+test("an unsafe path is refused as unsafe, not as a missing source", async () => {
+  // A symlinked component pointing outside the root is a refusal to read, which
+  // must never be reported as an absence: skipping it as optional would silently
+  // lose an artifact the caller was told was there.
+  mkdirSync(join(ws.root, "real"), { recursive: true });
+  writeFileSync(join(ws.root, "real", "file.txt"), "inside");
+  symlinkSync("/etc", join(ws.root, "escape"));
+  const error = await ws.transport
+    .open(ws.vmId, ws.root, "escape/passwd", { maxBytes: 4096 })
+    .then(() => null)
+    .catch((thrown: unknown) => thrown as Error & { code?: string });
+  expect(error).toBeTruthy();
+  expect(error?.code).toBe("unsafe_path");
+  const leaf = await ws.transport
+    .open(ws.vmId, ws.root, "escape", { maxBytes: 4096 })
+    .then(() => null)
+    .catch((thrown: unknown) => thrown as Error & { code?: string });
+  expect(leaf?.code).toBe("unsafe_path");
+});
+
+test("the whole filesystem root is refused as an artifact root", async () => {
+  await expect(
+    ws.transport.list(ws.vmId, "/", "", { maxEntries: 10 }),
+  ).rejects.toThrow(/filesystem root/i);
+  expect(() => validateRoot("/")).toThrow(/filesystem root/i);
+});
+
+test("a root whose ancestor is a symlink is refused rather than followed", async () => {
+  const outside = join(ws.base, "outside");
+  mkdirSync(outside, { recursive: true });
+  writeFileSync(join(outside, "secret.txt"), "not the workspace");
+  // The configured root itself is reached through a symlinked ancestor, which
+  // is exactly the case pinning only the leaf cannot catch.
+  const linked = join(ws.base, "linked");
+  symlinkSync(ws.base, linked);
+  const error = await ws.transport
+    .list(ws.vmId, `${linked}/workspace`, "", { maxEntries: 10 })
+    .then(() => null)
+    .catch((thrown: unknown) => thrown as Error & { code?: string });
+  expect(error).toBeTruthy();
+  expect(error?.code).toBe("unsafe_path");
+  // A symlink directly inside the workspace is refused the same way.
+  symlinkSync(outside, join(ws.root, "linked-outside"));
+  const inside = await ws.transport
+    .list(ws.vmId, ws.root, "linked-outside", { maxEntries: 10 })
+    .then(() => null)
+    .catch((thrown: unknown) => thrown as Error & { code?: string });
+  expect(inside?.code).toBe("unsafe_path");
+});
+
+test("a bounded diagnostic is kept, verified and labelled incomplete", async () => {
+  writeFileSync(join(ws.root, "huge.txt"), "x".repeat(200 * 1024));
+  const results = await ws.transport.diagnostics(ws.vmId, ws.root, {
+    maxBytes: 16,
+  });
+  expect(results.length).toBeGreaterThan(0);
+  for (const item of results) {
+    // The bytes are bounded evidence and are still verified against themselves.
+    expect(item.transfer.size).toBeLessThanOrEqual(16);
+    const bytes = await collect(item.transfer.stream);
+    expect(sha(bytes)).toBe(item.transfer.sha256);
+    // What they are not is the whole report, and that is stated on the transfer.
+    expect(item.transfer.incomplete).toBeTruthy();
+    await item.transfer.cleanup();
+  }
+});
+
+test("a workspace with no repository records that as not applicable", async () => {
+  const results = await ws.transport.diagnostics(ws.vmId, ws.root, {
+    maxBytes: 64 * 1024,
+  });
+  const git = results.find((item) => item.path.includes("git"))!;
+  expect(git).toBeDefined();
+  // No repository is a legitimate deployment, not a failure to retry for ever.
+  expect(git.notes?.join("\n")).toContain("not_applicable");
+  const bytes = await collect(git.transfer.stream);
+  expect(new TextDecoder().decode(bytes)).toContain("not-applicable");
+  expect(git.transfer.incomplete).toBeUndefined();
+  await git.transfer.cleanup();
+  await results[0]!.transfer.cleanup();
 });

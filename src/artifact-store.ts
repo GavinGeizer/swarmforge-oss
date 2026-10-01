@@ -624,7 +624,8 @@ export class ArtifactRepository {
       error TEXT,
       created_at INTEGER NOT NULL,
       retrieved_at INTEGER,
-      superseded_by TEXT
+      superseded_by TEXT,
+      incomplete TEXT
     );
     CREATE INDEX IF NOT EXISTS artifacts_worker ON artifacts(worker_id,created_at);
     CREATE INDEX IF NOT EXISTS artifacts_task ON artifacts(task_id,created_at);
@@ -657,6 +658,8 @@ export class ArtifactRepository {
     }[];
     if (!columns.some((column) => column.name === "superseded_by"))
       this.db.exec("ALTER TABLE artifacts ADD COLUMN superseded_by TEXT");
+    if (!columns.some((column) => column.name === "incomplete"))
+      this.db.exec("ALTER TABLE artifacts ADD COLUMN incomplete TEXT");
     // At most one current published copy per worker, run, path and kind. The
     // index is partial over exactly that predicate, so every attempt, every
     // failure and every replaced copy can keep its own row without any of them
@@ -774,8 +777,8 @@ export class ArtifactRepository {
     };
     this.db
       .query(
-        `INSERT INTO artifacts(artifact_id,worker_id,task_id,run_id,original_path,storage_key,filename,size,sha256,kind,state,attempts,error,created_at,retrieved_at,superseded_by)
-         VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+        `INSERT INTO artifacts(artifact_id,worker_id,task_id,run_id,original_path,storage_key,filename,size,sha256,kind,state,attempts,error,created_at,retrieved_at,superseded_by,incomplete)
+         VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       )
       .run(
         record.artifact_id,
@@ -794,6 +797,7 @@ export class ArtifactRepository {
         input.now,
         null,
         null,
+        null,
       );
     this.event(artifactEventNames.attempted, record, record.attempts);
     return record;
@@ -808,17 +812,20 @@ export class ArtifactRepository {
     size: number;
     sha256: string;
     filename?: string;
+    /** Why these bytes are a bounded prefix rather than the whole source. */
+    incomplete?: string | null;
   }): ArtifactRecord {
     return this.db.transaction(() => {
       this.db
         .query(
-          "UPDATE artifacts SET state='preserved',storage_key=?,size=?,sha256=?,error=NULL,retrieved_at=? WHERE artifact_id=?",
+          "UPDATE artifacts SET state='preserved',storage_key=?,size=?,sha256=?,error=NULL,retrieved_at=?,incomplete=? WHERE artifact_id=?",
         )
         .run(
           input.storage_key,
           input.size,
           input.sha256,
           Date.now(),
+          input.incomplete ?? null,
           input.artifact_id,
         );
       // Last publisher wins for a source: any other current copy, whether it is

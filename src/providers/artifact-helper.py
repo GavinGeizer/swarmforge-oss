@@ -41,6 +41,7 @@ DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
 FILE_FLAGS = os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK
 WRITE_FLAGS = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC
 NAME_RE = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9._-]{0,63}\Z")
+MAX_ARCNAME = 1024
 MAX_ERROR = 512
 EXCLUDED = (".git", "node_modules")
 MAX_SOURCES = 8
@@ -55,80 +56,228 @@ CHILD_ENV = {
 }
 
 
+# A stable, comparable taxonomy. A caller classifies a refusal by this code and
+# never by its English text: "absent" and "not a directory" are different
+# outcomes for a salvage decision, and a network, permission or symlink failure
+# is neither of them.
+CODE_NOT_FOUND = "not_found"
+CODE_NOT_DIRECTORY = "not_directory"
+CODE_UNSAFE_PATH = "unsafe_path"
+CODE_LIMIT_EXCEEDED = "limit_exceeded"
+CODE_SOURCE_CHANGED = "source_changed"
+CODE_TRANSPORT = "transport"
+
+CODES = (
+    CODE_NOT_FOUND,
+    CODE_NOT_DIRECTORY,
+    CODE_UNSAFE_PATH,
+    CODE_LIMIT_EXCEEDED,
+    CODE_SOURCE_CHANGED,
+    CODE_TRANSPORT,
+)
+
+
 class HelperError(Exception):
     """A refusal. The message names a rule, never file contents."""
+
+    def __init__(self, message, code=CODE_TRANSPORT):
+        super().__init__(message)
+        self.code = code if code in CODES else CODE_TRANSPORT
 
 
 class NotRegular(Exception):
     """The final component exists but is not a regular file."""
 
+    def __init__(self, message, code=CODE_NOT_FOUND):
+        super().__init__(message)
+        self.code = code
+
+
+def code_for_errno(number):
+    """The taxonomy code for one errno, so absences and refusals stay apart."""
+    if number == errno.ENOENT:
+        return CODE_NOT_FOUND
+    if number == errno.ENOTDIR:
+        return CODE_NOT_DIRECTORY
+    if number in (errno.ELOOP, errno.EMLINK, errno.EACCES, errno.EPERM):
+        return CODE_UNSAFE_PATH
+    if number in (errno.ENAMETOOLONG, errno.EINVAL):
+        return CODE_UNSAFE_PATH
+    return CODE_TRANSPORT
+
+
+def describe_errno(code):
+    """One short phrase per code, so a caller can match on text if it must."""
+    return {
+        CODE_NOT_FOUND: "no such file or directory",
+        CODE_NOT_DIRECTORY: "path is not a directory",
+        CODE_UNSAFE_PATH: "path is not permitted",
+        CODE_LIMIT_EXCEEDED: "artifact exceeds a configured limit",
+        CODE_SOURCE_CHANGED: "source changed during capture",
+        CODE_TRANSPORT: "artifact transport failed",
+    }[code]
+
 
 def require_int(value, name, minimum=0, maximum=(1 << 62)):
     if isinstance(value, bool) or not isinstance(value, int):
-        raise HelperError("%s must be an integer" % name)
+        raise HelperError("%s must be an integer" % name, CODE_UNSAFE_PATH)
     if value < minimum or value > maximum:
-        raise HelperError("%s is out of range" % name)
+        raise HelperError("%s is out of range" % name, CODE_LIMIT_EXCEEDED)
     return value
 
 
 def field(request, name):
     if name not in request:
-        raise HelperError("%s is required" % name)
+        raise HelperError("%s is required" % name, CODE_UNSAFE_PATH)
     return request[name]
+
+
+def archive_name_ok(name):
+    """A discovered directory entry that may be named in an archive.
+
+    Anything that is not a plain, bounded, traversal-free name is skipped rather
+    than archived, so the member name in the archive always describes the path it
+    was read from and never turns into `..` or a control character.
+    """
+    if not name or len(name) > 255 or len(name.encode("utf-8", "surrogateescape")) > MAX_ARCNAME:
+        return False
+    if name in (".", "..") or "/" in name or "\\" in name:
+        return False
+    if any(ord(ch) < 32 or ord(ch) == 127 for ch in name):
+        return False
+    return True
 
 
 def require_name(value):
     if not isinstance(value, str) or not NAME_RE.match(value):
-        raise HelperError("staged file name is invalid")
+        raise HelperError("staged file name is invalid", CODE_UNSAFE_PATH)
     return value
 
 
 def clean_relative(path, allow_empty=False):
+    """A workspace-relative path, validated as strictly as a requested name."""
     if not isinstance(path, str):
-        raise HelperError("path must be a string")
+        raise HelperError("path must be a string", CODE_UNSAFE_PATH)
     if len(path.encode("utf-8", "surrogateescape")) > 1024:
-        raise HelperError("path exceeds 1024 bytes")
+        raise HelperError("path exceeds 1024 bytes", CODE_UNSAFE_PATH)
     if path.startswith("/") or "\\" in path or "\x00" in path:
-        raise HelperError("path must be a relative workspace path")
+        raise HelperError(
+            "path must be a relative workspace path", CODE_UNSAFE_PATH
+        )
     parts = [part for part in path.split("/") if part]
     if not parts and not allow_empty:
-        raise HelperError("path must not be empty")
+        raise HelperError("path must not be empty", CODE_UNSAFE_PATH)
     if len(parts) > 32:
-        raise HelperError("path has more than 32 components")
+        raise HelperError("path has more than 32 components", CODE_UNSAFE_PATH)
     for part in parts:
         if part in (".", ".."):
-            raise HelperError("path must not traverse directories")
+            raise HelperError(
+                "path must not traverse directories", CODE_UNSAFE_PATH
+            )
         if any(ord(ch) < 32 or ord(ch) == 127 for ch in part):
-            raise HelperError("path contains a control character")
+            raise HelperError(
+                "path contains a control character", CODE_UNSAFE_PATH
+            )
+    return parts
+
+
+def clean_absolute(path):
+    """Validated absolute components of a path, with no traversal."""
+    if not isinstance(path, str) or not path.startswith("/"):
+        raise HelperError("root must be an absolute path", CODE_UNSAFE_PATH)
+    if len(path.encode("utf-8", "surrogateescape")) > 4096:
+        raise HelperError("root is too long", CODE_UNSAFE_PATH)
+    if "\\" in path or "\x00" in path:
+        raise HelperError("root contains an invalid character", CODE_UNSAFE_PATH)
+    parts = [part for part in path.split("/") if part and part != "."]
+    for part in parts:
+        if part == ".." or any(ord(ch) < 32 or ord(ch) == 127 for ch in part):
+            raise HelperError(
+                "root must not traverse directories", CODE_UNSAFE_PATH
+            )
     return parts
 
 
 def root_path(root):
-    if not isinstance(root, str) or not root.startswith("/"):
-        raise HelperError("root must be an absolute path")
-    if len(root.encode("utf-8", "surrogateescape")) > 4096:
-        raise HelperError("root is too long")
-    if "\\" in root or "\x00" in root:
-        raise HelperError("root contains an invalid character")
-    parts = [part for part in root.split("/") if part and part != "."]
-    for part in parts:
-        if part == ".." or any(ord(ch) < 32 or ord(ch) == 127 for ch in part):
-            raise HelperError("root must not traverse directories")
+    parts = clean_absolute(root)
+    if not parts:
+        # The whole filesystem is never a permitted capture root: it is not
+        # private, and a capture scoped to it would walk everything a worker can
+        # reach rather than one workspace.
+        raise HelperError(
+            "root must be a directory inside the guest, not the filesystem root",
+            CODE_UNSAFE_PATH,
+        )
     return "/" + "/".join(parts)
 
 
-def open_dir_at(root, parts):
-    """Open the directory named by `parts`, one descriptor-relative step at a time."""
-    try:
-        fd = os.open(root, DIR_FLAGS)
-    except OSError as error:
-        raise HelperError("root is not an accessible directory: %s" % errno_name(error))
+def step_refusal(parent_fd, name, error):
+    """Classify one refused step, telling a symlink apart from a wrong type.
+
+    The kernel reports a symlink opened with O_NOFOLLOW|O_DIRECTORY as
+    `ENOTDIR`, exactly as it reports a plain file, so the pinned parent is the
+    only place the two can be told apart. The difference matters: a symlink is a
+    refusal to read, and must never be reported as a type mismatch that a caller
+    could treat as a harmless absence.
+    """
+    code = code_for_errno(error.errno)
+    if code == CODE_NOT_DIRECTORY:
+        try:
+            info = os.lstat(name, dir_fd=parent_fd)
+        except OSError:
+            return CODE_NOT_FOUND, "no such file or directory"
+        if statmod.S_ISLNK(info.st_mode):
+            return CODE_UNSAFE_PATH, "path component is a symlink"
+        return CODE_NOT_DIRECTORY, "path is not a directory"
+    if code == CODE_NOT_FOUND:
+        return CODE_NOT_FOUND, "no such file or directory"
+    if code == CODE_UNSAFE_PATH:
+        if error.errno == errno.ELOOP:
+            return CODE_UNSAFE_PATH, "path component is a symlink"
+        return CODE_UNSAFE_PATH, "path is not permitted"
+    return code, "artifact capture failed: %s" % errno_name(error)
+
+
+def open_at(parts, want_directory=True):
+    """Open `parts` with every component pinned from the filesystem root.
+
+    Pinning starts at `/` and takes one descriptor-relative step at a time, so a
+    symlink anywhere along the path - not only at the last component - is refused
+    instead of followed, and there is no check-then-use window: each step is
+    resolved against the descriptor the previous step returned.
+    """
+    fd = os.open("/", DIR_FLAGS)
     try:
         for name in parts:
             try:
                 nxt = os.open(name, DIR_FLAGS, dir_fd=fd)
-            except OSError:
-                raise HelperError("path component is missing or not a directory")
+            except OSError as error:
+                code, reason = step_refusal(fd, name, error)
+                raise HelperError(reason, code)
+            if not statmod.S_ISDIR(os.fstat(nxt).st_mode):
+                os.close(nxt)
+                raise HelperError("path is not a directory", CODE_NOT_DIRECTORY)
+            os.close(fd)
+            fd = nxt
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
+
+
+def open_dir_at(root, parts):
+    """Open the permitted root and walk down to `parts` inside it."""
+    fd = open_at(clean_absolute(root))
+    try:
+        for name in parts:
+            try:
+                nxt = os.open(name, DIR_FLAGS, dir_fd=fd)
+            except OSError as error:
+                code, reason = step_refusal(fd, name, error)
+                raise HelperError(reason, code)
+            if not statmod.S_ISDIR(os.fstat(nxt).st_mode):
+                os.close(nxt)
+                raise HelperError("path is not a directory", CODE_NOT_DIRECTORY)
             os.close(fd)
             fd = nxt
     except BaseException:
@@ -143,13 +292,16 @@ def open_regular_at(root, parts):
     try:
         try:
             fd = os.open(parts[-1], FILE_FLAGS, dir_fd=parent)
-        except OSError:
-            raise NotRegular("artifact is missing or is not a regular file")
+        except OSError as error:
+            code, reason = step_refusal(parent, parts[-1], error)
+            if code == CODE_NOT_DIRECTORY:
+                raise NotRegular("artifact is not a directory", code)
+            raise NotRegular(reason, code)
     finally:
         os.close(parent)
     if not statmod.S_ISREG(os.fstat(fd).st_mode):
         os.close(fd)
-        raise NotRegular("artifact is not a regular file")
+        raise NotRegular("artifact is not a regular file", CODE_NOT_DIRECTORY)
     return fd
 
 
@@ -158,27 +310,46 @@ def lstat_at(root, parts):
     try:
         try:
             return os.lstat(parts[-1], dir_fd=parent)
-        except OSError:
-            raise NotRegular("artifact is missing")
+        except OSError as error:
+            raise NotRegular("artifact is missing", code_for_errno(error.errno))
     finally:
         os.close(parent)
 
 
 def open_staging(staging):
+    """Pin the private staging directory, component by component, from `/`."""
     if not isinstance(staging, str) or not staging.startswith("/"):
-        raise HelperError("staging must be an absolute path")
+        raise HelperError("staging must be an absolute path", CODE_UNSAFE_PATH)
     if "\x00" in staging or "\\" in staging:
-        raise HelperError("staging contains an invalid character")
+        raise HelperError("staging contains an invalid character", CODE_UNSAFE_PATH)
     try:
-        fd = os.open(staging, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
-    except OSError:
-        raise HelperError("staging directory is not accessible")
+        fd = open_at(clean_absolute(staging))
+    except HelperError as error:
+        raise HelperError("staging directory is not accessible", error.code)
     # Staged bytes are the only copy of the artifact in the guest: they must not
     # be reachable by the worker's own user or by anyone else on the guest.
     if statmod.S_IMODE(os.fstat(fd).st_mode) & 0o077:
         os.close(fd)
-        raise HelperError("staging directory is not private")
+        raise HelperError("staging directory is not private", CODE_UNSAFE_PATH)
     return fd
+
+
+def scandir_bounded(fd, budget):
+    """At most `budget` names, without materialising or sorting a whole directory.
+
+    `os.listdir` on a directory with a million entries allocates a million
+    strings before the first entry can be refused, and a worker controls what is
+    in its workspace. The budget is the bound, and a full walk stops there.
+    """
+    names = []
+    overflow = False
+    with os.scandir(fd) as entries:
+        for entry in entries:
+            if len(names) >= budget:
+                overflow = True
+                break
+            names.append(entry.name)
+    return names, overflow
 
 
 def staged_fd(staging_fd, name):
@@ -243,15 +414,17 @@ def require_unchanged(fd, before, root, parts):
         or after.st_size != before.st_size
         or after.st_mtime_ns != before.st_mtime_ns
     ):
-        raise HelperError("source changed during capture")
+        raise HelperError("source changed during capture", CODE_SOURCE_CHANGED)
     try:
         again = open_regular_at(root, parts)
     except NotRegular:
-        raise HelperError("source changed during capture")
+        raise HelperError("source changed during capture", CODE_SOURCE_CHANGED)
     try:
         current = os.fstat(again)
         if (current.st_dev, current.st_ino) != (before.st_dev, before.st_ino):
-            raise HelperError("source changed during capture")
+            raise HelperError(
+                "source changed during capture", CODE_SOURCE_CHANGED
+            )
     finally:
         os.close(again)
 
@@ -305,17 +478,22 @@ def op_open(request):
         try:
             fd = open_regular_at(root, parts)
         except NotRegular as error:
-            raise HelperError(str(error))
+            raise HelperError(str(error), getattr(error, "code", CODE_NOT_FOUND))
         try:
             before = os.fstat(fd)
             total = before.st_size
             if offset > total:
-                raise HelperError("offset is past the end of the artifact")
+                raise HelperError(
+                    "offset is past the end of the artifact", CODE_UNSAFE_PATH
+                )
             window = total - offset
             if length is not None:
                 window = min(window, length)
             if window > max_bytes:
-                raise HelperError("artifact exceeds the configured maximum size")
+                raise HelperError(
+                    "artifact exceeds the configured maximum size",
+                    CODE_LIMIT_EXCEEDED,
+                )
             os.lseek(fd, offset, os.SEEK_SET)
             out_fd = staged_fd(staging_fd, name)
             try:
@@ -347,14 +525,20 @@ def op_list(request):
     max_entries = require_int(request.get("max_entries", 1000), "max_entries", 1)
     max_depth = require_int(request.get("max_depth", 32), "max_depth", 1)
     if len(parts) > max_depth:
-        raise HelperError("path is deeper than the configured maximum depth")
+        raise HelperError(
+            "path is deeper than the configured maximum depth",
+            CODE_LIMIT_EXCEEDED,
+        )
     offset = require_int(request.get("offset", 0), "offset", 0)
     limit = require_int(request.get("limit", 100), "limit", 1)
+    # One more than the budget is enough to know the budget was reached, and the
+    # walk stops there: a worker cannot make this allocate its way through a
+    # directory it controls.
     dir_fd = open_dir_at(root, parts)
     try:
-        names = sorted(os.listdir(dir_fd))
-        truncated = len(names) > max_entries
-        names = names[:max_entries]
+        names, overflow = scandir_bounded(dir_fd, max_entries + 1)
+        truncated = overflow or len(names) > max_entries
+        names = sorted(names)[:max_entries]
         entries = []
         for name in names:
             try:
@@ -393,7 +577,10 @@ def add_file(tar, root, parts, arcname, state, max_bytes):
     try:
         info = os.fstat(fd)
         if info.st_size + state["source"] > max_bytes:
-            raise HelperError("snapshot source exceeds the configured maximum byte limit")
+            raise HelperError(
+                "snapshot source exceeds the configured maximum byte limit",
+                CODE_LIMIT_EXCEEDED,
+            )
         entry = tarfile.TarInfo(arcname)
         entry.type = tarfile.REGTYPE
         entry.size = info.st_size
@@ -407,7 +594,10 @@ def add_file(tar, root, parts, arcname, state, max_bytes):
         state["source"] += info.st_size
         state["entries"] += 1
         if state["source"] > max_bytes or state["writer"].size > max_bytes:
-            raise HelperError("snapshot exceeds the configured maximum size")
+            raise HelperError(
+                "snapshot exceeds the configured maximum size",
+                CODE_LIMIT_EXCEEDED,
+            )
     finally:
         os.close(fd)
 
@@ -418,7 +608,10 @@ def add_directory(tar, root, parts, arcname, state, max_bytes, max_entries, max_
             info = lstat_at(root, parts)
         except NotRegular:
             if strict:
-                raise HelperError("snapshot source is missing")
+                raise HelperError(
+                    "no such file or directory: snapshot source is missing",
+                    CODE_NOT_FOUND,
+                )
             return
         mode = info.st_mode
         if statmod.S_ISREG(mode):
@@ -431,7 +624,10 @@ def add_directory(tar, root, parts, arcname, state, max_bytes, max_entries, max_
         # that named one explicitly is told so rather than given a surprise.
         if not statmod.S_ISDIR(mode):
             if strict:
-                raise HelperError("snapshot source is not a regular file or directory")
+                raise HelperError(
+                    "snapshot source is not a regular file or directory",
+                    CODE_NOT_DIRECTORY,
+                )
             return
     if parts:
         if state["entries"] >= max_entries:
@@ -452,8 +648,23 @@ def add_directory(tar, root, parts, arcname, state, max_bytes, max_entries, max_
         return
     dir_fd = open_dir_at(root, parts)
     try:
-        for name in sorted(os.listdir(dir_fd)):
+        # The entry budget is spent by this walk, not only by what it archives,
+        # so a huge tree stops at the cap instead of being walked whole.
+        room = max_entries + 1 - state["entries"]
+        if room <= 0:
+            state["truncated"] = True
+            return
+        names, overflow = scandir_bounded(dir_fd, room)
+        if overflow:
+            state["truncated"] = True
+        for name in sorted(names):
             if name in EXCLUDED:
+                continue
+            # A discovered name is validated like a requested path: no traversal,
+            # no control characters, and nothing that would make the archive
+            # member name disagree with the path it came from.
+            if not archive_name_ok(name):
+                state["skipped"] = True
                 continue
             try:
                 child_info = os.lstat(name, dir_fd=dir_fd)
@@ -472,6 +683,9 @@ def add_directory(tar, root, parts, arcname, state, max_bytes, max_entries, max_
                 state["truncated"] = True
                 continue
             child_arc = name if arcname == "." else arcname + "/" + name
+            if len(child_arc.encode("utf-8", "surrogateescape")) > MAX_ARCNAME:
+                state["skipped"] = True
+                continue
             add_directory(
                 tar,
                 root,
@@ -494,11 +708,14 @@ def op_snapshot(request):
     max_depth = require_int(field(request, "max_depth"), "max_depth", 1)
     raw_paths = request.get("paths") or []
     if not isinstance(raw_paths, list) or len(raw_paths) > max_entries:
-        raise HelperError("paths is invalid")
+        raise HelperError("paths is invalid", CODE_UNSAFE_PATH)
     selected = [clean_relative(item) for item in raw_paths]
     for parts in selected:
         if len(parts) > max_depth:
-            raise HelperError("path is deeper than the configured maximum depth")
+            raise HelperError(
+                "path is deeper than the configured maximum depth",
+                CODE_LIMIT_EXCEEDED,
+            )
     name = field(request, "name")
     staging_fd = open_staging(field(request, "staging"))
     try:
@@ -539,7 +756,10 @@ def op_snapshot(request):
                             True,
                         )
                     if writer.size > max_bytes:
-                        raise HelperError("snapshot exceeds the configured maximum size")
+                        raise HelperError(
+                "snapshot exceeds the configured maximum size",
+                CODE_LIMIT_EXCEEDED,
+            )
             os.fsync(out_fd)
         except BaseException:
             os.close(out_fd)
@@ -549,7 +769,10 @@ def op_snapshot(request):
         staged = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=staging_fd)
         try:
             if os.fstat(staged).st_size > max_bytes:
-                raise HelperError("snapshot exceeds the configured maximum size")
+                raise HelperError(
+                "snapshot exceeds the configured maximum size",
+                CODE_LIMIT_EXCEEDED,
+            )
             size, digest = hash_fd(staged)
         finally:
             os.close(staged)
@@ -616,14 +839,16 @@ def run_bounded(argv, dst_fd, budget, digest, stats, root, cwd, deadline):
             proc.stdout.close()
         except OSError:
             pass
+        killed = False
         if proc.poll() is None:
+            killed = True
             # The child writes to a pipe we stop reading; stop the child too.
             try:
                 os.killpg(proc.pid, 9)
             except OSError:
                 proc.kill()
         exit_code = proc.wait()
-        if exit_code:
+        if exit_code and not killed and not stats["timed_out"]:
             stats["failed"] += 1
     stats["bytes"] += total
     return exit_code
@@ -684,19 +909,29 @@ def op_capture(request):
     timeout = require_int(request.get("timeout_ms", 30000), "timeout_ms", 100, 600000)
     sources = request.get("sources")
     if not isinstance(sources, list) or not sources or len(sources) > MAX_SOURCES:
-        raise HelperError("sources is invalid")
+        raise HelperError(
+            "sources is invalid", CODE_UNSAFE_PATH
+        )
     parsed = []
     for source in sources:
         if not isinstance(source, dict):
-            raise HelperError("source is invalid")
+            raise HelperError(
+            "source is invalid", CODE_UNSAFE_PATH
+        )
         argv = source.get("argv")
         if not isinstance(argv, list) or not argv or len(argv) > 64:
-            raise HelperError("source argv is invalid")
+            raise HelperError(
+            "source argv is invalid", CODE_UNSAFE_PATH
+        )
         for argument in argv:
             if not isinstance(argument, str) or not argument or "\x00" in argument:
-                raise HelperError("source argv is invalid")
+                raise HelperError(
+            "source argv is invalid", CODE_UNSAFE_PATH
+        )
             if len(argument) > 1024:
-                raise HelperError("source argv is invalid")
+                raise HelperError(
+            "source argv is invalid", CODE_UNSAFE_PATH
+        )
         label = source.get("label")
         if label is not None and (
             not isinstance(label, str)
@@ -704,10 +939,14 @@ def op_capture(request):
             or len(label) > 64
             or any(ord(ch) < 32 or ord(ch) == 127 for ch in label)
         ):
-            raise HelperError("source label is invalid")
+            raise HelperError(
+            "source label is invalid", CODE_UNSAFE_PATH
+        )
         relative = source.get("cwd", "")
         if not isinstance(relative, str):
-            raise HelperError("source cwd is invalid")
+            raise HelperError(
+            "source cwd is invalid", CODE_UNSAFE_PATH
+        )
         if relative:
             clean_relative(relative)
         parsed.append(
@@ -723,15 +962,59 @@ def op_capture(request):
     try:
         out_fd = staged_fd(staging_fd, name)
         digest = hashlib.sha256()
-        stats = {"truncated": False, "timed_out": False, "failed": 0, "bytes": 0}
+        stats = {
+            "truncated": False,
+            "timed_out": False,
+            "failed": 0,
+            "bytes": 0,
+            "skipped": 0,
+            "incomplete": 0,
+        }
         reported = []
         try:
             deadline = _now() + timeout / 1000.0
             for source in parsed:
                 label = source["label"]
+                if _now() >= deadline:
+                    # Out of time before this source even started: whatever the
+                    # file holds is not the whole report, and it is recorded as
+                    # such rather than being passed off as complete.
+                    stats["timed_out"] = True
+                    stats["incomplete"] += 1
+                    annotate(
+                        out_fd,
+                        digest,
+                        stats,
+                        label,
+                        "%s incomplete=not-started-before-deadline" % label,
+                        max_bytes,
+                    )
+                    reported.append(
+                        {"label": label, "incomplete": "not-started-before-deadline"}
+                    )
+                    break
                 try:
                     cwd = source_cwd(root, source["cwd"])
-                except HelperError:
+                except HelperError as error:
+                    if source["git"] and error.code == CODE_NOT_FOUND:
+                        # A workspace that has no repository directory at all is a
+                        # legitimate deployment, not a failure to retry for ever.
+                        annotate(
+                            out_fd,
+                            digest,
+                            stats,
+                            label,
+                            "%s not-applicable=no-repository-in-workspace" % label,
+                            max_bytes,
+                        )
+                        reported.append(
+                            {
+                                "label": label,
+                                "skipped": "not_applicable",
+                                "reason": "no-repository-directory",
+                            }
+                        )
+                        continue
                     # The directory is missing or is a symlink out of the root.
                     annotate(
                         out_fd,
@@ -741,18 +1024,26 @@ def op_capture(request):
                         "%s skipped=directory-missing-or-outside-root" % label,
                         max_bytes,
                     )
-                    reported.append({"label": label, "skipped": "no-such-directory"})
+                    reported.append(
+                        {"label": label, "skipped": error.code}
+                    )
+                    stats["skipped"] += 1
                     continue
                 if source["git"] and not source_git_dir(root, source["cwd"]):
+                    # A workspace that simply has no repository is not an error:
+                    # it is recorded as not applicable, once, and never as a
+                    # failure that would retry for ever.
                     annotate(
                         out_fd,
                         digest,
                         stats,
                         label,
-                        "%s skipped=no-git-metadata-in-root" % label,
+                        "%s not-applicable=no-git-metadata-in-root" % label,
                         max_bytes,
                     )
-                    reported.append({"label": label, "skipped": "no-git-metadata"})
+                    reported.append(
+                        {"label": label, "skipped": "not_applicable", "reason": "no-git-metadata"}
+                    )
                     continue
                 before = stats["bytes"]
                 exit_code = run_bounded(
@@ -787,6 +1078,17 @@ def op_capture(request):
                     }
                 )
                 if stats["timed_out"]:
+                    # A source that had not finished when the deadline arrived is
+                    # not a failure of the guest, and it is not complete either.
+                    stats["incomplete"] += 1
+                    annotate(
+                        out_fd,
+                        digest,
+                        stats,
+                        label,
+                        "%s incomplete=deadline-reached" % label,
+                        max_bytes,
+                    )
                     break
             os.fsync(out_fd)
         except BaseException:
@@ -802,6 +1104,18 @@ def op_capture(request):
             "truncated": stats["truncated"],
             "timed_out": stats["timed_out"],
             "sources_failed": stats["failed"],
+            "sources_incomplete": stats["incomplete"],
+            "sources_ok": len(parsed) - stats["failed"] - stats["incomplete"],
+            # Complete means every source produced what it was asked for. A
+            # source that could not start, that exited non-zero or that was cut
+            # short all leave the report partial, and that is stated rather than
+            # left for a caller to infer from a byte count.
+            "complete": not (
+                stats["truncated"]
+                or stats["timed_out"]
+                or stats["incomplete"]
+                or stats["failed"]
+            ),
             "sources": reported,
         }
     finally:
@@ -832,16 +1146,18 @@ def emit(payload):
 
 def main(argv):
     if len(argv) != 2:
-        raise HelperError("usage: artifact-helper.py <request-json>")
+        raise HelperError(
+            "usage: artifact-helper.py <request-json>", CODE_UNSAFE_PATH
+        )
     try:
         request = json.loads(argv[1])
     except ValueError:
-        raise HelperError("request is not valid JSON")
+        raise HelperError("request is not valid JSON", CODE_UNSAFE_PATH)
     if not isinstance(request, dict):
-        raise HelperError("request must be a JSON object")
+        raise HelperError("request must be a JSON object", CODE_UNSAFE_PATH)
     operation = OPERATIONS.get(request.get("op"))
     if operation is None:
-        raise HelperError("unsupported operation")
+        raise HelperError("unsupported operation", CODE_UNSAFE_PATH)
     result = operation(request)
     result["ok"] = True
     emit(result)
@@ -851,11 +1167,32 @@ if __name__ == "__main__":
     try:
         main(sys.argv)
     except HelperError as error:
-        emit({"ok": False, "error": str(error)[:MAX_ERROR]})
+        emit(
+            {
+                "ok": False,
+                "code": getattr(error, "code", CODE_TRANSPORT),
+                "error": str(error)[:MAX_ERROR],
+            }
+        )
+        sys.exit(1)
+    except NotRegular as error:
+        emit(
+            {
+                "ok": False,
+                "code": getattr(error, "code", CODE_NOT_FOUND),
+                "error": str(error)[:MAX_ERROR],
+            }
+        )
         sys.exit(1)
     except OSError as error:
-        emit({"ok": False, "error": "filesystem error: %s" % errno_name(error)})
+        emit(
+            {
+                "ok": False,
+                "code": code_for_errno(error.errno if error.errno else errno.EIO),
+                "error": "filesystem error: %s" % errno_name(error),
+            }
+        )
         sys.exit(1)
     except Exception:
-        emit({"ok": False, "error": "capture failed"})
+        emit({"ok": False, "code": CODE_TRANSPORT, "error": "capture failed"})
         sys.exit(1)

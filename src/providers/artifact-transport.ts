@@ -1,18 +1,32 @@
 import { randomUUID } from "node:crypto";
 import { Readable } from "node:stream";
 import {
+  ArtifactCaptureError,
   type ArtifactDiagnostic,
   type ArtifactDiagnosticsOptions,
+  type ArtifactErrorCode,
   type ArtifactListing,
   type ArtifactListingOptions,
   type ArtifactOpenOptions,
   type ArtifactSnapshotOptions,
+  artifactErrorCode,
+  artifactErrorCodes,
   cancelTransfers,
+  describeArtifactError,
+  isArtifactErrorCode,
   safeFilename,
   validateRelativePath,
   validateRoot,
   type WorkerArtifactTransport,
 } from "../artifact-types";
+
+export {
+  type ArtifactErrorCode,
+  artifactErrorCode,
+  artifactErrorCodes,
+  describeArtifactError,
+} from "../artifact-types";
+
 import { artifactHelperSource } from "./artifact-helper";
 
 export const shellQuote = (value: string) =>
@@ -80,11 +94,17 @@ interface HelperMetadata {
   entries?: number;
   timed_out?: boolean;
   sources_failed?: number;
+  /** Sources that were cut short; a capture with any is not the whole report. */
+  sources_incomplete?: number;
+  /** False when a bound, the deadline or a source left the report partial. */
+  complete?: boolean;
   sources?: {
     label: string;
     exit?: number;
     bytes?: number;
     skipped?: string;
+    reason?: string;
+    incomplete?: string;
   }[];
 }
 
@@ -95,7 +115,13 @@ interface ListMetadata {
   total?: number;
 }
 
-export class ArtifactTransportError extends Error {}
+/** A capture refusal, re-exported so transport callers need one import. */
+export class ArtifactTransportError extends ArtifactCaptureError {
+  constructor(message: string, code?: ArtifactErrorCode) {
+    super(message, code ?? artifactErrorCodes.transport);
+    this.name = "ArtifactTransportError";
+  }
+}
 
 /**
  * Runs the trusted Python helper inside a guest and turns its small metadata
@@ -390,12 +416,34 @@ export class HelperArtifactTransport implements WorkerArtifactTransport {
       path.split("/").at(-1)!,
       options.signal,
     );
-    const notes = (meta.sources ?? []).map((source) =>
-      source.skipped
-        ? `${source.label} skipped=${source.skipped}`
-        : `${source.label} exit=${source.exit ?? -1} bytes=${source.bytes ?? 0}`,
-    );
-    return { path, transfer, ...(notes.length ? { notes } : {}) };
+    const notes = (meta.sources ?? []).map((source) => {
+      if (source.incomplete)
+        return `${source.label} incomplete=${source.incomplete}`;
+      if (source.skipped)
+        return `${source.label} skipped=${source.skipped}${
+          source.reason ? ` reason=${source.reason}` : ""
+        }`;
+      return `${source.label} exit=${source.exit ?? -1} bytes=${source.bytes ?? 0}`;
+    });
+    // A capture that is not the whole report says so on the transfer itself. The
+    // bounded prefix is still evidence and is still verified, so it is kept, but
+    // it travels labelled: nothing downstream can mistake a cut-short journal or
+    // diff for the complete one.
+    const incomplete =
+      meta.complete === false
+        ? meta.timed_out
+          ? "capture deadline reached"
+          : meta.truncated
+            ? "a source reached the byte bound"
+            : meta.sources_incomplete
+              ? `${meta.sources_incomplete} source(s) did not finish`
+              : `${meta.sources_failed ?? 1} source(s) failed`
+        : undefined;
+    return {
+      path,
+      transfer: { ...transfer, ...(incomplete ? { incomplete } : {}) },
+      ...(notes.length ? { notes } : {}),
+    };
   }
 
   private async stage(vmId: string, signal?: AbortSignal): Promise<string> {
@@ -475,13 +523,20 @@ export class HelperArtifactTransport implements WorkerArtifactTransport {
         `Artifact capture returned no metadata (exit ${result.code ?? "none"})`,
       );
     }
-    const payload = parsed as { ok?: unknown; error?: unknown };
-    if (payload?.ok !== true)
+    const payload = parsed as { ok?: unknown; error?: unknown; code?: unknown };
+    if (payload?.ok !== true) {
+      const code = helperCode(payload?.code, payload?.error);
+      // The message always names the class it belongs to, so a caller that
+      // still reads text sees the same six outcomes this code describes.
       throw new ArtifactTransportError(
-        typeof payload?.error === "string"
-          ? payload.error.slice(0, 512)
-          : "Artifact capture failed",
+        `${describeArtifactError(code)}: ${
+          typeof payload?.error === "string"
+            ? payload.error.slice(0, 512)
+            : "artifact capture failed"
+        }`.slice(0, 500),
+        code,
       );
+    }
     return parsed as T;
   }
 
@@ -524,6 +579,15 @@ function asWebStream(
   return Readable.toWeb(
     stream as unknown as Readable,
   ) as unknown as ReadableStream<Uint8Array>;
+}
+
+/**
+ * The refusal code the helper reported, or the one its message implies. The
+ * helper's own code is preferred and is never second-guessed: a stable code from
+ * the code that produced it beats reading English.
+ */
+function helperCode(code: unknown, error: unknown): ArtifactErrorCode {
+  return isArtifactErrorCode(code) ? code : artifactErrorCode(error);
 }
 
 function dirnameOf(path: string): string {

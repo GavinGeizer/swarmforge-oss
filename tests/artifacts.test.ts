@@ -8,7 +8,8 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
-import { screeningWindow } from "../src/artifact-types";
+import { artifactErrorCode, screeningWindow } from "../src/artifact-types";
+import { WorkerFiles } from "../src/files";
 import { redactorFor } from "../src/security";
 import { type LocalHarness, localHarness } from "./local-artifact-provider";
 
@@ -241,7 +242,10 @@ test("an oversized or missing source fails closed with a durable record", async 
       .preserve(created.worker_id, ".swarmforge/absent.txt")
       .then(() => null)
       .catch((error: Error) => error);
-    expect(String(missing)).toMatch(/regular file|missing/i);
+    // The refusal names its own class, so a caller can tell an absent source
+    // from a size limit without reading English.
+    expect(String(missing)).toMatch(/no such file|not a regular file/i);
+    expect(artifactErrorCode(missing)).toBe("not_found");
     expect(
       limited.artifacts.list({ worker_id: created.worker_id }).artifacts,
     ).toHaveLength(2);
@@ -1040,4 +1044,160 @@ test("durable events count attempts, successes and failures without contents", a
   // The event stream carries no artifact bytes, only the verified size and hash.
   expect(JSON.stringify(events)).not.toContain("body");
   expect(events.length).toBeLessThanOrEqual(21);
+});
+
+test("a diagnostic that hit a bound is preserved and labelled incomplete", async () => {
+  // A bound this small cannot hold a whole journal or diff, so every capture is
+  // a bounded prefix of what it was asked for.
+  const limited = await localHarness({
+    SWARMFORGE_ARTIFACT_MAX_BYTES: "64",
+  });
+  try {
+    const created = limited.spawn();
+    await limited.provider.createWorker(created);
+    const records = await limited.artifacts.diagnostics(created.worker_id, {
+      runId: "run-1",
+    });
+    expect(records.length).toBeGreaterThan(0);
+    for (const record of records) {
+      expect(record.state).toBe("preserved");
+      expect(record.size).toBeLessThanOrEqual(64);
+      // The bytes are real and verified ...
+      const bytes = await limited.artifacts.read(
+        record.artifact_id,
+        0,
+        record.size,
+      );
+      expect(createHash("sha256").update(bytes).digest("hex")).toBe(
+        record.sha256 ?? "",
+      );
+      // ... and they are not passed off as the whole report.
+      expect(record.incomplete).toBeTruthy();
+    }
+  } finally {
+    await limited.cleanup();
+  }
+});
+
+test("a full diagnostic with no bound is not labelled incomplete", async () => {
+  const records = await h.artifacts.diagnostics(worker, { runId: "run-1" });
+  expect(records.length).toBe(2);
+  for (const record of records) {
+    expect(record.state).toBe("preserved");
+    expect(record.incomplete).toBeNull();
+  }
+});
+
+test("collecting a directory follows the listing to its end", async () => {
+  const directory = join(h.workspace.root, "many");
+  mkdirSync(directory, { recursive: true, mode: 0o700 });
+  const names: string[] = [];
+  for (let index = 0; index < 12; index++) {
+    const name = `file-${String(index).padStart(2, "0")}.txt`;
+    names.push(name);
+    writeFileSync(join(directory, name), `body ${index}`);
+  }
+  // The transport answers with a small page, exactly as a guest that caps one
+  // response would. A collection that trusted the first page would report twelve
+  // files as the whole directory.
+  const transport = h.workspace.transport;
+  const original = transport.list.bind(transport);
+  const pages: number[] = [];
+  transport.list = async (vmId, root, path, options = {}) => {
+    const all = await original(vmId, root, path, {
+      ...options,
+      limit: 1000,
+      offset: 0,
+    });
+    const start = options.offset ?? 0;
+    const end = start + 5;
+    pages.push(all.entries.slice(start, end).length);
+    return {
+      entries: all.entries.slice(start, end),
+      next_offset: end < all.entries.length ? end : null,
+    };
+  };
+  try {
+    const records = await h.artifacts.collectDirectory(worker, "many", {
+      runId: "run-1",
+    });
+    expect(pages.length).toBeGreaterThan(1);
+    expect(records.map((record) => record.original_path).sort()).toEqual(
+      names.map((name) => `many/${name}`).sort(),
+    );
+    for (const record of records) expect(record.state).toBe("preserved");
+  } finally {
+    transport.list = original;
+  }
+});
+
+test("a listing that stops advancing is refused as incomplete", async () => {
+  write("stuck.txt", "one");
+  const transport = h.workspace.transport;
+  const original = transport.list.bind(transport);
+  transport.list = async (_vmId, _root, _path, options = {}) => ({
+    entries: [{ name: "stuck.txt", kind: "file", size: 3 }],
+    next_offset: options.offset ?? 0,
+  });
+  try {
+    await expect(
+      h.artifacts.collectDirectory(worker, ".swarmforge/artifacts"),
+    ).rejects.toThrow(/did not advance/);
+  } finally {
+    transport.list = original;
+  }
+});
+
+test("a live listing is not cut short by entries a caller cannot use", async () => {
+  // Symlinks sort before the files here, so filtering after the transport has
+  // paged would hand back an empty first page and a caller would read that as an
+  // empty directory.
+  const listing = join(h.workspace.root, "mixed");
+  mkdirSync(listing, { recursive: true, mode: 0o700 });
+  for (const name of ["a-escape", "b-escape", "c-escape"])
+    symlinkSync("/etc/passwd", join(listing, name));
+  writeFileSync(join(listing, "d-file.txt"), "d");
+  writeFileSync(join(listing, "e-file.txt"), "e");
+  const first = await h.artifacts.listWorkerFiles(worker, "mixed", {
+    limit: 1,
+  });
+  expect(first.entries.map((entry) => entry.name)).toEqual(["d-file.txt"]);
+  // The next page continues from the transport's own offset, so nothing is
+  // skipped and nothing is repeated.
+  const second = await h.artifacts.listWorkerFiles(worker, "mixed", {
+    limit: 5,
+    offset: first.next_offset ?? 0,
+  });
+  expect(second.entries.map((entry) => entry.name)).toEqual(["e-file.txt"]);
+  expect(second.next_offset).toBeNull();
+  for (const bad of [1.5, -1, Number.NaN])
+    await expect(
+      h.artifacts.listWorkerFiles(worker, "mixed", { offset: bad }),
+    ).rejects.toThrow();
+  await expect(
+    h.artifacts.listWorkerFiles(worker, "mixed", { limit: 2.5 }),
+  ).rejects.toThrow();
+});
+
+test("a refused live read surfaces the refusal class to the caller", async () => {
+  const files = new WorkerFiles(h.coordinator);
+  write("secret-free.txt", "clean");
+  mkdirSync(join(h.workspace.root, ".swarmforge", "artifacts", "dir"), {
+    recursive: true,
+  });
+  const absent = await files
+    .readArtifact(worker, "absent.txt")
+    .then(() => null)
+    .catch((error: unknown) => error);
+  expect(artifactErrorCode(absent)).toBe("not_found");
+  const notFile = await files
+    .readArtifact(worker, "dir")
+    .then(() => null)
+    .catch((error: unknown) => error);
+  expect(["not_directory", "unsafe_path"]).toContain(
+    artifactErrorCode(notFile),
+  );
+  expect(await files.readArtifact(worker, "secret-free.txt")).toEqual(
+    text("clean"),
+  );
 });
