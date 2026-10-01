@@ -795,3 +795,121 @@ test("guest exec budgets never exceed what the guest API accepts", async () => {
   for (const command of ws.host.commands)
     expect(command).not.toContain("900000");
 });
+
+/**
+ * Git diagnostics must stay inside the permitted root.
+ *
+ * A worker owns everything under its workspace, including `repo/.git`, so a
+ * repository that points anywhere else - through a `gitdir:` pointer file, a
+ * hostile `core.worktree`, or an alternates file - is a way to read bytes the
+ * coordinator never asked for. Each probe below plants exactly one of those and
+ * asserts the outside canary cannot reach any capture.
+ */
+const canary = "OUTSIDE-CANARY-MUST-NOT-BE-CAPTURED-7f3a9c";
+
+const outsideRepository = (root: string) => {
+  const outside = join(root, "outside", "xgit");
+  mkdirSync(outside, { recursive: true, mode: 0o700 });
+  const run = (args: string[], cwd = outside) =>
+    Bun.spawnSync(["git", ...args], {
+      cwd,
+      stdout: "ignore",
+      stderr: "ignore",
+    });
+  run(["init", "--quiet", "--initial-branch=main", "."]);
+  run(["config", "user.email", "probe@example.invalid"]);
+  run(["config", "user.name", "probe"]);
+  writeFileSync(join(outside, "public.txt"), "public content\n");
+  writeFileSync(join(outside, "private.txt"), canary);
+  run(["add", "-A"]);
+  run(["commit", "--quiet", "-m", "outside"]);
+  const head = Bun.spawnSync(["git", "rev-parse", "HEAD"], {
+    cwd: outside,
+    stdout: "pipe",
+  })
+    .stdout.toString()
+    .trim();
+  return { outside, head };
+};
+
+const gitReportOf = async (root: string) => {
+  const results = await ws.transport.diagnostics(ws.vmId, root, {
+    maxBytes: 256 * 1024,
+  });
+  const chunks: Uint8Array[] = [];
+  for (const item of results) {
+    const reader = item.transfer.stream.getReader();
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value) chunks.push(value);
+    }
+    await item.transfer.cleanup();
+  }
+  return Buffer.concat(chunks.map((chunk) => Buffer.from(chunk))).toString();
+};
+
+test("gitdiag-probe: a gitdir pointer file cannot pull a repository into the capture", async () => {
+  const { outside } = outsideRepository(ws.base);
+  const repo = join(ws.root, "repo");
+  mkdirSync(repo, { recursive: true, mode: 0o700 });
+  writeFileSync(join(repo, "inside.txt"), "inside content\n");
+  // A pointer file, not a directory: the legitimate form for a worktree whose
+  // metadata lives elsewhere, and exactly the case that used to be accepted.
+  writeFileSync(join(repo, ".git"), `gitdir: ${join(outside, ".git")}\n`);
+  const report = await gitReportOf(ws.root);
+  // Nothing from outside the permitted root, and no name that would prove the
+  // pointer was followed.
+  expect(report).not.toContain(canary);
+  expect(report).not.toContain("private.txt");
+  expect(report).not.toContain("public.txt");
+  expect(report).toContain("inside.txt");
+  expect(ws.stagingEntries()).toEqual([]);
+});
+
+test("gitdiag-probe2: a hostile core.worktree cannot expose filenames outside the root", async () => {
+  const { outside } = outsideRepository(ws.base);
+  const repo = join(ws.root, "repo");
+  mkdirSync(repo, { recursive: true, mode: 0o700 });
+  writeFileSync(join(repo, "inside.txt"), "inside content\n");
+  const gitDir = join(repo, ".git");
+  for (const directory of ["objects", "refs", "info"])
+    mkdirSync(join(gitDir, directory), { recursive: true });
+  writeFileSync(join(gitDir, "HEAD"), "ref: refs/heads/main\n");
+  // A real directory .git whose own config aims the work tree somewhere else.
+  writeFileSync(
+    join(gitDir, "config"),
+    `[core]\n\trepositoryformatversion = 0\n\tbare = false\n\tworktree = ${outside}\n`,
+  );
+  const report = await gitReportOf(ws.root);
+  expect(report).not.toContain(canary);
+  expect(report).not.toContain("private.txt");
+  expect(ws.stagingEntries()).toEqual([]);
+});
+
+test("gitdiag-probe3: an alternates file cannot pull outside object content into the capture", async () => {
+  const { outside, head } = outsideRepository(ws.base);
+  const repo = join(ws.root, "repo");
+  mkdirSync(repo, { recursive: true, mode: 0o700 });
+  const gitDir = join(repo, ".git");
+  for (const directory of ["objects/info", "objects", "refs/heads"])
+    mkdirSync(join(gitDir, directory), { recursive: true });
+  writeFileSync(join(gitDir, "HEAD"), "ref: refs/heads/main\n");
+  writeFileSync(
+    join(gitDir, "config"),
+    "[core]\n\trepositoryformatversion = 0\n\tbare = false\n",
+  );
+  // The work tree holds one of the two committed files; the other exists only in
+  // the outside object store, so a diff has to read it through the alternates to
+  // describe what was removed.
+  writeFileSync(join(repo, "public.txt"), "public content\n");
+  writeFileSync(join(gitDir, "refs", "heads", "main"), `${head}\n`);
+  writeFileSync(
+    join(gitDir, "objects", "info", "alternates"),
+    `${join(outside, ".git", "objects")}\n`,
+  );
+  const report = await gitReportOf(ws.root);
+  expect(report).not.toContain(canary);
+  expect(report).not.toContain("private.txt");
+  expect(ws.stagingEntries()).toEqual([]);
+});
