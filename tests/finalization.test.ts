@@ -5,6 +5,7 @@ import { join } from "node:path";
 import type { WorkerArtifactTransport } from "../src/artifact-types";
 import { loadConfig } from "../src/config";
 import { Coordinator } from "../src/coordinator";
+import { maxRetryDelay, retryDelay } from "../src/finalization";
 import { publicWorker } from "../src/security";
 import { Store } from "../src/store";
 import {
@@ -901,6 +902,43 @@ test("a control requested while a step holds the worker lock is applied without 
   h.store.close();
 });
 
+test("a forced destruction supersedes a stuck control intent", async () => {
+  const h = harness(fast);
+  const { id, vm } = await started(h);
+  // A pause the provider cannot perform leaves the intent durable and pending.
+  h.provider.pauseWorker = async () => {
+    throw new Error("provider unavailable");
+  };
+  const stuck = await h.coordinator.control(id, "pause");
+  expect(stuck.intent).toBe("pause");
+  expect(stuck.state).toBe("running");
+  // An ordinary different control is still refused while one is pending.
+  await expect(h.coordinator.control(id, "destroy")).rejects.toThrow(
+    "Another worker control operation is pending",
+  );
+  expect(h.provider.vms.has(vm)).toBe(true);
+  // Forced destruction is the escalation an operator always has.
+  const destroyed = await within(
+    2000,
+    h.coordinator.control(id, "destroy", true),
+  );
+  expect(destroyed.state).toBe("destroyed");
+  expect(destroyed.intent).toBeNull();
+  expect(h.provider.vms.has(vm)).toBe(false);
+  expect(h.store.events(id).map((event) => event.type)).toContain(
+    "worker.control_superseded",
+  );
+  const supersession = h.store
+    .events(id)
+    .filter((event) => event.type === "worker.control_superseded")
+    .at(-1);
+  expect(JSON.parse(supersession!.data)).toMatchObject({
+    previous_intent: "pause",
+    intent: "destroy",
+  });
+  h.store.close();
+});
+
 test("finalization is visible on the public worker view", async () => {
   const h = harness(fast);
   const { id } = await started(h);
@@ -963,6 +1001,57 @@ test("a missing optional declaration is skipped under the guest's own error word
   expect(settled.finalization?.state).toBe("preserved");
   expect(settled.finalization?.attempts).toBe(1);
   h.store.close();
+});
+
+test("a persisted preservation error is redacted before it is truncated", async () => {
+  const h = harness(fast);
+  const { id } = await started(h);
+  // A provider failure that quotes a long secret: only a prefix of it would survive truncation,
+  // and a prefix is exactly what the redactor can no longer recognise.
+  const secret = h.coordinator.config.SWARMFORGE_MODEL_API_KEY;
+  h.provider.transportFailure = `capture failed while opening with key ${secret}`;
+  h.agent.complete(h.store.get(id));
+  await h.coordinator.tick();
+  const settled = await finalized(h, id);
+  const error = settled.finalization?.error ?? "";
+  expect(error).toContain("[REDACTED]");
+  expect(error).not.toContain(secret);
+  expect(error).not.toContain(secret.slice(0, 8));
+  expect(settled.finalization?.state).toBe("failed");
+  // The redacted text survives redaction again, which a truncated secret would not.
+  expect(publicWorker(h.coordinator, id).finalization?.error).toBe(error);
+  expect(
+    h.store
+      .events(id)
+      .map((event) => event.data)
+      .join(" ")
+      .includes(secret),
+  ).toBe(false);
+  h.store.close();
+});
+
+test("retry backoff stays a safe integer within a bounded horizon", () => {
+  const c = { ...config, SWARMFORGE_FINALIZATION_RETRY_MS: 3600000 };
+  expect(retryDelay({ ...c, SWARMFORGE_FINALIZATION_MAX_ATTEMPTS: 3 }, 1)).toBe(
+    3600000,
+  );
+  for (const attempts of [1, 2, 3, 10, 50, 99, 100]) {
+    const delay = retryDelay(c, attempts);
+    expect(Number.isSafeInteger(delay)).toBe(true);
+    expect(delay).toBeGreaterThan(0);
+    expect(delay).toBeLessThanOrEqual(maxRetryDelay);
+  }
+  // Doubling stops mattering long before the attempt bound is reached.
+  expect(retryDelay(c, 90)).toBe(retryDelay(c, 100));
+  const short = {
+    ...c,
+    SWARMFORGE_FINALIZATION_RETRY_MS: 2000,
+    SWARMFORGE_ARTIFACT_TIMEOUT_MS: 5000,
+  };
+  expect(retryDelay(short, 1)).toBe(2000);
+  expect(retryDelay(short, 2)).toBe(4000);
+  // The bound never exceeds the configured transfer timeout when that is the smaller horizon.
+  expect(retryDelay(short, 100)).toBe(5000);
 });
 
 test("concurrent finalizations stay inside the configured bound", async () => {

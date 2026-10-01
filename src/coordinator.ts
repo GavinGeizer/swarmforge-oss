@@ -18,7 +18,12 @@ import {
   type WorkerProvider,
   type WorkerResult,
 } from "./domain";
-import { FinalizationGate, Finalizer, sleep } from "./finalization";
+import {
+  FinalizationGate,
+  Finalizer,
+  maxRetryDelay,
+  sleep,
+} from "./finalization";
 import { GitHandoffError } from "./git-handoff";
 import { inspectPersistence } from "./safety";
 import { excerptText, redactorFor } from "./security";
@@ -46,11 +51,13 @@ export class Coordinator {
     readonly agent: CodingAgent,
   ) {
     this.artifacts = new ArtifactService(config, store, provider);
+    // Persisted artifact errors are redacted against the project's secrets before truncation.
     this.finalizer = new Finalizer(
       config,
       store,
       this.artifacts,
       new FinalizationGate(config.SWARMFORGE_ARTIFACT_CONCURRENCY),
+      (text) => redactorFor(this).text(text),
     );
   }
   async bounded<T>(
@@ -868,11 +875,19 @@ export class Coordinator {
     }
     if (w.vm_missing && intent !== "destroy")
       throw new Error("Worker VM is missing");
-    if (w.intent && w.intent !== intent)
+    // Forced destruction is the escalation path: it supersedes a control that is stuck rather
+    // than refusing, because an operator must always be able to reclaim a retained worker.
+    const superseding = intent === "destroy" && force && Boolean(w.intent);
+    if (w.intent && w.intent !== intent && !superseding)
       throw new Error("Another worker control operation is pending");
     if (intent === "resume" && w.state !== "paused")
       throw new Error("Worker is not paused");
     if (intent === "pause" && w.state === "paused") return w;
+    if (superseding)
+      this.store.event(id, "worker.control_superseded", {
+        previous_intent: w.intent,
+        intent,
+      });
     this.store.patch(id, { intent, force_destroy: force });
     await this.applyIntent(id);
     return this.store.get(id);
@@ -883,7 +898,11 @@ export class Coordinator {
     const { SWARMFORGE_ARTIFACT_TIMEOUT_MS: transfer } = this.config;
     const { SWARMFORGE_FINALIZATION_MAX_ATTEMPTS: attempts } = this.config;
     const { SWARMFORGE_FINALIZATION_RETRY_MS: retry } = this.config;
-    const budget = transfer * attempts + retry * 2 * attempts + 1000;
+    // Bounded and always a safe integer: a long attempt schedule may not park a caller for days.
+    const budget = Math.min(
+      transfer * attempts + retry * attempts + 1000,
+      maxRetryDelay,
+    );
     const deadline = Date.now() + budget;
     while (Date.now() < deadline) {
       const w = this.store.get(id);

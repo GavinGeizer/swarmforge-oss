@@ -69,9 +69,16 @@ interface LiveRun {
   abort: AbortController;
   promise: Promise<void>;
 }
-function describe(error: unknown) {
-  const message = error instanceof Error ? error.message : String(error);
-  return (message || "Unknown artifact error").slice(0, 500);
+// A persisted error is redacted against the project's full secret set and only then truncated:
+// truncating first would leave a prefix of a long secret on disk, which the redactor can no longer
+// recognise when the message is shown again.
+const errorLimit = 500;
+function makeDescribe(redact: (text: string) => string) {
+  return (error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error);
+    const safe = redact(message || "Unknown artifact error");
+    return safe.length > errorLimit ? `${safe.slice(0, errorLimit)}...` : safe;
+  };
 }
 // The guest helper reports a missing directory and a non-directory identically, so its wording
 // is never parsed: a path's kind comes from a listing of a directory known to exist, and only a
@@ -79,6 +86,21 @@ function describe(error: unknown) {
 const listingPage = 200;
 const notDirectoryPattern =
   /not a directory|enotdir|illegal operation on a directory/i;
+// Backoff is capped so a long attempt schedule can never overflow the date budget or park a
+// record beyond any sane horizon.
+export const maxRetryDelay = 3600000;
+export function retryDelay(config: Config, attempts: number) {
+  const base = config.SWARMFORGE_FINALIZATION_RETRY_MS;
+  const cap = Math.max(
+    base,
+    Math.min(config.SWARMFORGE_ARTIFACT_TIMEOUT_MS, maxRetryDelay),
+  );
+  // The exponent is clamped before the multiply, so the result is always a safe integer.
+  const exponential = base * 2 ** Math.min(Math.max(attempts - 1, 0), 20);
+  const delay = Math.min(exponential, cap);
+  return Number.isSafeInteger(delay) && delay > 0 ? delay : base;
+}
+
 export class Finalizer {
   private runs = new Map<string, LiveRun>();
   // Listings are cached per attempt: the default targets share their parents, and one capture
@@ -87,12 +109,16 @@ export class Finalizer {
     string,
     { entries: ArtifactEntry[]; truncated: boolean }
   >();
+  private readonly describe: (error: unknown) => string;
   constructor(
     readonly config: Config,
     readonly store: Store,
     readonly artifacts: ArtifactService,
     readonly gate: FinalizationGate,
-  ) {}
+    redact: (text: string) => string,
+  ) {
+    this.describe = makeDescribe(redact);
+  }
   collectable(w: Worker) {
     return Boolean(w.vm_id) && !w.vm_missing;
   }
@@ -142,7 +168,7 @@ export class Finalizer {
         this.collect(id, claim.run_id, entry.abort.signal),
       );
     } catch (error) {
-      failure = describe(error);
+      failure = this.describe(error);
     } finally {
       clearTimeout(timer);
     }
@@ -227,7 +253,7 @@ export class Finalizer {
         return;
       } catch (error) {
         // A plain path may still name a file if the guest reported it as a directory.
-        if (!notDirectoryPattern.test(describe(error))) throw error;
+        if (!notDirectoryPattern.test(this.describe(error))) throw error;
       }
     }
     await this.artifacts.preserve(id, target.path, {
@@ -278,7 +304,7 @@ export class Finalizer {
       try {
         listing = await this.listing(id, parent, signal);
       } catch (error) {
-        failure ??= describe(error);
+        failure ??= this.describe(error);
         continue;
       }
       const entry = listing.entries.find((item) => item.name === parts[depth]);
@@ -325,8 +351,7 @@ export class Finalizer {
       });
       return;
     }
-    const backoff =
-      this.config.SWARMFORGE_FINALIZATION_RETRY_MS * 2 ** (claim.attempts - 1);
+    const backoff = retryDelay(this.config, claim.attempts);
     // Not an outcome: the attempt already announced itself, and its error and retry time are
     // durable on the record, so only a settled collection emits an outcome event.
     this.store.setFinalization(id, {

@@ -203,7 +203,7 @@ export interface Dispatch {
   result: WorkerResult | null;
 }
 export type EventType =
-  | `worker.${WorkerState | "requested" | "resumed"}`
+  | `worker.${WorkerState | "requested" | "resumed" | "control_superseded"}`
   | "result.received"
   | "artifact.created"
   // One attempted event per collection attempt, persisted before any transfer starts, plus
