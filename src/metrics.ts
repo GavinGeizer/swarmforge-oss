@@ -19,18 +19,39 @@ const finalizationStates = [
 ] as const;
 // Cumulative finalization totals come from durable events, never from the live record: an
 // attempts counter derived from a record that resets per collection cycle would fall back
-// towards zero while the history keeps growing. Package 2 persists these event names.
+// towards zero while the history keeps growing. The lifecycle package persists exactly these
+// event names, and this mapping is the contract those counters depend on:
+//   finalization.pending        a finalization that has not started collecting
+//   finalization.collecting     a claimed attempt, persisted before any effect
+//   finalization.attempt_failed one attempt failed and may be retried
+//   finalization.preserved      the collection settled with its artifacts stored
+//   finalization.failed         collection gave up
+//   finalization.abandoned      preservation was explicitly abandoned
+const finalizationEvents: Record<string, string> = {
+  pending: "pending",
+  collecting: "attempted",
+  attempt_failed: "attempt_failed",
+  preserved: "preserved",
+  failed: "failed",
+  abandoned: "abandoned",
+};
 const finalizationOutcomes = [
+  "pending",
   "attempted",
+  "attempt_failed",
   "preserved",
   "failed",
   "abandoned",
+  "other",
 ] as const;
 const artifactPageSize = 100;
 // Safety bound only: one million records at one hundred per page. A scan normally runs until the
 // repository reports its end, and reaching this bound reports an incomplete scan rather than a
 // truncated total, so the bound bounds scrape time rather than correctness.
 const artifactPageGuard = 10000;
+// Timestamps streamed for the collection-duration histogram. Counters come from a grouped
+// query and are exact for any repository size; only this histogram is observation bounded.
+const artifactDurationBound = 200000;
 export class Metrics {
   constructor(readonly c: Coordinator) {}
   async render() {
@@ -228,10 +249,10 @@ export class Metrics {
     this.finalizationEvents(salvage);
     return registry.metrics();
   }
-  // Durable event contract, owned by the lifecycle package: every collection attempt records
-  // "finalization.attempted" and every settled collection records exactly one of
-  // "finalization.preserved", "finalization.failed" or "finalization.abandoned". Event data
-  // is never read here, so a recorded error can never become a label or a value.
+  // Durable event contract, owned by the lifecycle package: the mapping above is this metric's
+  // dependency on it. Event payloads are never read, so a recorded error cannot become a
+  // label or a value, and an unknown event type is counted as "other" rather than creating a
+  // new time series.
   private finalizationEvents(salvage: Counter<"outcome">) {
     const counts = new Map<string, number>();
     let rows: { type: string; n: number }[] = [];
@@ -245,23 +266,21 @@ export class Metrics {
       rows = [];
     }
     for (const row of rows) {
-      const outcome = row.type.slice("finalization.".length);
-      const label = (finalizationOutcomes as readonly string[]).includes(
-        outcome,
-      )
-        ? outcome
-        : "other";
+      const suffix = row.type.slice("finalization.".length);
+      const label =
+        finalizationEvents[suffix] ??
+        (suffix.startsWith("attempt") ? "attempt_failed" : "other");
       counts.set(label, (counts.get(label) ?? 0) + Math.max(0, row.n));
     }
     for (const outcome of finalizationOutcomes)
       salvage.inc({ outcome }, counts.get(outcome) ?? 0);
-    const other = counts.get("other") ?? 0;
-    if (other) salvage.inc({ outcome: "other" }, other);
   }
-  // Artifact records are aggregated as they stream past, so a repository larger than memory
-  // costs no retention. The scan runs until the repository reports its end; a repository that
-  // cannot be read, that stops advancing or that exceeds the safety bound is reported through
-  // swarmforge_artifacts_scan_complete 0 instead of a quietly truncated total.
+  // Artifact records are aggregated straight out of the persisted repository, so a repository
+  // of any size is summarised by one grouped query instead of paging through every record.
+  // The collection-duration histogram still needs one timestamp pair per preserved record, so
+  // it streams those and reports an incomplete scan if it ever reaches its bound. If the
+  // repository cannot be read at all, the service's own paged listing is used instead, and a
+  // failure there is reported as an incomplete scan rather than as a silent partial total.
   private async artifacts(
     preserved: Counter<"kind">,
     bytes: Counter<"kind">,
@@ -272,6 +291,75 @@ export class Metrics {
   ) {
     const kind = (value: string) =>
       artifactKinds.has(value) ? value : "other";
+    let grouped: {
+      kind: string;
+      state: string;
+      n: number;
+      bytes: number;
+    }[] = [];
+    try {
+      grouped = this.c.store.db
+        .query(
+          "SELECT kind, state, count(*) n, coalesce(sum(size),0) bytes FROM artifacts GROUP BY kind, state",
+        )
+        .all() as {
+        kind: string;
+        state: string;
+        n: number;
+        bytes: number;
+      }[];
+    } catch {
+      grouped = [];
+    }
+    if (!grouped.length)
+      return this.artifactPages(
+        preserved,
+        bytes,
+        failed,
+        inFlight,
+        scanComplete,
+        collection,
+        kind,
+      );
+    for (const row of grouped) {
+      const label = { kind: kind(row.kind) };
+      if (row.state === "preserved") {
+        preserved.inc(label, row.n);
+        bytes.inc(label, Math.max(0, row.bytes));
+      } else if (row.state === "failed") failed.inc(label, row.n);
+      else inFlight.inc(label, row.n);
+    }
+    let durations: { created_at: number; retrieved_at: number | null }[] = [];
+    try {
+      durations = this.c.store.db
+        .query(
+          "SELECT created_at, retrieved_at FROM artifacts WHERE state='preserved' LIMIT ?",
+        )
+        .all(artifactDurationBound) as {
+        created_at: number;
+        retrieved_at: number | null;
+      }[];
+    } catch {
+      scanComplete.set(0);
+      return;
+    }
+    for (const row of durations)
+      if (row.retrieved_at !== null && row.retrieved_at >= row.created_at)
+        collection.observe((row.retrieved_at - row.created_at) / 1000);
+    scanComplete.set(durations.length >= artifactDurationBound ? 0 : 1);
+  }
+  // Fallback for a repository the grouped query cannot summarise: the service's own paged
+  // listing, aggregated as records stream past so nothing is retained, until it reports its
+  // end. A failure or a cursor that stops advancing is reported as an incomplete scan.
+  private async artifactPages(
+    preserved: Counter<"kind">,
+    bytes: Counter<"kind">,
+    failed: Counter<"kind">,
+    inFlight: Gauge<"kind">,
+    scanComplete: Gauge,
+    collection: Histogram,
+    kind: (value: string) => string,
+  ) {
     let offset = 0;
     for (let page = 0; page <= artifactPageGuard; page++) {
       let listed: Awaited<ReturnType<Coordinator["artifacts"]["list"]>>;

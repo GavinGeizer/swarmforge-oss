@@ -19,19 +19,24 @@ When enabled, the separate metrics listener exposes `/metrics` on port 9090 by d
 | `swarmforge_artifacts_bytes_total{kind}` | Verified bytes of those preserved records. |
 | `swarmforge_artifacts_failed_total{kind}` | Artifact records in state `failed`. |
 | `swarmforge_artifacts_in_flight{kind}` | Artifact records still in state `preserving`, that is a capture in progress. |
-| `swarmforge_artifacts_scan_complete` | 1 when every persisted artifact record was aggregated into the metrics, 0 when the scan stopped early. |
+| `swarmforge_artifacts_scan_complete` | 1 when the collection-duration histogram covers every preserved record, 0 when it or the fallback listing was cut short. |
 | `swarmforge_artifact_collection_duration_seconds` | Capture start to verified preserved artifact. |
 | `swarmforge_finalizations{state}` | Worker finalization records by stage: pending, collecting, preserved, failed, abandoned. |
 | `swarmforge_finalization_attempts_total{outcome}` | Durable finalization events: `attempted`, `preserved`, `failed`, `abandoned`. |
 
-Artifact records are aggregated by streaming the persisted repository page by page, so a
-repository larger than memory costs no retention, and the scan runs until the repository reports
-its end rather than stopping at a fixed page count. An unreadable repository, a cursor that stops
-advancing or a scan that reaches its one-million-record safety bound is reported as
-`swarmforge_artifacts_scan_complete 0` instead of a quietly truncated total; alert on that
-gauge. Record states are counted separately: only `failed` is a failure, and a capture still in
+Artifact counters and byte totals come from one grouped query over the persisted artifact
+repository, so they are exact for a repository of any size and no page limit can silently
+truncate them. The collection-duration histogram needs one timestamp pair per preserved record,
+so it streams them with an observation bound (one million rows); reaching that bound, or an
+unreadable repository, reports `swarmforge_artifacts_scan_complete 0` instead of a quietly
+partial histogram. If the repository cannot be summarised by the grouped query at all, the
+service's own paged listing is aggregated instead, streaming without retention until it reports
+its end, and any failure or non-advancing cursor is likewise reported through the same gauge.
+Alert on `swarmforge_artifacts_scan_complete` dropping to 0.
+
+Record states are counted separately: only `failed` is a failure, and a capture still in
 `preserving` is in flight. The only label is a fixed `kind` set (`file`, `directory`,
-`snapshot`, `diagnostics`, `log`); an unexpected kind becomes `other` instead of creating new
+`snapshot`, `diagnostic`, `log`); an unexpected kind becomes `other` instead of creating new
 time series. No artifact path, filename, checksum, size, worker ID, task ID, error message or
 content is ever a label or a value.
 
@@ -42,14 +47,20 @@ event types, and this is the contract the metric depends on:
 
 | Event type | Meaning | Label value |
 | --- | --- | --- |
-| `finalization.attempted` | One collection attempt started, automatic or operator triggered | `attempted` |
-| `finalization.preserved` | Collection settled successfully | `preserved` |
-| `finalization.failed` | Collection failed or its attempts were exhausted | `failed` |
+| `finalization.pending` | Preservation must still run for this worker | `pending` |
+| `finalization.collecting` | One attempt was claimed and persisted before any effect | `attempted` |
+| `finalization.attempt_failed` | One attempt failed and may be retried | `attempt_failed` |
+| `finalization.preserved` | Collection settled with its artifacts stored | `preserved` |
+| `finalization.failed` | Collection gave up | `failed` |
 | `finalization.abandoned` | Preservation was explicitly abandoned, normally by forced destruction | `abandoned` |
 
-An event type outside that set is counted as `other`. Event payloads are never read, so a
-recorded error cannot become a label or a value. A database written before these events existed
-reports zero attempts, which is honest: the history was never persisted.
+`finalization.collecting` is the durable attempt count, and because a claim persists its attempt
+before doing anything, a worker whose process died mid-attempt still leaves exactly one event per
+attempt when the claim is recovered. Anything else under the `finalization.` prefix counts as
+`other`. Event payloads are never read, so a recorded error cannot become a label or a value. A
+database written before these events existed reports zero attempts, which is honest: the history
+was never persisted. The stage gauge `swarmforge_finalizations{state}` still comes from the live
+worker record, and is a gauge of current state rather than a sum of attempts.
 
 Counters are reconstructed from SQLite, so server restarts preserve observed totals. Usage is keyed by worker/message and updates monotonically to deduplicate polling. Detailed worker/team/task usage appears in MCP status tools. OpenCode reporting is the accounting source; provider billing may use different definitions. Data unavailable after a guest failure cannot be reconstructed from the model provider.
 

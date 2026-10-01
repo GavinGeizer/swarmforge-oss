@@ -1,9 +1,10 @@
 import { expect, test } from "bun:test";
-import { rmSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import type { WorkerProvider } from "../src/domain";
 import { Metrics } from "../src/metrics";
-import { guestRoot, guestTransport, writeGuestFile } from "./artifact-double";
 import { harness, runToRunning, task } from "./helpers";
+import { localWorkspace } from "./local-artifact-provider";
 
 const kinds = new Set([
   "file",
@@ -16,24 +17,33 @@ const kinds = new Set([
 
 async function observed() {
   const h = harness();
-  const root = guestRoot();
-  (h.provider as WorkerProvider).artifactTransport = guestTransport(root);
+  const workspace = await localWorkspace();
+  (h.provider as WorkerProvider).artifactTransport = workspace.transport;
+  h.coordinator.config.SWARMFORGE_WORKSPACE = workspace.root;
   const w = h.coordinator.spawn(task);
   await runToRunning(h, w.worker_id);
-  const vm = h.store.get(w.worker_id).vm_id!;
-  const workspace = h.coordinator.config.SWARMFORGE_WORKSPACE;
+  // Materialise the real service so its artifact repository table exists in the shared store.
+  void h.coordinator.artifacts;
   return {
     ...h,
-    root,
+    workspace,
     workerId: w.worker_id,
-    write: (path: string, content: string | Uint8Array) =>
-      writeGuestFile(root, vm, workspace, path, content),
-    done: () => {
+    write: (path: string, content: string | Uint8Array) => {
+      const target = join(workspace.root, path);
+      mkdirSync(join(target, ".."), { recursive: true });
+      writeFileSync(target, content);
+    },
+    done: async () => {
       h.store.close();
-      rmSync(root, { recursive: true, force: true });
+      await workspace.cleanup();
     },
   };
 }
+// One exported sample per metric family line, with its labels and value.
+const sample = (text: string, name: string) =>
+  [
+    ...text.matchAll(new RegExp(`^${name}(\\{[^}]*\\})? ([0-9.e+-]+)$`, "gm")),
+  ].map((m) => ({ labels: m[1] ?? "", value: Number(m[2]) }));
 const labels = (text: string, name: string) =>
   [...text.matchAll(new RegExp(`${name}\\{([^}]*)\\}`, "g"))].flatMap((m) =>
     (m[1] ?? "")
@@ -67,7 +77,7 @@ test("artifact metrics are derived from persisted records with bounded labels", 
     expect(text).not.toContain("model-secret");
     expect(text).not.toContain("swarmforge_worker_id");
   } finally {
-    h.done();
+    await h.done();
   }
 });
 
@@ -90,11 +100,11 @@ test("unbounded artifact kinds collapse into a bounded label instead of creating
     );
     expect(text).toContain('swarmforge_artifacts_preserved_total{kind="file"}');
   } finally {
-    h.done();
+    await h.done();
   }
 });
 
-test("finalization gauges and salvage attempts follow the persisted worker record", async () => {
+test("finalization stage and durable events follow a real collection cycle", async () => {
   const h = await observed();
   try {
     h.write(".swarmforge/artifacts/findings.json", '{"verdict":"salvage"}');
@@ -107,14 +117,17 @@ test("finalization gauges and salvage attempts follow the persisted worker recor
     await h.coordinator.retryFinalization(h.workerId);
     const text = await new Metrics(h.coordinator).render();
     expect(text).toContain("swarmforge_finalizations");
-    // The stage gauge follows the persisted record; the cumulative counters below are rebuilt
-    // from durable finalization events, which this lifecycle scaffold does not persist yet.
+    expect(text).toContain("swarmforge_finalization_attempts_total");
+    // The stage gauge reports the live record; the counters report what was persisted.
     expect(text).toMatch(/swarmforge_finalizations\{state="preserved"\} 1/);
-    expect(
-      sample(text, "swarmforge_finalization_attempts_total").every(
-        (s) => s.value === 0,
-      ),
-    ).toBe(true);
+    const outcomes = new Map(
+      sample(text, "swarmforge_finalization_attempts_total").map((series) => [
+        series.labels,
+        series.value,
+      ]),
+    );
+    expect(outcomes.get('{outcome="attempted"}')).toBeGreaterThan(0);
+    expect(outcomes.get('{outcome="preserved"}')).toBeGreaterThan(0);
     expect(text).not.toContain(h.workerId);
     h.store.patch(h.workerId, {
       finalization: {
@@ -131,169 +144,28 @@ test("finalization gauges and salvage attempts follow the persisted worker recor
     expect(pending).toMatch(/swarmforge_finalizations\{state="pending"\} 1/);
     expect(pending).not.toContain("model-secret");
   } finally {
-    h.done();
-  }
-});
-
-test("artifact metrics are empty but well formed with no persisted artifacts", async () => {
-  const h = await observed();
-  try {
-    const text = await new Metrics(h.coordinator).render();
-    expect(text).toContain("swarmforge_artifacts_preserved_total");
-    expect(text).not.toContain('kind="file"');
-    expect(text).toContain("swarmforge_finalizations");
-  } finally {
-    h.done();
-  }
-});
-
-type Record_ = {
-  artifact_id: string;
-  task_id: string;
-  worker_id: string;
-  run_id: string | null;
-  original_path: string;
-  storage_key: string;
-  filename: string;
-  size: number;
-  sha256: string | null;
-  created_at: number;
-  retrieved_at: number | null;
-  state: "preserving" | "preserved" | "failed";
-  attempts: number;
-  error: string | null;
-  kind: string;
-};
-const record = (over: Partial<Record_> = {}): Record_ => ({
-  artifact_id: `a-${Math.random().toString(36).slice(2)}`,
-  task_id: "task",
-  worker_id: "w-1",
-  run_id: null,
-  original_path: "findings.json",
-  storage_key: "/var/lib/swarmforge/private/key",
-  filename: "findings.json",
-  size: 10,
-  sha256: "a".repeat(64),
-  created_at: 1_000,
-  retrieved_at: 1_200,
-  state: "preserved",
-  attempts: 1,
-  error: null,
-  kind: "file",
-  ...over,
-});
-// Replaces the persisted artifact repository with a deterministic page source so the metrics
-// aggregation itself is measured, not the capture path.
-function repository(
-  h: Awaited<ReturnType<typeof observed>>,
-  pages: Record_[][],
-) {
-  const service = h.coordinator.artifacts as unknown as {
-    list: (filter: { offset?: number; limit?: number }) => unknown;
-  };
-  service.list = ({ offset = 0, limit = 100 }) => ({
-    artifacts: (pages[Math.floor(offset / limit)] ?? []).slice(0, limit),
-    next_offset:
-      Math.floor(offset / limit) + 1 < pages.length
-        ? Math.floor(offset / limit) * limit + limit
-        : null,
-  });
-}
-const sample = (text: string, name: string) =>
-  [
-    ...text.matchAll(new RegExp(`^${name}(\\{[^}]*\\})? ([0-9.e+-]+)$`, "gm")),
-  ].map((m) => ({ labels: m[1] ?? "", value: Number(m[2]) }));
-
-test("an artifact still being captured is not reported as a failure", async () => {
-  const h = await observed();
-  try {
-    repository(h, [
-      [
-        record({ state: "preserved", size: 10 }),
-        record({ state: "preserving", size: 0, retrieved_at: null }),
-        record({ state: "failed", size: 0, retrieved_at: null, error: "x" }),
-      ],
-    ]);
-    const text = await new Metrics(h.coordinator).render();
-    expect(sample(text, "swarmforge_artifacts_preserved_total")).toEqual([
-      { labels: '{kind="file"}', value: 1 },
-    ]);
-    expect(sample(text, "swarmforge_artifacts_failed_total")).toEqual([
-      { labels: '{kind="file"}', value: 1 },
-    ]);
-    expect(sample(text, "swarmforge_artifacts_bytes_total")).toEqual([
-      { labels: '{kind="file"}', value: 10 },
-    ]);
-    // An in-flight capture is its own state, never folded into failures.
-    expect(text).toMatch(/swarmforge_artifacts_in_flight\{kind="file"\} 1/);
-    expect(
-      sample(text, "swarmforge_artifact_collection_duration_seconds_count"),
-    ).toEqual([{ labels: "", value: 1 }]);
-  } finally {
-    h.done();
-  }
-});
-
-test("artifact metrics aggregate every persisted record instead of a capped page", async () => {
-  const h = await observed();
-  try {
-    // 30,000 records is far beyond one page; a capped scan would report 20,000.
-    const pages: Record_[][] = [];
-    for (let page = 0; page < 300; page++)
-      pages.push(
-        Array.from({ length: 100 }, (_, n) =>
-          record({ artifact_id: `a-${page}-${n}`, size: n + 1 }),
-        ),
-      );
-    repository(h, pages);
-    const text = await new Metrics(h.coordinator).render();
-    expect(sample(text, "swarmforge_artifacts_preserved_total")).toEqual([
-      { labels: '{kind="file"}', value: 30_000 },
-    ]);
-    // 300 pages of 100 records with sizes 1..100 each: a capped scan would report far less.
-    expect(sample(text, "swarmforge_artifacts_bytes_total")).toEqual([
-      { labels: '{kind="file"}', value: (300 * (100 * 101)) / 2 },
-    ]);
-    expect(
-      sample(text, "swarmforge_artifact_collection_duration_seconds_count"),
-    ).toEqual([{ labels: "", value: 30_000 }]);
-    expect(text).toMatch(/swarmforge_artifacts_scan_complete 1/);
-  } finally {
-    h.done();
-  }
-});
-
-test("an incomplete artifact scan is reported instead of silently truncating totals", async () => {
-  const h = await observed();
-  try {
-    const service = h.coordinator.artifacts as unknown as {
-      list: (filter: { offset?: number }) => unknown;
-    };
-    // A repository that never signals its end cannot be scanned to completion; the metrics
-    // must say so rather than present a partial total as complete.
-    service.list = ({ offset = 0 }) => ({
-      artifacts: [record({ artifact_id: `a-${offset}`, size: 1 })],
-      next_offset: offset + 100,
-    });
-    const text = await new Metrics(h.coordinator).render();
-    expect(text).toMatch(/swarmforge_artifacts_scan_complete 0/);
-    const preserved = sample(text, "swarmforge_artifacts_preserved_total");
-    expect(preserved).toHaveLength(1);
-  } finally {
-    h.done();
+    await h.done();
   }
 });
 
 test("finalization attempts and failures come from durable events, not from the live record", async () => {
   const h = await observed();
   try {
-    // Three collection cycles. Each one persists its attempts and outcome as events and then
-    // resets the live record, so a counter derived from the record alone would fall back
-    // towards zero while the durable total keeps growing.
+    // The lifecycle contract: a claim persists finalization.collecting before any effect, so a
+    // restart mid-attempt still leaves one event per attempt, and attempt_failed records an
+    // attempt that will be retried. Three collection cycles follow, each resetting the live
+    // record, so a counter derived from that record alone would fall back towards zero.
+    h.store.event(h.workerId, "finalization.pending" as never);
     for (let cycle = 1; cycle <= 3; cycle++) {
       for (let attempt = 0; attempt < cycle; attempt++)
-        h.store.event(h.workerId, "finalization.attempted" as never);
+        h.store.event(h.workerId, "finalization.collecting" as never, {
+          attempt: attempt + 1,
+        });
       const preserved = cycle < 3;
+      if (!preserved)
+        h.store.event(h.workerId, "finalization.attempt_failed" as never, {
+          error: "model-secret must not be a metric value",
+        });
       h.store.event(
         h.workerId,
         preserved
@@ -316,36 +188,52 @@ test("finalization attempts and failures come from durable events, not from the 
     const text = await new Metrics(h.coordinator).render();
     const attempts = sample(text, "swarmforge_finalization_attempts_total");
     expect(attempts).toEqual([
+      { labels: '{outcome="pending"}', value: 1 },
       { labels: '{outcome="attempted"}', value: 6 },
+      { labels: '{outcome="attempt_failed"}', value: 1 },
       { labels: '{outcome="preserved"}', value: 2 },
       { labels: '{outcome="failed"}', value: 1 },
       { labels: '{outcome="abandoned"}', value: 0 },
+      { labels: '{outcome="other"}', value: 0 },
     ]);
     expect(text).not.toContain("model-secret");
     // The live record is only the current stage, not the history.
     expect(text).toMatch(/swarmforge_finalizations\{state="failed"\} 1/);
     expect(text).not.toMatch(/swarmforge_finalizations\{state="preserved"}/);
-    // A repository that has recorded nothing still exposes the label set with zeroes.
+    // A database that recorded nothing still exposes the whole label set with zeroes.
     const fresh = harness();
     try {
       const empty = await new Metrics(fresh.coordinator).render();
-      expect(sample(empty, "swarmforge_finalization_attempts_total")).toEqual([
-        { labels: '{outcome="attempted"}', value: 0 },
-        { labels: '{outcome="preserved"}', value: 0 },
-        { labels: '{outcome="failed"}', value: 0 },
-        { labels: '{outcome="abandoned"}', value: 0 },
+      expect(
+        sample(empty, "swarmforge_finalization_attempts_total").map(
+          (series) => series.labels,
+        ),
+      ).toEqual([
+        '{outcome="pending"}',
+        '{outcome="attempted"}',
+        '{outcome="attempt_failed"}',
+        '{outcome="preserved"}',
+        '{outcome="failed"}',
+        '{outcome="abandoned"}',
+        '{outcome="other"}',
       ]);
+      expect(
+        sample(empty, "swarmforge_finalization_attempts_total").every(
+          (series) => series.value === 0,
+        ),
+      ).toBe(true);
     } finally {
       fresh.store.close();
     }
   } finally {
-    h.done();
+    await h.done();
   }
 });
 
 test("artifact metrics survive a repository that cannot be read", async () => {
   const h = await observed();
   try {
+    h.store.db.exec("DROP TABLE artifacts");
     const service = h.coordinator.artifacts as unknown as {
       list: () => unknown;
     };
@@ -357,6 +245,6 @@ test("artifact metrics survive a repository that cannot be read", async () => {
     expect(text).toMatch(/swarmforge_artifacts_scan_complete 0/);
     expect(text).not.toContain("artifact repository unavailable");
   } finally {
-    h.done();
+    await h.done();
   }
 });

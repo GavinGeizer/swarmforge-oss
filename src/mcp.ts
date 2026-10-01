@@ -4,15 +4,19 @@ import {
 } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
+import {
+  type ArtifactRecord,
+  safeReadLimit,
+  validateRelativePath,
+} from "./artifact-types";
 import type { Coordinator } from "./coordinator";
 import { idSchema, spawnSchema, states } from "./domain";
 import { WorkerFiles } from "./files";
 import { publicWorker, redactorFor } from "./security";
 
 // Model-facing artifact reads stay bounded and credential screened: a lead sees at most
-// 32 KiB of screened text per call, never raw bytes and never a whole binary payload. Large
-// or binary payloads are described by metadata plus an authenticated download handle.
-const safeReadLimit = 32768;
+// safeReadLimit bytes of screened text per call, never raw bytes and never a whole binary
+// payload. Large or binary payloads are described by metadata plus a download handle.
 // A capture response is budgeted by serialized bytes, not by a record count: records with
 // 1024-byte paths are far larger than short ones. The budget is half of the tool response
 // ceiling, because an MCP result carries the payload twice (structured content and text), and
@@ -20,7 +24,6 @@ const safeReadLimit = 32768;
 // the capture already succeeded.
 const collectedLimit = 100;
 const collectedBytes = 49152;
-type ArtifactRecord = Awaited<ReturnType<Coordinator["artifacts"]["preserve"]>>;
 type PublicArtifact = Pick<
   ArtifactRecord,
   | "artifact_id"
@@ -66,10 +69,12 @@ export function createMcpServer(c: Coordinator, signal?: AbortSignal) {
     retrieved_at: record.retrieved_at,
   });
   const artifactPath = z.string().min(1).max(1024);
+  // One path rule for every artifact surface, owned by the shared contract module: workspace
+  // relative, at most 1024 bytes and 32 components, no traversal, no control characters.
   const checkedPath = (path: string) => {
     if (redactor.text(path) !== path)
       throw new Error("Artifact path contains credentials");
-    return path;
+    return validateRelativePath(path);
   };
   const runId = (value: string | undefined) => (value ? { runId: value } : {});
   const collected = (records: ArtifactRecord[]) => {
@@ -303,7 +308,7 @@ export function createMcpServer(c: Coordinator, signal?: AbortSignal) {
   );
   register(
     "list_artifacts",
-    "List artifacts preserved from workers, with metadata only. Survives worker destruction and never returns contents. state filters the returned page; use offset/limit to page through the rest.",
+    "List artifacts preserved from workers, with metadata only. Survives worker destruction and never returns contents. state filters the returned page without changing the repository paging, so a filtered page can be shorter than limit.",
     {
       ...page,
       worker_id: idSchema.optional(),
@@ -316,7 +321,6 @@ export function createMcpServer(c: Coordinator, signal?: AbortSignal) {
         limit: a.limit,
         ...(a.worker_id ? { worker_id: a.worker_id } : {}),
         ...(a.task_id ? { task_id: a.task_id } : {}),
-        ...(a.state ? { state: a.state } : {}),
       });
       const artifacts = listed.artifacts.filter(
         (record) => !a.state || record.state === a.state,
@@ -439,26 +443,27 @@ export function createMcpServer(c: Coordinator, signal?: AbortSignal) {
   );
   register(
     "list_worker_files",
-    "List a live worker workspace directory without returning contents. Paths are workspace relative; traversal, symlinks and special files are refused.",
+    "List a live worker workspace directory without returning contents. Paths are workspace relative; symlinks and special files are never listed. Depth and entry bounds come from the artifact limits configuration.",
     {
       ...worker,
       path: z.string().max(1024).default(""),
       ...page,
-      max_depth: z.number().int().min(1).max(32).default(4),
     },
     async (a) => {
-      if (a.path) checkedPath(a.path);
-      const listing = await c.artifacts.listWorkerFiles(a.worker_id, a.path, {
+      const path = a.path ? checkedPath(a.path) : "";
+      const listing = await c.artifacts.listWorkerFiles(a.worker_id, path, {
         offset: a.offset,
         limit: a.limit,
-        maxDepth: a.max_depth,
         signal,
       });
       return {
         worker_id: a.worker_id,
-        path: a.path,
+        path,
         entries: listing.entries,
         next_offset: listing.next_offset,
+        // Entries beyond the configured bound exist and were not described.
+        truncated: listing.truncated ?? false,
+        ...(listing.total === undefined ? {} : { total: listing.total }),
       };
     },
     true,

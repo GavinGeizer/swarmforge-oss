@@ -22,7 +22,7 @@ Streamable HTTP: `POST /mcp`. Supply the configured bearer token. Standard MCP S
 | `read_artifact` | `artifact_id`, optional `offset=0`, `length=32768` | Bounded, credential-screened text excerpt plus `binary`, `returned_bytes`, `next_offset` and `download_path`. Binary content returns metadata only. |
 | `snapshot_worker` | `worker_id`, optional `paths`, `run_id` | Archives the workspace into one verified `tar.gz` artifact; `.git` and `node_modules` excluded. Same response envelope as `preserve_artifact`. |
 | `retry_worker_finalization` | `worker_id` | Retries collection for a retained worker and reports its finalization state and preserved artifacts. |
-| `list_worker_files` | `worker_id`, optional `path=""`, `offset=0`, `limit=20`, `max_depth=4` | Live workspace directory entries without contents; traversal and symlinks refused. |
+| `list_worker_files` | `worker_id`, optional `path=""`, `offset=0`, `limit=20` | Live workspace directory entries without contents, plus `truncated` and `total` when the directory exceeds the configured entry bound. Symlinks and special files are never listed; depth comes from the artifact limits. |
 | `get_task` | `task_id`, optional `team_id="default"` | Worker state counts and token usage for that task. |
 | `list_tasks` | Optional `team_id`, `offset=0`, `limit=20` | Persistent task ownership metadata. |
 | `get_team_status` | `team_id` | Aggregate state counts and usage. |

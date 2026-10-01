@@ -46,9 +46,10 @@ cancelled caller. Artifact contents, storage locations and credentials never app
 error, in metadata, in events or in metrics.
 
 Every attempt and every settled collection also persists a durable event, because the record's
-`attempts` field describes one collection cycle and cannot carry history: `finalization.attempted`
-per attempt, then exactly one of `finalization.preserved`, `finalization.failed` or
-`finalization.abandoned`. Those events are the source of the cumulative metrics in
+`attempts` field describes one collection cycle and cannot carry history:
+`finalization.collecting` per claimed attempt, `finalization.attempt_failed` per failed attempt,
+and exactly one of `finalization.preserved`, `finalization.failed` or `finalization.abandoned`
+per settled collection. Those events are the source of the cumulative metrics in
 [OBSERVABILITY.md](OBSERVABILITY.md).
 
 No automatic VM deletion policy is added. Completion and failure still retain the VM, and
@@ -114,11 +115,11 @@ content, and verifies it. What a model is shown is a deliberately smaller thing.
 | `read_artifact` | Screened text excerpt of a byte range, or size, checksum and a download handle when the range is not text | 32 KiB per call |
 | `preserve_artifact`, `snapshot_worker` | Captured records, with `total` and `truncated` | 100 records and 48 KiB of serialized metadata |
 | `GET /artifacts/<artifact_id>/download` | Raw bytes, as an attachment | 8 MiB per response |
-| `list_worker_files` | Live directory entries of a retained workspace, no contents | 100 entries per page |
+| `list_worker_files` | Live directory entries of a retained workspace, no contents, with `truncated` and `total` when the directory exceeds the configured entry bound | 100 entries per page |
 
 Inline reads are credential screened: a range is refused when the bytes contain a configured
-secret in any known encoded variant, and the window is widened on both sides so a credential
-split across a chunk boundary is still detected. Only printable UTF-8 is inlined, and terminal
+secret in any known encoded variant (including URL and base64 forms), and the window is widened
+on both sides so a credential split across a chunk boundary is still detected. Only printable UTF-8 is inlined, and terminal
 escapes are removed as whole sequences first, so a coloured terminal log reads as text with no
 inert `[31m` fragment left behind and invisible or bidirectional code points are dropped. A
 range is treated as binary only when it is mostly non-printable, and then reported as metadata
@@ -128,7 +129,9 @@ payloads are always fetched through the download route.
 ## Snapshots
 
 `snapshot_worker` asks the guest helper for a bounded, regular-file-only `tar.gz` of the
-workspace (or of the listed paths). `.git` and `node_modules` are excluded by default, source
+workspace (or of the listed paths). Collecting a directory preserves each regular file in it and
+archives any nested directory as its own snapshot artifact rather than dropping or flattening
+it. `.git` and `node_modules` are excluded by default, source
 and output byte limits, entry limits and depth limits all apply, symlinks and special files
 are skipped, and SwarmForge never extracts an archive. The archive is one artifact: it is
 listed and verified like any other, so a retained workspace can be recovered wholesale before
@@ -181,10 +184,12 @@ sha256sum report.md   # equals the recorded sha256
 After that the worker may be destroyed normally; `list_artifacts` and the download route keep
 working from storage.
 
-`bun scripts/artifact-salvage-smoke.ts` exercises exactly this flow with a real local guest
-filesystem, a dead OpenCode service, a real byte stream, a SQLite database, normal destruction
-of the workspace and a checksum comparison; every run prints which capture implementation it
-used. `bun scripts/artifact-salvage-smoke.ts --freestyle <vm-id>` performs the same
+`bun scripts/artifact-salvage-smoke.ts` exercises exactly this flow with the production guest
+helper: a temporary guest directory whose every capture runs `src/providers/artifact-helper.py`
+as a subprocess over the real raw byte streaming transport, a dead OpenCode service, a SQLite
+database, normal destruction of the workspace and a checksum comparison. The run refuses to
+report success unless it can see helper commands executed, guest staging left empty and the
+checksum matching after destruction, and it prints which capture implementation it used. `bun scripts/artifact-salvage-smoke.ts --freestyle <vm-id>` performs the same
 read-and-verify pass against one retained Freestyle VM without a worker model; it never
 destroys the VM. A local filesystem run proves the coordinator and manager surfaces, not the
 guest helper: the descriptor-relative capture itself is proven by the provider tests and by the

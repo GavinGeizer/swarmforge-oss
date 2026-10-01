@@ -1,5 +1,6 @@
 import { timingSafeEqual } from "node:crypto";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
+import { safeFilename } from "./artifact-types";
 import type { Coordinator } from "./coordinator";
 import { idSchema } from "./domain";
 import { createMcpServer } from "./mcp";
@@ -253,12 +254,8 @@ function rangedStream(
     },
   });
 }
-// A stored filename is untrusted: header injection, path separators and control characters
-// are removed so the attachment header cannot be broken out of.
+// A stored filename is untrusted, so the attachment header uses the shared storage-side
+// filename sanitizer: no separators, no control characters, nothing that breaks the header.
 function attachmentName(name: string) {
-  const base = (name.split(/[/\\]/).pop() ?? "artifact")
-    .replace(/[^A-Za-z0-9._-]/g, "_")
-    .replace(/^\.+/, "")
-    .slice(0, 120);
-  return base || "artifact";
+  return safeFilename(name, "artifact");
 }

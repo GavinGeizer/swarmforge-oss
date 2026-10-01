@@ -1,36 +1,32 @@
 import { expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { rmSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import type { WorkerProvider } from "../src/domain";
 import { createHttpHandler } from "../src/http";
-import {
-  destroyGuestWorkspace,
-  guestRoot,
-  guestTransport,
-  writeGuestFile,
-} from "./artifact-double";
 import { harness, runToRunning, task } from "./helpers";
+import { localWorkspace } from "./local-artifact-provider";
 
 const TOKEN = "download-token-with-enough-characters";
 const MAX_RANGE = 8 * 1024 * 1024;
 
+// One served worker whose workspace is a real temporary guest driven by the package 1 local
+// transport, so downloads move bytes that the production guest helper actually captured.
 async function served() {
   const h = harness();
-  const root = guestRoot();
-  (h.provider as WorkerProvider).artifactTransport = guestTransport(root);
+  const workspace = await localWorkspace();
+  (h.provider as WorkerProvider).artifactTransport = workspace.transport;
   h.coordinator.config.SWARMFORGE_API_TOKEN = TOKEN;
+  h.coordinator.config.SWARMFORGE_WORKSPACE = workspace.root;
   const handler = createHttpHandler(h.coordinator);
   const w = h.coordinator.spawn(task);
   await runToRunning(h, w.worker_id);
   const vm = h.store.get(w.worker_id).vm_id!;
-  const write = (path: string, content: string | Uint8Array) =>
-    writeGuestFile(
-      root,
-      vm,
-      h.coordinator.config.SWARMFORGE_WORKSPACE,
-      path,
-      content,
-    );
+  const write = (path: string, content: string | Uint8Array) => {
+    const target = join(workspace.root, path);
+    mkdirSync(dirname(target), { recursive: true });
+    writeFileSync(target, content);
+  };
   const authed = (path: string, init: RequestInit = {}) =>
     handler(
       new Request(`http://127.0.0.1${path}`, {
@@ -40,17 +36,18 @@ async function served() {
     );
   return {
     ...h,
-    root,
+    workspace,
     vm,
     workerId: w.worker_id,
     handler,
     authed,
     write,
-    destroyWorkspace: () => destroyGuestWorkspace(root, vm),
-    done: () => {
+    destroyWorkspace: () =>
+      rmSync(workspace.base, { recursive: true, force: true }),
+    done: async () => {
       delete h.coordinator.config.SWARMFORGE_API_TOKEN;
       h.store.close();
-      rmSync(root, { recursive: true, force: true });
+      await workspace.cleanup();
     },
   };
 }
@@ -108,7 +105,7 @@ test("raw artifact download requires the bearer token and rejects cross-origin r
       ).status,
     ).toBe(404);
   } finally {
-    h.done();
+    await h.done();
   }
 });
 
@@ -143,7 +140,7 @@ test("authenticated download streams faithful raw bytes as a non-sniffable attac
     expect(record.sha256).toBe(digest(content));
     expect(digest(bytes)).toBe(record.sha256 ?? "");
   } finally {
-    h.done();
+    await h.done();
   }
 });
 
@@ -163,7 +160,7 @@ test("download filenames cannot break out of the content-disposition header", as
     expect(disposition.split('"').length - 1).toBe(2);
     expect(disposition).toMatch(/^attachment; filename="[A-Za-z0-9._-]+"/);
   } finally {
-    h.done();
+    await h.done();
   }
 });
 
@@ -215,7 +212,7 @@ test("byte ranges are validated, reported and bounded", async () => {
     expect(whole.status).toBe(206);
     expect(await whole.text()).toBe(content);
   } finally {
-    h.done();
+    await h.done();
   }
 });
 
@@ -250,7 +247,7 @@ test("a range request larger than the download window is clamped instead of stre
       `bytes ${MAX_RANGE}-${size - 1}/${size}`,
     );
   } finally {
-    h.done();
+    await h.done();
   }
 });
 
@@ -291,7 +288,7 @@ test("unknown or unpreserved artifacts are never served as bytes", async () => {
     expect(text.length).toBeLessThan(200);
     expect(text).not.toContain("broken bytes");
   } finally {
-    h.done();
+    await h.done();
   }
 });
 
@@ -312,7 +309,7 @@ test("preserved artifacts stay downloadable after the worker and its workspace a
     expect(Buffer.from(bytes).toString("utf8")).toBe(content);
     expect(digest(bytes)).toBe(record.sha256 ?? "");
   } finally {
-    h.done();
+    await h.done();
   }
 });
 
@@ -332,7 +329,7 @@ test("a cancelled caller receives no artifact bytes", async () => {
     expect(response.status).toBe(499);
     expect(await response.text()).not.toContain("0123456789");
   } finally {
-    h.done();
+    await h.done();
   }
 });
 
@@ -385,7 +382,7 @@ test("a range end past the artifact is clipped to the artifact, in the headers a
       await server.stop(true);
     }
   } finally {
-    h.done();
+    await h.done();
   }
 });
 
@@ -406,6 +403,6 @@ test("a suffix range larger than the artifact returns the whole artifact, not pa
     expect(response.headers.get("content-length")).toBe("10");
     expect(await response.text()).toBe(content);
   } finally {
-    h.done();
+    await h.done();
   }
 });

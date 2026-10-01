@@ -31,7 +31,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { loadConfig } from "../src/config";
@@ -49,7 +49,10 @@ import { createMcpServer } from "../src/mcp";
 import { FreestyleProvider } from "../src/providers/freestyle";
 import { Redactor } from "../src/security";
 import { Store } from "../src/store";
-import { LocalArtifactProvider } from "../tests/local-artifact-provider";
+import {
+  LocalWorkerProvider,
+  localWorkspace,
+} from "../tests/local-artifact-provider";
 
 // The worker's OpenCode service is gone: the session exists, the turn was submitted and
 // every later poll fails. Preservation must still work, because capture never depends on
@@ -178,12 +181,13 @@ async function downloadVerified(
 
 async function localSmoke(opts: Options) {
   const root = mkdtempSync(join(tmpdir(), "swarmforge-salvage-smoke-"));
-  const guests = join(root, "guests");
   const state = join(root, "state");
-  mkdirSync(guests, { recursive: true });
   mkdirSync(state, { recursive: true });
   const dbPath = join(state, "swarmforge.sqlite");
-  // Placeholder infrastructure values only: the local fixture never contacts any of them.
+  // The real package 1 fixture: a temporary guest whose captures run the production Python
+  // helper as a subprocess, over the real raw byte streaming transport.
+  const guest = await localWorkspace();
+  // Placeholder infrastructure values only: nothing here contacts a real service.
   const config = loadConfig({
     FREESTYLE_API_TOKEN: "local-fixture-not-a-credential",
     FREESTYLE_SNAPSHOT_ID: "local-fixture",
@@ -192,6 +196,7 @@ async function localSmoke(opts: Options) {
     SWARMFORGE_MODEL_NAME: "local-fixture",
     SWARMFORGE_GIT_TREE: "none:local-fixture",
     SWARMFORGE_DB_PATH: dbPath,
+    SWARMFORGE_WORKSPACE: guest.root,
     SWARMFORGE_POLL_INTERVAL_MS: "10",
     SWARMFORGE_TOKEN_IDLE_TIMEOUT_SECONDS: "1",
     SWARMFORGE_API_TOKEN: "salvage-smoke-token-with-enough-characters",
@@ -202,7 +207,7 @@ async function localSmoke(opts: Options) {
     config.SWARMFORGE_MODEL_API_KEY,
     config.SWARMFORGE_API_TOKEN ?? "",
   );
-  const provider = new LocalArtifactProvider(config, guests);
+  const provider = new LocalWorkerProvider(guest, config);
   if (!provider.artifactTransport)
     throw new SmokeFailure(
       "capture fixture exposes no artifact transport; salvage cannot be proven",
@@ -251,16 +256,16 @@ async function localSmoke(opts: Options) {
       fail(`worker never started (state ${worker?.state ?? "unknown"})`);
     const vmId = worker.vm_id!;
     note("worker_running", { worker_id: worker.worker_id, vm_id: vmId });
-    // The worker's own output, written to the guest filesystem before its agent died.
-    const workspace = config.SWARMFORGE_WORKSPACE;
-    const guest = (path: string) =>
-      join(guests, vmId, workspace.slice(1), path);
-    mkdirSync(guest(".swarmforge/artifacts"), { recursive: true });
-    mkdirSync(guest(".swarmforge/logs"), { recursive: true });
-    writeFileSync(guest("findings.json"), findings);
-    writeFileSync(guest(".swarmforge/artifacts/notes.md"), "# notes\n");
-    writeFileSync(guest(".swarmforge/logs/run.log"), "worker log line\n");
-    if (!existsSync(guest("findings.json")))
+    // The worker's own output, written into the real guest filesystem before its agent died.
+    const write = (path: string, content: string) => {
+      const target = join(guest.root, path);
+      mkdirSync(dirname(target), { recursive: true });
+      writeFileSync(target, content);
+    };
+    write("findings.json", findings);
+    write(".swarmforge/artifacts/notes.md", "# notes\n");
+    write(".swarmforge/logs/run.log", "worker log line\n");
+    if (!existsSync(join(guest.root, "findings.json")))
       fail("guest findings.json is missing");
     // OpenCode stays down; the turn must settle as a failure with the VM retained.
     let settled: Worker | undefined;
@@ -334,6 +339,24 @@ async function localSmoke(opts: Options) {
       size: record.size,
       sha256: record.sha256,
     });
+    // Prove the production helper actually ran: the fixture records every helper command it
+    // executed in the guest, and staging must be empty once capture is done.
+    const helperCommands = guest.host.commands.filter((command) =>
+      command.includes("artifact-helper.py"),
+    );
+    if (!helperCommands.length)
+      fail(
+        "no guest helper command was executed; capture did not use the helper",
+      );
+    if (guest.stagingEntries().length)
+      fail(
+        "guest staging is not empty after capture; private copies were left behind",
+      );
+    note("guest_helper_used", {
+      helper: "src/providers/artifact-helper.py",
+      commands: helperCommands.length,
+      staging_entries_after_capture: 0,
+    });
     // Model-facing read: a bounded, screened excerpt, never the whole file.
     const read = await client.callTool({
       name: "read_artifact",
@@ -359,7 +382,7 @@ async function localSmoke(opts: Options) {
     const destroyed = store.get(settled.worker_id);
     if (destroyed.state !== "destroyed")
       fail(`destruction refused: ${destroyed.state}: ${destroyed.error ?? ""}`);
-    if (existsSync(guest("findings.json")))
+    if (existsSync(join(guest.root, "findings.json")))
       fail("guest workspace still exists after destruction");
     note("worker_destroyed", {
       worker_id: destroyed.worker_id,
@@ -401,6 +424,7 @@ async function localSmoke(opts: Options) {
   } finally {
     await server?.close().catch(() => {});
     store.close();
+    await guest.cleanup().catch(() => {});
     if (opts.keep) note("kept", { root });
     else rmSync(root, { recursive: true, force: true });
   }

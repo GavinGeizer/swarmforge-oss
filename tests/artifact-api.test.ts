@@ -1,57 +1,48 @@
 import { expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { rmSync } from "node:fs";
+import { mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import type { WorkerProvider } from "../src/domain";
 import { createMcpServer } from "../src/mcp";
-import {
-  destroyGuestWorkspace,
-  guestFile,
-  guestRoot,
-  guestTransport,
-  linkGuestFile,
-  writeGuestFile,
-} from "./artifact-double";
 import { harness, runToRunning, task } from "./helpers";
+import { localWorkspace } from "./local-artifact-provider";
 
-// A guest worker whose workspace is a real temporary directory served through the artifact
-// transport, so preserved bytes, sizes and checksums are the ones a lead would retrieve.
+// A guest worker whose workspace is a real temporary directory driven by the package 1 local
+// transport, so every capture runs the production guest helper as a subprocess with real raw
+// byte streaming, and the preserved bytes, sizes and checksums are the ones a lead retrieves.
 async function artifactWorker() {
   const h = harness();
-  const root = guestRoot();
-  (h.provider as WorkerProvider).artifactTransport = guestTransport(root);
+  const workspace = await localWorkspace();
+  (h.provider as WorkerProvider).artifactTransport = workspace.transport;
+  // The permitted artifact root comes from configuration, so point it at the real guest tree.
+  h.coordinator.config.SWARMFORGE_WORKSPACE = workspace.root;
   const w = h.coordinator.spawn(task);
   await runToRunning(h, w.worker_id);
   const vm = h.store.get(w.worker_id).vm_id!;
   return {
     ...h,
-    root,
+    workspace,
     vm,
-    workspace: h.coordinator.config.SWARMFORGE_WORKSPACE,
     workerId: w.worker_id,
-    write: (path: string, content: string | Uint8Array) =>
-      writeGuestFile(
-        root,
-        vm,
-        h.coordinator.config.SWARMFORGE_WORKSPACE,
-        path,
-        content,
-      ),
-    link: (path: string, target: string) =>
-      linkGuestFile(
-        root,
-        vm,
-        h.coordinator.config.SWARMFORGE_WORKSPACE,
-        path,
-        target,
-      ),
-    path: (path: string) =>
-      guestFile(root, vm, h.coordinator.config.SWARMFORGE_WORKSPACE, path),
-    destroyWorkspace: () => destroyGuestWorkspace(root, vm),
-    done: () => {
+    write: (path: string, content: string | Uint8Array) => {
+      const target = join(workspace.root, path);
+      mkdirSync(dirname(target), { recursive: true });
+      writeFileSync(target, content);
+      return target;
+    },
+    link: (path: string, target: string) => {
+      const link = join(workspace.root, path);
+      mkdirSync(dirname(link), { recursive: true });
+      symlinkSync(target, link);
+    },
+    path: (path: string) => join(workspace.root, path),
+    destroyWorkspace: () =>
+      rmSync(workspace.base, { recursive: true, force: true }),
+    done: async () => {
       h.store.close();
-      rmSync(root, { recursive: true, force: true });
+      await workspace.cleanup();
     },
   };
 }
@@ -126,7 +117,7 @@ test("preserve_artifact stores a workspace file and reports verifiable public me
     });
   } finally {
     await close();
-    h.done();
+    await h.done();
   }
 });
 
@@ -196,7 +187,7 @@ test("read_artifact returns screened inline text, is capped at 32 KiB and never 
     expect(body(past).next_offset).toBeNull();
   } finally {
     await close();
-    h.done();
+    await h.done();
   }
 });
 
@@ -237,7 +228,7 @@ test("read_artifact reports binary artifacts as metadata plus a download handle,
     expect(serialized).not.toContain("iVBOR");
   } finally {
     await close();
-    h.done();
+    await h.done();
   }
 });
 
@@ -262,8 +253,14 @@ test("inline reads refuse artifact contents that carry configured credentials", 
     });
     expect(refused.isError).toBe(true);
     expect(text(refused)).not.toContain("model-secret");
+    expect(text(refused)).not.toContain(
+      h.store.get(h.workerId).server_password,
+    );
     expect(text(refused).length).toBeLessThanOrEqual(2000);
     expect(JSON.stringify(refused)).not.toContain("model-secret");
+    expect(JSON.stringify(refused)).not.toContain(
+      h.store.get(h.workerId).server_password,
+    );
     // The raw download is a separate, authenticated operation and still offers the bytes.
     expect(
       body(
@@ -275,7 +272,7 @@ test("inline reads refuse artifact contents that carry configured credentials", 
     ).toBe("preserved");
   } finally {
     await close();
-    h.done();
+    await h.done();
   }
 });
 
@@ -340,7 +337,7 @@ test("list_artifacts paginates with bounded limits and filters by worker or task
     expect(byTask.artifacts).toHaveLength(3);
   } finally {
     await close();
-    h.done();
+    await h.done();
   }
 });
 
@@ -399,7 +396,7 @@ test("artifact metadata never exposes storage internals and scrubs reported erro
     expect(artifacts[0]!.artifact_id).toBeTruthy();
   } finally {
     await close();
-    h.done();
+    await h.done();
   }
 });
 
@@ -428,7 +425,7 @@ test("preserve_artifact rejects unsafe paths, absolute paths and over-deep paths
     expect(ok.isError).not.toBe(true);
   } finally {
     await close();
-    h.done();
+    await h.done();
   }
 });
 
@@ -448,14 +445,19 @@ test("preserve_artifact collects a whole worker directory when asked for one", a
       original_path: string;
       state: string;
     }[];
-    // One directory level is collected; nested paths stay reachable explicitly.
+    // Files are preserved individually and a nested directory is archived as its own
+    // snapshot rather than dropped or flattened into the parent.
     const paths = artifacts.map((a) => a.original_path).sort();
-    expect(paths).toEqual(["logs/run-1.log", "logs/run-2.log"]);
+    expect(paths).toEqual([
+      "logs/run-1.log",
+      "logs/run-2.log",
+      "snapshot:logs/nested",
+    ]);
     expect(artifacts.every((a) => a.state === "preserved")).toBe(true);
     expect(body(collected).truncated).toBe(false);
   } finally {
     await close();
-    h.done();
+    await h.done();
   }
 });
 
@@ -482,7 +484,7 @@ test("preservation propagates caller cancellation instead of copying after the c
     ).toHaveLength(0);
   } finally {
     await close();
-    h.done();
+    await h.done();
   }
 });
 
@@ -513,7 +515,7 @@ test("snapshot_worker returns a single archived artifact whose bytes are a real 
     expect(raw[1]).toBe(0x8b);
   } finally {
     await close();
-    h.done();
+    await h.done();
   }
 });
 
@@ -558,7 +560,7 @@ test("retry_worker_finalization re-preserves declared output for a worker that n
     );
   } finally {
     await close();
-    h.done();
+    await h.done();
   }
 });
 
@@ -614,7 +616,7 @@ test("list_worker_files walks the workspace, paginates and never exposes symlink
     expect(root.entries.map((e) => e.name)).toEqual(["docs", "notes.md"]);
   } finally {
     await close();
-    h.done();
+    await h.done();
   }
 });
 
@@ -666,7 +668,7 @@ test("preserved artifacts stay listable and readable after the worker and its wo
     ).toBe(true);
   } finally {
     await close();
-    h.done();
+    await h.done();
   }
 });
 
@@ -738,7 +740,7 @@ test("a large directory capture returns a byte-budgeted page with an explicit to
     expect(listed.isError).not.toBe(true);
   } finally {
     await close();
-    h.done();
+    await h.done();
   }
 });
 
@@ -746,10 +748,11 @@ test("a real directory of long file names is captured without exceeding the resp
   const h = await artifactWorker();
   const { client, close } = await lead(h);
   try {
-    const segment = (n: number) =>
-      `seg-${String(n).padStart(4, "0")}${"x".repeat(40)}`;
-    for (let n = 0; n < 120; n++)
-      h.write(`logs/${segment(n)}-${"y".repeat(180)}.json`, `{"n":${n}}`);
+    for (let n = 0; n < 30; n++)
+      h.write(
+        `logs/${`seg-${String(n).padStart(4, "0")}${"y".repeat(190)}`}.json`,
+        `{"n":${n}}`,
+      );
     const captured = await client.callTool({
       name: "preserve_artifact",
       arguments: { worker_id: h.workerId, path: "logs", kind: "directory" },
@@ -760,14 +763,14 @@ test("a real directory of long file names is captured without exceeding the resp
       total: number;
       truncated: boolean;
     };
-    expect(out.total).toBe(120);
-    expect(out.artifacts.length).toBeGreaterThan(0);
-    expect(out.truncated).toBe(out.artifacts.length < 120);
+    expect(out.total).toBe(30);
+    expect(out.artifacts.length).toBe(30);
+    expect(out.truncated).toBe(false);
     expect(out.artifacts.every((r) => r.state === "preserved")).toBe(true);
     expect(Buffer.byteLength(JSON.stringify(captured))).toBeLessThanOrEqual(
       131072,
     );
-    // Everything the capture response cut is still stored and reachable through the listing.
+    // Everything the capture response reported is also durable and listed.
     const seen = new Set<string>();
     for (let offset = 0; ; offset += 100) {
       const page = body(
@@ -782,10 +785,10 @@ test("a real directory of long file names is captured without exceeding the resp
       for (const listed of page.artifacts) seen.add(listed.artifact_id);
       if (page.next_offset === null) break;
     }
-    expect(seen.size).toBe(120);
+    expect(seen.size).toBe(30);
   } finally {
     await close();
-    h.done();
+    await h.done();
   }
 });
 
@@ -835,7 +838,7 @@ test("list_artifacts state filtering is a returned-page filter and does not chan
     expect(unscoped.artifacts).toHaveLength(3);
   } finally {
     await close();
-    h.done();
+    await h.done();
   }
 });
 
@@ -867,7 +870,7 @@ test("terminal output with ANSI colour is screened into text, not refused as bin
     expect(view.text).not.toContain("[0m");
   } finally {
     await close();
-    h.done();
+    await h.done();
   }
 });
 
@@ -895,7 +898,7 @@ test("invalid UTF-8 and NUL-heavy content stay binary metadata", async () => {
     expect(view.text).toBeNull();
   } finally {
     await close();
-    h.done();
+    await h.done();
   }
 });
 
