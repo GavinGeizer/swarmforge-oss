@@ -280,3 +280,46 @@ test("live reads refuse an unverified staging transfer and clean up", async () =
     1024,
   );
 });
+
+test("live reads reject a range they cannot serve and never buffer an object whole", async () => {
+  const files = new WorkerFiles(h.coordinator);
+  writeFileSync(join(artifacts(), "range.bin"), Buffer.alloc(5000, 9));
+  for (const bad of [1.5, -1, Number.NaN, Number.POSITIVE_INFINITY])
+    await expect(
+      files.readArtifact(worker, "range.bin", bad as number, 16),
+    ).rejects.toThrow(/range/i);
+  for (const bad of [0, 32769, 1.5, Number.NaN])
+    await expect(
+      files.readArtifact(worker, "range.bin", 0, bad as number),
+    ).rejects.toThrow(/range/i);
+  // A window that runs past the end of the file is clipped, not refused, and
+  // what comes back is exactly the bytes that exist.
+  const tail = await files.readArtifact(worker, "range.bin", 4990, 32768);
+  expect(tail.length).toBe(10);
+  expect(tail.every((byte) => byte === 9)).toBe(true);
+  const handle = await files.artifact(worker, "range.bin", 4990, 32768);
+  expect(handle.length).toBe(10);
+  expect(handle.next_offset).toBeNull();
+  await expect(files.artifact(worker, "range.bin", 0, 40000)).rejects.toThrow(
+    /range/i,
+  );
+});
+
+test("a live listing keeps paging past entries a caller cannot use", async () => {
+  // Symlinks sort before the files, so a search that stopped after the first
+  // page, or that advanced by its own page size instead of the listing's, would
+  // never find the file at all.
+  for (const name of ["a-escape", "b-escape", "c-escape", "d-escape"])
+    symlinkSync("/etc/passwd", join(artifacts(), name));
+  writeFileSync(join(artifacts(), "zz-last.txt"), "last one");
+  const found = await new WorkerFiles(h.coordinator).artifact(
+    worker,
+    "zz-last.txt",
+  );
+  expect(found).toMatchObject({ name: "zz-last.txt", size: 8 });
+  const bytes = await new WorkerFiles(h.coordinator).readArtifact(
+    worker,
+    "zz-last.txt",
+  );
+  expect(new TextDecoder().decode(bytes)).toBe("last one");
+});

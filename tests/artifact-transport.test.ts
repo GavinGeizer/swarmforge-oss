@@ -13,6 +13,10 @@ import {
 import { join } from "node:path";
 import { type ArtifactErrorCode, validateRoot } from "../src/artifact-types";
 import { artifactErrorCode } from "../src/providers/artifact-transport";
+import {
+  boundedExecTimeout,
+  guestExecTimeoutLimit,
+} from "../src/providers/freestyle";
 import { type LocalWorkspace, localWorkspace } from "./local-artifact-provider";
 
 let ws: LocalWorkspace;
@@ -775,4 +779,19 @@ test("a workspace with no repository records that as not applicable", async () =
   expect(git.transfer.incomplete).toBeUndefined();
   await git.transfer.cleanup();
   await results[0]!.transfer.cleanup();
+});
+
+test("guest exec budgets never exceed what the guest API accepts", async () => {
+  // Every guest exec is clamped to the same ceiling: a configured budget above
+  // it is a configuration mistake, and sending it anyway would come back as a
+  // capture failure rather than as the mistake it is.
+  expect(guestExecTimeoutLimit).toBe(300000);
+  expect(boundedExecTimeout(900000)).toBe(guestExecTimeoutLimit);
+  expect(boundedExecTimeout(30000)).toBe(30000);
+  expect(boundedExecTimeout(Number.NaN)).toBe(30000);
+  expect(boundedExecTimeout(-1)).toBe(30000);
+  expect(boundedExecTimeout(1.5)).toBe(30000);
+  await ws.transport.ensureHelper(ws.vmId);
+  for (const command of ws.host.commands)
+    expect(command).not.toContain("900000");
 });

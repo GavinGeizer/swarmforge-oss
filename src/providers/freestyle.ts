@@ -180,7 +180,9 @@ export class FreestyleProvider implements WorkerProvider {
         vm.exec({
           command: `if [ -d ${quote(`${repository}/.git`)} ]; then exit 0; fi; if [ -e ${quote(repository)} ]; then echo 'Repository destination already exists and is not a Git checkout' >&2; exit 1; fi; rm -rf ${quote(staging)} && ${auth} git clone -- ${quote(tree.target)} ${quote(staging)} && mv ${quote(staging)} ${quote(repository)}`,
           linuxUser: "root",
-          timeoutMs: this.config.SWARMFORGE_GIT_PUSH_TIMEOUT_MS,
+          timeoutMs: boundedExecTimeout(
+            this.config.SWARMFORGE_GIT_PUSH_TIMEOUT_MS,
+          ),
         }),
       );
       if (clone.statusCode !== 0)
@@ -306,7 +308,9 @@ export class FreestyleProvider implements WorkerProvider {
       vm.exec({
         command: `set -eu; cd ${quote(repo)}; test "$(git branch --show-current)" = ${quote(branch)}; test -z "$(git status --porcelain --untracked-files=all)"; base=$(cat ${quote(`${this.config.SWARMFORGE_WORKSPACE}/.swarmforge/git-base`)}); commit=$(git rev-parse HEAD); git merge-base --is-ancestor "$base" "$commit"; ${auth} git push -- ${quote(target)} ${quote(`HEAD:refs/heads/${branch}`)} >&2; remote=$(${auth} git ls-remote -- ${quote(target)} ${quote(`refs/heads/${branch}`)}); remote_sha=$(printf '%s\n' "$remote" | cut -f1); test "$remote_sha" = "$commit"; git update-ref ${quote(`refs/remotes/origin/${branch}`)} "$commit"; printf '%s\n%s\n' "$base" "$commit"`,
         linuxUser: "root",
-        timeoutMs: this.config.SWARMFORGE_GIT_PUSH_TIMEOUT_MS,
+        timeoutMs: boundedExecTimeout(
+          this.config.SWARMFORGE_GIT_PUSH_TIMEOUT_MS,
+        ),
       }),
     );
     if (result.statusCode !== 0)
@@ -369,11 +373,26 @@ function combine(signal: AbortSignal | undefined, timeout: AbortSignal) {
   return signal ? AbortSignal.any([signal, timeout]) : timeout;
 }
 
+/** The guest API accepts 1-300000 ms for one exec; nothing may ask for more. */
+export const guestExecTimeoutLimit = 300000;
+
 function artifactTimeout(config: Config) {
   const raw = (config as unknown as Record<string, unknown>)
     .SWARMFORGE_ARTIFACT_TIMEOUT_MS;
   const value = typeof raw === "number" ? raw : Number(raw);
-  // The guest API accepts 1–300000 ms for one exec.
   if (!Number.isSafeInteger(value) || value <= 0) return 120000;
-  return Math.min(value, 300000);
+  return Math.min(value, guestExecTimeoutLimit);
+}
+
+/**
+ * Every guest exec goes through one clamp. A configured budget above what the
+ * guest API accepts is not honoured by being sent anyway: the call is rejected
+ * there, which would look like a capture failure rather than a configuration
+ * mistake.
+ */
+export function boundedExecTimeout(milliseconds: number, fallback = 30000) {
+  const value =
+    typeof milliseconds === "number" ? milliseconds : Number(milliseconds);
+  if (!Number.isSafeInteger(value) || value <= 0) return fallback;
+  return Math.min(value, guestExecTimeoutLimit);
 }

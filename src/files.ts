@@ -96,6 +96,11 @@ export class WorkerFiles {
    * Finds one live file's size from a bounded, descriptor-relative directory
    * listing. There is deliberately no stat-then-read pair here: the listing and
    * the capture each open the path in one trusted helper run.
+   *
+   * The search follows the listing's own `next_offset` rather than advancing by
+   * its own page size, so an entry that sorts after a page of entries a caller
+   * cannot use is still found, and the scan is bounded by the listing's entry
+   * budget instead of by a page count.
    */
   private async entry(id: string, path: string) {
     const worker = this.worker(id);
@@ -104,7 +109,8 @@ export class WorkerFiles {
     const name = relative.split("/").at(-1)!;
     const limit = 200;
     const max = 10000;
-    for (let offset = 0; offset < max; offset += limit) {
+    let offset = 0;
+    for (let page = 0; page * limit < max; page++) {
       const listing = await this.service().listWorkerFiles(id, directory, {
         offset,
         limit,
@@ -112,6 +118,8 @@ export class WorkerFiles {
       const found = listing.entries.find((entry) => entry.name === name);
       if (found) return { worker, found };
       if (listing.next_offset === null) break;
+      if (listing.next_offset <= offset) break;
+      offset = listing.next_offset;
     }
     throw new Error("Artifact not found");
   }
@@ -121,6 +129,8 @@ export class WorkerFiles {
       throw new Error("Invalid artifact page");
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1000)
       throw new Error("Invalid artifact page size");
+    if (directory && redactorFor(this.c).text(directory) !== directory)
+      throw new Error("Artifact path contains credentials");
     const listing = await this.service().listWorkerFiles(
       id,
       directory ? this.relative(directory) : WorkerFiles.root,
@@ -134,6 +144,15 @@ export class WorkerFiles {
     };
   }
   async artifact(id: string, path: string, offset = 0, length = 32768) {
+    if (!Number.isSafeInteger(offset) || offset < 0)
+      throw new Error("Invalid artifact byte range");
+    if (
+      !Number.isSafeInteger(length) ||
+      length < 1 ||
+      length > 32768 ||
+      offset > Number.MAX_SAFE_INTEGER - length
+    )
+      throw new Error("Invalid artifact byte range");
     if (redactorFor(this.c).text(path) !== path)
       throw new Error("Artifact path contains credentials");
     const { found } = await this.entry(id, path);
