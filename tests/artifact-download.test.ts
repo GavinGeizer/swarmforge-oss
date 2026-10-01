@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { WorkerProvider } from "../src/domain";
 import { createHttpHandler } from "../src/http";
@@ -13,11 +14,16 @@ const MAX_RANGE = 8 * 1024 * 1024;
 // One served worker whose workspace is a real temporary guest driven by the package 1 local
 // transport, so downloads move bytes that the production guest helper actually captured.
 async function served() {
-  const h = harness();
+  // Configuration is read once when the coordinator builds its artifact service, so the real
+  // guest root and a private storage directory are supplied before the coordinator exists.
   const workspace = await localWorkspace();
+  const storage = mkdtempSync(join(tmpdir(), "swarmforge-test-storage-"));
+  const h = harness({
+    SWARMFORGE_API_TOKEN: TOKEN,
+    SWARMFORGE_WORKSPACE: workspace.root,
+    SWARMFORGE_ARTIFACT_DIR: storage,
+  });
   (h.provider as WorkerProvider).artifactTransport = workspace.transport;
-  h.coordinator.config.SWARMFORGE_API_TOKEN = TOKEN;
-  h.coordinator.config.SWARMFORGE_WORKSPACE = workspace.root;
   const handler = createHttpHandler(h.coordinator);
   const w = h.coordinator.spawn(task);
   await runToRunning(h, w.worker_id);
@@ -45,18 +51,19 @@ async function served() {
     destroyWorkspace: () =>
       rmSync(workspace.base, { recursive: true, force: true }),
     done: async () => {
-      delete h.coordinator.config.SWARMFORGE_API_TOKEN;
       h.store.close();
       await workspace.cleanup();
+      rmSync(storage, { recursive: true, force: true });
     },
   };
 }
 async function preserve(h: Awaited<ReturnType<typeof served>>, path: string) {
-  const record = await h.coordinator.artifacts.preserve(h.workerId, path, {});
-  return record;
+  return h.coordinator.artifacts.preserve(h.workerId, path, {});
 }
 const digest = (value: string | Uint8Array) =>
   createHash("sha256").update(value).digest("hex");
+// Every response body in this file is read: an unread download stream stays open on the
+// storage file and would fail once the test removes its temporary storage.
 
 test("raw artifact download requires the bearer token and rejects cross-origin requests", async () => {
   const h = await served();
@@ -91,7 +98,11 @@ test("raw artifact download requires the bearer token and rejects cross-origin r
         )
       ).status,
     ).toBe(403);
-    expect((await h.authed(url)).status).toBe(200);
+    // The successful download is read, not merely checked: an unread stream keeps reading the
+    // storage file after this test removes its temporary storage.
+    const allowed = await h.authed(url);
+    expect(allowed.status).toBe(200);
+    expect((await allowed.arrayBuffer()).byteLength).toBeGreaterThan(0);
     expect(
       (await h.authed(url, { method: "POST", body: "x" })).status,
     ).toBeGreaterThanOrEqual(400);
@@ -154,6 +165,7 @@ test("download filenames cannot break out of the content-disposition header", as
       `/artifacts/${record.artifact_id}/download`,
     );
     expect(response.status).toBe(200);
+    expect((await response.arrayBuffer()).byteLength).toBeGreaterThan(0);
     const disposition = response.headers.get("content-disposition") ?? "";
     expect(disposition).not.toContain("\r");
     expect(disposition).not.toContain("\n");
@@ -256,7 +268,7 @@ test("unknown or unpreserved artifacts are never served as bytes", async () => {
   try {
     const missing = await h.authed("/artifacts/a-missing/download");
     expect(missing.status).toBe(404);
-    expect(await missing.text()).not.toContain("a-missing-secret");
+    expect(await missing.text()).toBe("Artifact not found");
     const service = h.coordinator.artifacts as unknown as {
       metadata: (id: string) => unknown;
     };
@@ -327,7 +339,7 @@ test("a cancelled caller receives no artifact bytes", async () => {
       }),
     );
     expect(response.status).toBe(499);
-    expect(await response.text()).not.toContain("0123456789");
+    expect(await response.text()).toBe("Client closed the request");
   } finally {
     await h.done();
   }

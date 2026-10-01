@@ -1,6 +1,13 @@
 import { expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
@@ -13,11 +20,15 @@ import { localWorkspace } from "./local-artifact-provider";
 // transport, so every capture runs the production guest helper as a subprocess with real raw
 // byte streaming, and the preserved bytes, sizes and checksums are the ones a lead retrieves.
 async function artifactWorker() {
-  const h = harness();
+  // The permitted artifact root and the storage root are configuration, and the coordinator
+  // builds its artifact service from them once, so the real guest is wired in before it exists.
   const workspace = await localWorkspace();
+  const storage = mkdtempSync(join(tmpdir(), "swarmforge-test-storage-"));
+  const h = harness({
+    SWARMFORGE_WORKSPACE: workspace.root,
+    SWARMFORGE_ARTIFACT_DIR: storage,
+  });
   (h.provider as WorkerProvider).artifactTransport = workspace.transport;
-  // The permitted artifact root comes from configuration, so point it at the real guest tree.
-  h.coordinator.config.SWARMFORGE_WORKSPACE = workspace.root;
   const w = h.coordinator.spawn(task);
   await runToRunning(h, w.worker_id);
   const vm = h.store.get(w.worker_id).vm_id!;
@@ -43,6 +54,7 @@ async function artifactWorker() {
     done: async () => {
       h.store.close();
       await workspace.cleanup();
+      rmSync(storage, { recursive: true, force: true });
     },
   };
 }
@@ -519,16 +531,19 @@ test("snapshot_worker returns a single archived artifact whose bytes are a real 
   }
 });
 
-test("retry_worker_finalization re-preserves declared output for a worker that no longer runs", async () => {
+test("retry_worker_finalization collects a cancelled worker and then refuses a second retry", async () => {
   const h = await artifactWorker();
   const { client, close } = await lead(h);
   try {
+    // Every default collection target exists, so the collection settles instead of retrying.
     h.write(".swarmforge/artifacts/findings.json", '{"verdict":"recovered"}');
     h.write(".swarmforge/logs/run.log", "worker log line");
     h.write(
       ".swarmforge/result.json",
       '{"status":"completed","summary":"done"}',
     );
+    h.write(".swarmforge/task.json", '{"task":"cancel-after-output"}');
+    h.write(".swarmforge/metadata.json", '{"role":"coder"}');
     await h.coordinator.control(h.workerId, "cancel");
     expect(h.store.get(h.workerId).state).toBe("cancelled");
     const retried = await client.callTool({
@@ -549,15 +564,81 @@ test("retry_worker_finalization re-preserves declared output for a worker that n
     expect(paths).toContain(".swarmforge/logs/run.log");
     expect(out.artifacts.every((a) => a.state === "preserved")).toBe(true);
     expect(JSON.stringify(retried)).not.toContain("server_password");
-    // A second explicit retry is safe and does not duplicate preserved records.
+    // Preservation is settled, so a deliberate second retry is refused rather than repeated.
     const again = await client.callTool({
       name: "retry_worker_finalization",
       arguments: { worker_id: h.workerId },
     });
-    expect(again.isError).not.toBe(true);
-    expect((body(again).artifacts as unknown as unknown[]).length).toBe(
-      out.artifacts.length,
+    expect(again.isError).toBe(true);
+    expect(JSON.stringify(again)).not.toContain("server_password");
+    // The settled record survives the refusal, and the durable attempt count did not move.
+    expect(h.store.get(h.workerId).finalization?.state).toBe("preserved");
+  } finally {
+    await close();
+    await h.done();
+  }
+});
+
+test("an unsettled collection keeps the worker, refuses destruction and exposes the failure", async () => {
+  const h = await artifactWorker();
+  const { client, close } = await lead(h);
+  try {
+    // A required artifact that does not exist can never settle: the collection retries on a
+    // configured backoff, then reports the failure and retains the worker.
+    h.coordinator.config.SWARMFORGE_FINALIZATION_MAX_ATTEMPTS = 2;
+    h.coordinator.config.SWARMFORGE_FINALIZATION_RETRY_MS = 10;
+    h.coordinator.config.SWARMFORGE_ARTIFACT_TIMEOUT_MS = 5000;
+    h.write(
+      ".swarmforge/result.json",
+      '{"status":"completed","summary":"done"}',
     );
+    h.write(".swarmforge/task.json", '{"task":"never-produced"}');
+    h.write(".swarmforge/metadata.json", '{"role":"coder"}');
+    const created = h.coordinator.spawn({
+      team_id: "team",
+      task_id: "task",
+      role: "coder",
+      prompt: "produce a report that never appears",
+      artifacts: [{ path: "report.json", required: true }],
+    });
+    await runToRunning(h, created.worker_id);
+    await h.coordinator.control(created.worker_id, "cancel");
+    const retried = await client.callTool({
+      name: "retry_worker_finalization",
+      arguments: { worker_id: created.worker_id },
+    });
+    expect(retried.isError).not.toBe(true);
+    const out = body(retried) as unknown as {
+      finalization: { state: string; attempts: number; error: string | null };
+    };
+    expect(out.finalization?.state).toBe("failed");
+    expect(out.finalization?.attempts).toBeGreaterThan(0);
+    expect(out.finalization?.error).toBeTruthy();
+    // Automatic attempts are durable events, and the failed record is visible.
+    const attempts = h.store.db
+      .query(
+        "SELECT type, count(*) n FROM events WHERE type LIKE 'finalization.%' GROUP BY type",
+      )
+      .all() as { type: string; n: number }[];
+    const failedAttempts = attempts.find(
+      (row) => row.type === "finalization.attempt_failed",
+    );
+    expect(
+      (failedAttempts?.n ?? 0) +
+        attempts.find((row) => row.type === "finalization.failed")!.n,
+    ).toBeGreaterThan(0);
+    // The worker and its workspace are retained until preservation settles or is forced.
+    await h.coordinator.control(created.worker_id, "destroy");
+    const refused = h.store.get(created.worker_id);
+    expect(refused.state).not.toBe("destroyed");
+    expect(h.provider.vms.get(refused.vm_id!)).toBeDefined();
+    const report = body(
+      await client.callTool({
+        name: "get_worker",
+        arguments: { worker_id: created.worker_id },
+      }),
+    ) as unknown as { error: string | null };
+    expect(report.error).toBeTruthy();
   } finally {
     await close();
     await h.done();

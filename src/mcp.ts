@@ -625,14 +625,14 @@ function screen(bytes: Uint8Array): { binary: boolean; text: string } {
 }
 // CSI sequences, OSC strings terminated by BEL or ST, and single-character escapes. Built from
 // runtime code points so no control character is written into the source.
-const escape = String.fromCharCode(27);
+const introducer = String.fromCharCode(27);
 const bell = String.fromCharCode(7);
 const slash = String.fromCharCode(92);
 const escapes = new RegExp(
   [
-    `${escape}\\[[0-?]*[ -/]*[@-~]`,
-    `${escape}\\][^${escape}${bell}]*(?:${bell}|${escape}${slash}${slash})`,
-    `${escape}[@-Z${slash}${slash}\\]^_]`,
+    `${introducer}\\[[0-?]*[ -/]*[@-~]`,
+    `${introducer}\\][^${introducer}${bell}]*(?:${bell}|${introducer}${slash}${slash})`,
+    `${introducer}[@-Z${slash}${slash}\\]^_]`,
   ].join("|"),
   "g",
 );

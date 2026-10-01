@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { WorkerProvider } from "../src/domain";
 import { Metrics } from "../src/metrics";
@@ -16,10 +17,14 @@ const kinds = new Set([
 ]);
 
 async function observed() {
-  const h = harness();
+  // The coordinator reads the artifact root and storage root once, at construction.
   const workspace = await localWorkspace();
+  const storage = mkdtempSync(join(tmpdir(), "swarmforge-test-storage-"));
+  const h = harness({
+    SWARMFORGE_WORKSPACE: workspace.root,
+    SWARMFORGE_ARTIFACT_DIR: storage,
+  });
   (h.provider as WorkerProvider).artifactTransport = workspace.transport;
-  h.coordinator.config.SWARMFORGE_WORKSPACE = workspace.root;
   const w = h.coordinator.spawn(task);
   await runToRunning(h, w.worker_id);
   // Materialise the real service so its artifact repository table exists in the shared store.
@@ -36,6 +41,7 @@ async function observed() {
     done: async () => {
       h.store.close();
       await workspace.cleanup();
+      rmSync(storage, { recursive: true, force: true });
     },
   };
 }
@@ -113,6 +119,8 @@ test("finalization stage and durable events follow a real collection cycle", asy
       ".swarmforge/result.json",
       '{"status":"completed","summary":"done"}',
     );
+    h.write(".swarmforge/task.json", '{"task":"metrics-cycle"}');
+    h.write(".swarmforge/metadata.json", '{"role":"coder"}');
     await h.coordinator.control(h.workerId, "cancel");
     await h.coordinator.retryFinalization(h.workerId);
     const text = await new Metrics(h.coordinator).render();

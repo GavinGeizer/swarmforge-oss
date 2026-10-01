@@ -58,10 +58,15 @@ successfully; if it has not, destruction reports `recovery_required` instead of 
 evidence. `force=true` is the explicit, acknowledged way to destroy anyway, and it records
 the preservation as abandoned rather than leaving a half-finished stage behind.
 
-Automatic retries use a persisted attempt count and a backoff. Once the attempts are
-exhausted the worker stays retained and the lead can drive collection again with
-`retry_worker_finalization`, or inspect the retained workspace with `list_worker_files`
-before deciding. Cancellation and forced destruction abort in-flight transfers before the
+Automatic retries use a persisted attempt count and an exponential backoff
+(`SWARMFORGE_FINALIZATION_RETRY_MS` doubling per attempt). Once the attempts are exhausted
+the worker stays retained and the lead can drive collection again with
+`retry_worker_finalization`, or inspect the retained workspace with `list_worker_files` before
+deciding. A deliberate retry resets the attempt budget and is refused while a collection is
+already running, while a retry is still scheduled inside its backoff window, after an explicit
+abandonment, and after a collection already succeeded; forcing destruction records an
+abandonment instead. A collection that cannot settle blocks normal destruction, so the worker
+and its workspace are retained for inspection rather than deleted. Cancellation and forced destruction abort in-flight transfers before the
 provider is asked to delete anything.
 
 ## Defaults and limits

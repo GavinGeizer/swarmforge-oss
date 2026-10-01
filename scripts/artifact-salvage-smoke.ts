@@ -265,6 +265,21 @@ async function localSmoke(opts: Options) {
     write("findings.json", findings);
     write(".swarmforge/artifacts/notes.md", "# notes\n");
     write(".swarmforge/logs/run.log", "worker log line\n");
+    // The rest of the default collection set, so preservation settles on its first attempt
+    // instead of retrying: this simulated worker plays a worker that produced its normal output.
+    write(
+      ".swarmforge/result.json",
+      JSON.stringify({
+        worker_id: worker.worker_id,
+        task_id: worker.task_id,
+        run_id: store.dispatch(worker.worker_id)?.run_id,
+        status: "failed",
+        summary:
+          "local salvage smoke worker wrote findings.json and then lost OpenCode",
+      }),
+    );
+    write(".swarmforge/task.json", JSON.stringify({ task: worker.task_id }));
+    write(".swarmforge/metadata.json", JSON.stringify({ role: "tester" }));
     if (!existsSync(join(guest.root, "findings.json")))
       fail("guest findings.json is missing");
     // OpenCode stays down; the turn must settle as a failure with the VM retained.
@@ -299,24 +314,33 @@ async function localSmoke(opts: Options) {
       InMemoryTransport.createLinkedPair();
     await server.connect(clientToServer);
     await client.connect(serverToClient);
-    let finalization: string | null = settled.finalization?.state ?? null;
+    // Collection is a lifecycle stage of its own: let the coordinator drive it to a terminal
+    // state first, then ask for one deliberate retry if it has not preserved. A refusal is
+    // acceptable only while the record still settles preserved.
+    const settledStates = new Set(["preserved", "failed", "abandoned"]);
+    let finalization = settled.finalization?.state ?? null;
+    for (let attempt = 0; attempt < 300; attempt++) {
+      if (finalization && settledStates.has(finalization)) break;
+      await coordinator.tick();
+      finalization = store.get(settled.worker_id).finalization?.state ?? null;
+      await Bun.sleep(10);
+    }
     if (finalization !== "preserved") {
       const retried = await client.callTool({
         name: "retry_worker_finalization",
         arguments: { worker_id: settled.worker_id },
       });
-      if (retried.isError)
-        fail("retry_worker_finalization reported a tool error");
-      finalization =
-        (
-          retried.structuredContent as {
-            finalization?: { state?: string } | null;
-          }
-        ).finalization?.state ?? null;
-      note("finalization_retried", { state: finalization });
+      finalization = store.get(settled.worker_id).finalization?.state ?? null;
+      note("finalization_retried", {
+        state: finalization,
+        refused: retried.isError === true,
+      });
     }
     if (finalization !== "preserved")
-      fail(`artifact finalization did not settle (state ${finalization})`);
+      fail(
+        `artifact finalization did not settle (state ${finalization}): ` +
+          `${store.get(settled.worker_id).finalization?.error ?? "no recorded error"}`,
+      );
     const listed = await client.callTool({
       name: "list_artifacts",
       arguments: { worker_id: settled.worker_id },
