@@ -335,3 +335,77 @@ test("a cancelled caller receives no artifact bytes", async () => {
     h.done();
   }
 });
+
+test("a range end past the artifact is clipped to the artifact, in the headers and on the wire", async () => {
+  const h = await served();
+  try {
+    const content = "abcdefghij";
+    h.write("clip.txt", content);
+    const record = await preserve(h, "clip.txt");
+    const server = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch: h.handler,
+    });
+    try {
+      const fetchRange = async (range: string) => {
+        const response = await fetch(
+          `http://127.0.0.1:${server.port}/artifacts/${record.artifact_id}/download`,
+          { headers: { authorization: `Bearer ${TOKEN}`, range } },
+        );
+        return {
+          status: response.status,
+          contentRange: response.headers.get("content-range"),
+          declared: response.headers.get("content-length"),
+          body: await response.text(),
+        };
+      };
+      // A range end beyond the stored size must not be advertised or sent: the client is
+      // told exactly which bytes it received and receives exactly that many.
+      for (const [range, expectedRange, expectedBody] of [
+        ["bytes=5-999", "bytes 5-9/10", "fghij"],
+        ["bytes=8-999", "bytes 8-9/10", "ij"],
+        ["bytes=0-999", "bytes 0-9/10", content],
+        ["bytes=9-10", "bytes 9-9/10", "j"],
+      ] as const) {
+        const got = await fetchRange(range);
+        expect([range, got.status]).toEqual([range, 206]);
+        expect([range, got.contentRange]).toEqual([range, expectedRange]);
+        expect([range, got.declared]).toEqual([
+          range,
+          String(expectedBody.length),
+        ]);
+        expect([range, Buffer.byteLength(got.body)]).toEqual([
+          range,
+          expectedBody.length,
+        ]);
+        expect([range, got.body]).toEqual([range, expectedBody]);
+      }
+    } finally {
+      await server.stop(true);
+    }
+  } finally {
+    h.done();
+  }
+});
+
+test("a suffix range larger than the artifact returns the whole artifact, not padding", async () => {
+  const h = await served();
+  try {
+    const content = "0123456789";
+    h.write("suffix.txt", content);
+    const record = await preserve(h, "suffix.txt");
+    const response = await h.authed(
+      `/artifacts/${record.artifact_id}/download`,
+      {
+        headers: { range: "bytes=-4096" },
+      },
+    );
+    expect(response.status).toBe(206);
+    expect(response.headers.get("content-range")).toBe("bytes 0-9/10");
+    expect(response.headers.get("content-length")).toBe("10");
+    expect(await response.text()).toBe(content);
+  } finally {
+    h.done();
+  }
+});

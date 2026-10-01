@@ -45,6 +45,12 @@ path, a size, entry or depth limit, a checksum mismatch, a provider or transport
 cancelled caller. Artifact contents, storage locations and credentials never appear in an
 error, in metadata, in events or in metrics.
 
+Every attempt and every settled collection also persists a durable event, because the record's
+`attempts` field describes one collection cycle and cannot carry history: `finalization.attempted`
+per attempt, then exactly one of `finalization.preserved`, `finalization.failed` or
+`finalization.abandoned`. Those events are the source of the cumulative metrics in
+[OBSERVABILITY.md](OBSERVABILITY.md).
+
 No automatic VM deletion policy is added. Completion and failure still retain the VM, and
 destruction stays explicit. Normal destruction requires preservation to have settled
 successfully; if it has not, destruction reports `recovery_required` instead of deleting
@@ -71,9 +77,17 @@ provider is asked to delete anything.
 | `SWARMFORGE_ARTIFACT_CONCURRENCY` | `4` | Concurrent transfers and finalizations, including direct API calls. |
 
 Manager-surface limits: `read_artifact` returns at most 32 KiB per call, list calls return at
-most 100 records, a single download response streams at most 8 MiB, and a directory
-collection reported through MCP is capped at 200 records with `truncated` reported. Paging
-with `offset`/`next_offset` is the way to read more.
+most 100 records, and a single download response streams at most 8 MiB.
+
+A capture that collects many records returns a page bounded by serialized bytes, not by a
+record count, because records with 1024-byte paths are far larger than short ones. The response
+carries `total` and `truncated`, plus `next: "list_artifacts"` when anything was cut; the cut
+records are in storage and are retrieved with `list_artifacts`. A capture therefore never fails
+with a response-too-large error after the bytes have already been captured. The budget is half
+of the tool response ceiling because an MCP result carries its payload twice. `list_artifacts`
+filters `state` on the returned page only: it does not change the repository's paging, so a
+filtered page can be shorter than the requested limit and `next_offset` still refers to the
+repository.
 
 ## Paths and allowed roots
 
@@ -98,15 +112,18 @@ content, and verifies it. What a model is shown is a deliberately smaller thing.
 | --- | --- | --- |
 | `list_artifacts`, `get_artifact_metadata` | Metadata only: identifiers, path, filename, kind, size, SHA-256, state, attempts, error, timestamps | 100 records per page |
 | `read_artifact` | Screened text excerpt of a byte range, or size, checksum and a download handle when the range is not text | 32 KiB per call |
+| `preserve_artifact`, `snapshot_worker` | Captured records, with `total` and `truncated` | 100 records and 48 KiB of serialized metadata |
 | `GET /artifacts/<artifact_id>/download` | Raw bytes, as an attachment | 8 MiB per response |
 | `list_worker_files` | Live directory entries of a retained workspace, no contents | 100 entries per page |
 
 Inline reads are credential screened: a range is refused when the bytes contain a configured
 secret in any known encoded variant, and the window is widened on both sides so a credential
-split across a chunk boundary is still detected. Only printable UTF-8 is inlined; terminal
-escapes and invisible or bidirectional code points are removed. Binary content is reported as
-metadata plus `download_path`, never as bytes or base64 in a tool response. Snapshots and
-other large payloads are always fetched through the download route.
+split across a chunk boundary is still detected. Only printable UTF-8 is inlined, and terminal
+escapes are removed as whole sequences first, so a coloured terminal log reads as text with no
+inert `[31m` fragment left behind and invisible or bidirectional code points are dropped. A
+range is treated as binary only when it is mostly non-printable, and then reported as metadata
+plus `download_path`, never as bytes or base64 in a tool response. Snapshots and other large
+payloads are always fetched through the download route.
 
 ## Snapshots
 
@@ -127,8 +144,10 @@ the VM is destroyed.
   nosniff`, with a sanitized filename. A browser never renders artifact content inline and a
   shared cache never keeps it.
 - Ranges are validated: exactly one range per response, integers only, no reversed or
-  unsatisfiable span, no multi-range request, and a clamped end so one request cannot become
-  an unbounded read. Unsatisfiable requests get `416` with `Content-Range: bytes */<size>`.
+  unsatisfiable span and no multi-range request. The advertised range is exactly what the
+  response carries: the end is clipped to the last stored byte and to the per-response window,
+  so `Content-Range` and `Content-Length` never promise bytes that do not exist. Unsatisfiable
+  requests get `416` with `Content-Range: bytes */<size>`.
 - A cancelled caller receives nothing; the caller signal is passed into the service so an
   abandoned request stops its transfer instead of holding one open.
 - Artifact storage locations are never returned to a lead. Tool metadata is an explicit
@@ -163,7 +182,10 @@ After that the worker may be destroyed normally; `list_artifacts` and the downlo
 working from storage.
 
 `bun scripts/artifact-salvage-smoke.ts` exercises exactly this flow with a real local guest
-filesystem, a dead OpenCode service, a real byte stream, a SQLite database, a destroyed
-workspace and a checksum comparison. `bun scripts/artifact-salvage-smoke.ts --freestyle
-<vm-id>` performs the same read-and-verify pass against one retained Freestyle VM without a
-worker model; it never destroys the VM.
+filesystem, a dead OpenCode service, a real byte stream, a SQLite database, normal destruction
+of the workspace and a checksum comparison; every run prints which capture implementation it
+used. `bun scripts/artifact-salvage-smoke.ts --freestyle <vm-id>` performs the same
+read-and-verify pass against one retained Freestyle VM without a worker model; it never
+destroys the VM. A local filesystem run proves the coordinator and manager surfaces, not the
+guest helper: the descriptor-relative capture itself is proven by the provider tests and by the
+`--freestyle` mode.

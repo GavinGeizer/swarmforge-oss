@@ -669,3 +669,257 @@ test("preserved artifacts stay listable and readable after the worker and its wo
     h.done();
   }
 });
+
+test("a large directory capture returns a byte-budgeted page with an explicit total", async () => {
+  const h = await artifactWorker();
+  const { client, close } = await lead(h);
+  try {
+    // Worst legal shape for a lead-facing response: many records with paths at the 1024-byte
+    // limit. The response must stay inside the tool response budget and say what was cut.
+    const long = (n: number) =>
+      `${"segment".repeat(9)}${String(n).padStart(3, "0")}/`.repeat(12) +
+      "leaf.json";
+    const service = h.coordinator.artifacts as unknown as {
+      collectDirectory: (
+        workerId: string,
+        path: string,
+        options: unknown,
+      ) => Promise<unknown[]>;
+    };
+    const captured = Array.from({ length: 400 }, (_, n) => {
+      const original_path = long(n).slice(0, 1024);
+      return {
+        artifact_id: `a-${n}`,
+        task_id: h.store.get(h.workerId).task_id,
+        worker_id: h.workerId,
+        run_id: null,
+        original_path,
+        storage_key: "/var/lib/swarmforge/private/key",
+        filename: "leaf.json",
+        size: 1024,
+        sha256: "b".repeat(64),
+        created_at: 1,
+        retrieved_at: 2,
+        state: "preserved",
+        attempts: 1,
+        error: null,
+        kind: "directory",
+      };
+    });
+    service.collectDirectory = async () => captured;
+    const captured_ = await client.callTool({
+      name: "preserve_artifact",
+      arguments: { worker_id: h.workerId, path: "logs", kind: "directory" },
+    });
+    expect(captured_.isError).not.toBe(true);
+    const out = body(captured_) as unknown as {
+      artifacts: { original_path: string }[];
+      truncated: boolean;
+      total: number;
+      next?: string;
+    };
+    expect(out.total).toBe(400);
+    expect(out.truncated).toBe(true);
+    expect(out.next).toBe("list_artifacts");
+    expect(out.artifacts.length).toBeGreaterThan(0);
+    expect(out.artifacts.length).toBeLessThan(400);
+    expect(out.artifacts.length).toBeLessThanOrEqual(100);
+    for (const record of out.artifacts)
+      expect(record.original_path.length).toBeLessThanOrEqual(1024);
+    expect(Buffer.byteLength(JSON.stringify(captured_))).toBeLessThanOrEqual(
+      131072,
+    );
+    // The response names the surface that still holds the cut records instead of pretending
+    // the capture returned everything.
+    const listed = await client.callTool({
+      name: "list_artifacts",
+      arguments: { worker_id: h.workerId, limit: 100 },
+    });
+    expect(listed.isError).not.toBe(true);
+  } finally {
+    await close();
+    h.done();
+  }
+});
+
+test("a real directory of long file names is captured without exceeding the response budget", async () => {
+  const h = await artifactWorker();
+  const { client, close } = await lead(h);
+  try {
+    const segment = (n: number) =>
+      `seg-${String(n).padStart(4, "0")}${"x".repeat(40)}`;
+    for (let n = 0; n < 120; n++)
+      h.write(`logs/${segment(n)}-${"y".repeat(180)}.json`, `{"n":${n}}`);
+    const captured = await client.callTool({
+      name: "preserve_artifact",
+      arguments: { worker_id: h.workerId, path: "logs", kind: "directory" },
+    });
+    expect(captured.isError).not.toBe(true);
+    const out = body(captured) as unknown as {
+      artifacts: { original_path: string; state: string }[];
+      total: number;
+      truncated: boolean;
+    };
+    expect(out.total).toBe(120);
+    expect(out.artifacts.length).toBeGreaterThan(0);
+    expect(out.truncated).toBe(out.artifacts.length < 120);
+    expect(out.artifacts.every((r) => r.state === "preserved")).toBe(true);
+    expect(Buffer.byteLength(JSON.stringify(captured))).toBeLessThanOrEqual(
+      131072,
+    );
+    // Everything the capture response cut is still stored and reachable through the listing.
+    const seen = new Set<string>();
+    for (let offset = 0; ; offset += 100) {
+      const page = body(
+        await client.callTool({
+          name: "list_artifacts",
+          arguments: { worker_id: h.workerId, limit: 100, offset },
+        }),
+      ) as unknown as {
+        artifacts: { artifact_id: string }[];
+        next_offset: number | null;
+      };
+      for (const listed of page.artifacts) seen.add(listed.artifact_id);
+      if (page.next_offset === null) break;
+    }
+    expect(seen.size).toBe(120);
+  } finally {
+    await close();
+    h.done();
+  }
+});
+
+test("list_artifacts state filtering is a returned-page filter and does not change paging", async () => {
+  const h = await artifactWorker();
+  const { client, close } = await lead(h);
+  try {
+    const service = h.coordinator.artifacts as unknown as {
+      list: (filter: { offset?: number; limit?: number }) => unknown;
+    };
+    service.list = ({ offset = 0, limit = 20 }) => ({
+      artifacts: Array.from({ length: Math.min(limit, 3) }, (_, n) => ({
+        artifact_id: `a-${offset + n}`,
+        task_id: "task",
+        worker_id: h.workerId,
+        run_id: null,
+        original_path: `f${offset + n}.json`,
+        storage_key: "/var/lib/swarmforge/private/key",
+        filename: `f${offset + n}.json`,
+        size: 1,
+        sha256: "c".repeat(64),
+        created_at: 1,
+        retrieved_at: 2,
+        state: (offset + n) % 2 ? "preserved" : "failed",
+        attempts: 1,
+        error: null,
+        kind: "file",
+      })),
+      next_offset: offset + limit < 6 ? offset + limit : null,
+    });
+    const page = body(
+      await client.callTool({
+        name: "list_artifacts",
+        arguments: { limit: 3, state: "preserved" },
+      }),
+    ) as unknown as { artifacts: unknown[]; next_offset: number | null };
+    // The repository ignores the state argument; the tool filters the returned page and keeps
+    // the repository's own paging, so a filtered page may be shorter than the limit.
+    expect(page.artifacts).toHaveLength(1);
+    expect(page.next_offset).toBe(3);
+    const unscoped = body(
+      await client.callTool({
+        name: "list_artifacts",
+        arguments: { limit: 3 },
+      }),
+    ) as unknown as { artifacts: unknown[] };
+    expect(unscoped.artifacts).toHaveLength(3);
+  } finally {
+    await close();
+    h.done();
+  }
+});
+
+test("terminal output with ANSI colour is screened into text, not refused as binary", async () => {
+  const h = await artifactWorker();
+  const { client, close } = await lead(h);
+  try {
+    const esc = String.fromCharCode(27);
+    const log = `${esc}[32mPASS${esc}[0m tests: 4 passed\n${esc}[1;31mFAIL${esc}[0m tests: 1 failed\n`;
+    h.write("tests.log", log);
+    const { artifacts } = body(
+      await client.callTool({
+        name: "preserve_artifact",
+        arguments: { worker_id: h.workerId, path: "tests.log" },
+      }),
+    ) as unknown as { artifacts: { artifact_id: string }[] };
+    const view = body(
+      await client.callTool({
+        name: "read_artifact",
+        arguments: { artifact_id: artifacts[0]!.artifact_id },
+      }),
+    ) as unknown as { binary: boolean; text: string };
+    expect(view.binary).toBe(false);
+    expect(view.text).toContain("PASS tests: 4 passed");
+    expect(view.text).toContain("FAIL tests: 1 failed");
+    // The escape introducer and its parameters are removed, not left as inert text.
+    expect(view.text).not.toContain(esc);
+    expect(view.text).not.toContain("[32m");
+    expect(view.text).not.toContain("[0m");
+  } finally {
+    await close();
+    h.done();
+  }
+});
+
+test("invalid UTF-8 and NUL-heavy content stay binary metadata", async () => {
+  const h = await artifactWorker();
+  const { client, close } = await lead(h);
+  try {
+    h.write(
+      "broken.bin",
+      new Uint8Array([0xff, 0xfe, 0x41, 0xc3, 0x28, 0x00, 0x01, 0x02]),
+    );
+    const { artifacts } = body(
+      await client.callTool({
+        name: "preserve_artifact",
+        arguments: { worker_id: h.workerId, path: "broken.bin" },
+      }),
+    ) as unknown as { artifacts: { artifact_id: string }[] };
+    const view = body(
+      await client.callTool({
+        name: "read_artifact",
+        arguments: { artifact_id: artifacts[0]!.artifact_id },
+      }),
+    ) as unknown as { binary: boolean; text: string | null };
+    expect(view.binary).toBe(true);
+    expect(view.text).toBeNull();
+  } finally {
+    await close();
+    h.done();
+  }
+});
+
+// Optional until the package 1 local fixture exists: the smoke module imports it directly.
+const smokeModule = import("../scripts/artifact-salvage-smoke" as string).catch(
+  () => null,
+) as Promise<{
+  safeMessage: (error: unknown, ...secrets: string[]) => string;
+} | null>;
+
+test.skipIf(!(await smokeModule))(
+  "smoke error reporting redacts known bare secrets",
+  async () => {
+    const smoke = (await smokeModule)!;
+    const secret = "bare-secret-value-9f2c";
+    const reported = smoke.safeMessage(
+      new Error(`capture failed with ${secret} and Bearer ${secret}`),
+      secret,
+    );
+    expect(reported).not.toContain(secret);
+    expect(reported).toContain("[REDACTED]");
+    expect(reported).not.toContain("token=");
+    expect(
+      smoke.safeMessage(new Error("y".repeat(5000)), secret).length,
+    ).toBeLessThanOrEqual(500);
+  },
+);

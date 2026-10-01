@@ -1,11 +1,17 @@
 #!/usr/bin/env bun
 // End-to-end artifact salvage smoke.
 //
-// Local mode (default) runs the production capture contract against a real local guest
-// filesystem through the package 1 local transport fixture: a worker writes findings.json,
-// its OpenCode service dies, the coordinator collects the file into private storage through
-// a real byte stream with a verified checksum, the worker workspace is destroyed, and the
-// bytes are re-read and re-verified from storage afterwards.
+// Local mode (default) drives the capture contract end to end: a worker writes findings.json
+// into a real filesystem, its OpenCode service dies for the rest of the turn, the coordinator
+// collects the declared paths through the capture transport into private storage, the bytes are
+// verified over the authenticated download before the worker is destroyed normally, the
+// workspace is then gone, and the same bytes and checksum are read back from storage.
+//
+// The capture path itself is the package 1 local transport fixture
+// (tests/local-artifact-provider.ts). Every run prints which implementation it used, so a local
+// filesystem run is never reported as a VM run or as a production-helper run: the guest helper's
+// descriptor-relative O_NOFOLLOW capture is proven by package 1's own tests and by the
+// --freestyle mode below, which targets a retained VM through the real provider.
 //
 //   bun scripts/artifact-salvage-smoke.ts
 //   bun scripts/artifact-salvage-smoke.ts --keep
@@ -41,6 +47,7 @@ import type {
 import { createHttpHandler } from "../src/http";
 import { createMcpServer } from "../src/mcp";
 import { FreestyleProvider } from "../src/providers/freestyle";
+import { Redactor } from "../src/security";
 import { Store } from "../src/store";
 import { LocalArtifactProvider } from "../tests/local-artifact-provider";
 
@@ -102,19 +109,32 @@ function usage() {
 const digest = (bytes: Uint8Array | string) =>
   createHash("sha256").update(bytes).digest("hex");
 class SmokeFailure extends Error {}
+// Known secrets for the run, so every reported message is scrubbed before it is printed.
+const known: string[] = [];
+function report(error: unknown) {
+  return safeMessage(error, ...known);
+}
 type ArtifactRecord = Awaited<ReturnType<Coordinator["artifacts"]["preserve"]>>;
 function note(event: string, detail: Record<string, unknown> = {}) {
-  console.log(JSON.stringify({ event, ...detail }));
+  const scrubbed = Object.fromEntries(
+    Object.entries(detail).map(([k, v]) => [
+      k,
+      typeof v === "string" ? report(v) : v,
+    ]),
+  );
+  console.log(JSON.stringify({ event, ...scrubbed }));
 }
 // Thrown rather than exiting so temporary guest databases and workspaces are still removed.
 function fail(message: string): never {
   throw new SmokeFailure(message);
 }
-// A smoke report never carries credentials or unbounded provider output.
-function safeMessage(error: unknown) {
+// A smoke report never carries credentials or unbounded provider output. The same Redactor the
+// MCP surface uses scrubs the configured secrets, so a bare token inside a provider message
+// cannot be echoed here; credential-shaped query parameters are removed as well.
+export function safeMessage(error: unknown, ...secrets: string[]) {
   const text = error instanceof Error ? error.message : String(error);
-  return text
-    .replace(/(bearer\s+)[^\s"']+/gi, "$1[REDACTED]")
+  return new Redactor((): string[] => secrets)
+    .text(text)
     .replace(
       /((?:token|api[_-]?key|password|secret)=)[^\s&"']+/gi,
       "$1[REDACTED]",
@@ -177,7 +197,16 @@ async function localSmoke(opts: Options) {
     SWARMFORGE_API_TOKEN: "salvage-smoke-token-with-enough-characters",
     SWARMFORGE_METRICS_ENABLED: "false",
   });
+  known.push(
+    config.FREESTYLE_API_TOKEN,
+    config.SWARMFORGE_MODEL_API_KEY,
+    config.SWARMFORGE_API_TOKEN ?? "",
+  );
   const provider = new LocalArtifactProvider(config, guests);
+  if (!provider.artifactTransport)
+    throw new SmokeFailure(
+      "capture fixture exposes no artifact transport; salvage cannot be proven",
+    );
   const store = new Store(dbPath);
   const agent = new DeadOpenCode();
   const coordinator = new Coordinator(config, store, provider, agent);
@@ -358,6 +387,8 @@ async function localSmoke(opts: Options) {
     });
     note("smoke_passed", {
       mode: "local",
+      capture:
+        "local-filesystem fixture (package 1 local transport); not a VM run",
       worker_id: destroyed.worker_id,
       artifacts_preserved: (
         listedAfter.structuredContent as { artifacts: unknown[] }
@@ -378,6 +409,11 @@ async function localSmoke(opts: Options) {
 async function freestyleSmoke(opts: Options) {
   if (!opts.freestyle) fail("--freestyle requires a VM identifier");
   const config = loadConfig();
+  known.push(
+    config.FREESTYLE_API_TOKEN,
+    config.SWARMFORGE_MODEL_API_KEY,
+    config.SWARMFORGE_API_TOKEN ?? "",
+  );
   if (!config.SWARMFORGE_API_TOKEN)
     fail("freestyle mode requires SWARMFORGE_API_TOKEN for the download check");
   // Work on a private copy of the database and a private storage root: a retained VM must
@@ -453,6 +489,7 @@ async function freestyleSmoke(opts: Options) {
     }
     note("vm_salvaged", {
       mode: "freestyle",
+      capture: "Freestyle provider artifact transport (real VM)",
       worker_id: workerId,
       vm_id: vm.id,
       artifacts: checked,
@@ -478,7 +515,7 @@ if (import.meta.main) {
     console.log(
       JSON.stringify({
         event: "failed",
-        error: safeMessage(error),
+        error: report(error),
         ...(error instanceof SmokeFailure ? {} : { kind: "unexpected" }),
       }),
     );

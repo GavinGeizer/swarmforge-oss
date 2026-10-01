@@ -13,7 +13,13 @@ import { publicWorker, redactorFor } from "./security";
 // 32 KiB of screened text per call, never raw bytes and never a whole binary payload. Large
 // or binary payloads are described by metadata plus an authenticated download handle.
 const safeReadLimit = 32768;
-const collectedLimit = 200;
+// A capture response is budgeted by serialized bytes, not by a record count: records with
+// 1024-byte paths are far larger than short ones. The budget is half of the tool response
+// ceiling, because an MCP result carries the payload twice (structured content and text), and
+// the remainder stays reachable through list_artifacts instead of failing the whole call after
+// the capture already succeeded.
+const collectedLimit = 100;
+const collectedBytes = 49152;
 type ArtifactRecord = Awaited<ReturnType<Coordinator["artifacts"]["preserve"]>>;
 type PublicArtifact = Pick<
   ArtifactRecord,
@@ -66,6 +72,29 @@ export function createMcpServer(c: Coordinator, signal?: AbortSignal) {
     return path;
   };
   const runId = (value: string | undefined) => (value ? { runId: value } : {});
+  const collected = (records: ArtifactRecord[]) => {
+    const artifacts: PublicArtifact[] = [];
+    let bytes = 0;
+    for (const record of records) {
+      const view = publicArtifact(record);
+      const size = Buffer.byteLength(JSON.stringify(view));
+      if (
+        artifacts.length &&
+        (artifacts.length >= collectedLimit || bytes + size > collectedBytes)
+      )
+        break;
+      artifacts.push(view);
+      bytes += size;
+    }
+    const truncated = artifacts.length < records.length;
+    return {
+      artifacts,
+      total: records.length,
+      truncated,
+      // The cut records are not lost: they are in the repository and paged by list_artifacts.
+      ...(truncated ? { next: "list_artifacts" as const } : {}),
+    };
+  };
 
   function register<S extends z.ZodRawShape>(
     name: string,
@@ -330,10 +359,7 @@ export function createMcpServer(c: Coordinator, signal?: AbortSignal) {
                 ...runId(a.run_id),
               }),
             ];
-      return {
-        artifacts: preserved.slice(0, collectedLimit).map(publicArtifact),
-        truncated: preserved.length > collectedLimit,
-      };
+      return collected(preserved);
     },
   );
   register(
@@ -387,7 +413,7 @@ export function createMcpServer(c: Coordinator, signal?: AbortSignal) {
         ...(paths ? { paths } : {}),
         ...runId(a.run_id),
       });
-      return { artifacts: [publicArtifact(record)], truncated: false };
+      return collected([record]);
     },
   );
   register(
@@ -574,26 +600,66 @@ function screen(bytes: Uint8Array): { binary: boolean; text: string } {
   if (!bytes.length) return { binary: false, text: "" };
   for (let trim = 0; trim < 4 && bytes.length - trim > 0; trim++) {
     const end = bytes.length - trim;
+    let decoded: string;
     try {
-      const text = new TextDecoder("utf-8", { fatal: true }).decode(
+      decoded = new TextDecoder("utf-8", { fatal: true }).decode(
         bytes.subarray(0, end),
       );
-      return printable(bytes.subarray(0, end))
-        ? { binary: false, text: scrub(text) }
-        : { binary: true, text: "" };
     } catch {
       // A range boundary can split one UTF-8 code point; retry without its last bytes.
+      continue;
     }
+    // Terminal output is text: its escape sequences are removed first, so colouring never
+    // turns a log into binary metadata and no inert "[31m" fragment is left behind.
+    const text = scrub(stripEscapes(decoded));
+    return controlRatio(text) > controlAllowance(bytes.length)
+      ? { binary: true, text: "" }
+      : { binary: false, text };
   }
   return { binary: true, text: "" };
 }
-function printable(bytes: Uint8Array) {
-  let control = 0;
-  for (const byte of bytes)
-    if ((byte < 32 && byte !== 9 && byte !== 10 && byte !== 13) || byte === 127)
-      control++;
-  return control <= Math.max(2, Math.floor(bytes.length * 0.02));
+// CSI sequences, OSC strings terminated by BEL or ST, and single-character escapes. Built from
+// runtime code points so no control character is written into the source.
+const escape = String.fromCharCode(27);
+const bell = String.fromCharCode(7);
+const slash = String.fromCharCode(92);
+const escapes = new RegExp(
+  [
+    `${escape}\\[[0-?]*[ -/]*[@-~]`,
+    `${escape}\\][^${escape}${bell}]*(?:${bell}|${escape}${slash}${slash})`,
+    `${escape}[@-Z${slash}${slash}\\]^_]`,
+  ].join("|"),
+  "g",
+);
+function stripEscapes(text: string) {
+  return text.replace(escapes, "");
 }
+// After escape removal, text is binary only if it is mostly non-printable: a single stray
+// control character in a log must not turn the whole artifact into metadata.
+function controlRatio(text: string) {
+  let controls = 0;
+  let printable = 0;
+  for (const char of text) {
+    const code = char.codePointAt(0)!;
+    if (code === 9 || code === 10 || code === 13 || code === 32) {
+      printable++;
+      continue;
+    }
+    if (
+      code < 32 ||
+      code === 127 ||
+      (code >= 128 && code <= 159) ||
+      code === 0xfffd
+    )
+      controls++;
+    else printable++;
+  }
+  return printable + controls === 0 ? 1 : controls / (printable + controls);
+}
+const controlAllowance = (length: number) =>
+  Math.max(2 / Math.max(1, length), 0.02);
+// Whatever survives escape removal is still scrubbed before it can reach a model: escape
+// introducers, C0/C1 controls, soft hyphens, zero-width and bidirectional overrides go away.
 function scrub(text: string) {
   let out = "";
   for (const char of text) {
@@ -602,8 +668,6 @@ function scrub(text: string) {
       out += char;
       continue;
     }
-    // Escapes are dropped whole, so an ANSI sequence cannot survive as inert text and a
-    // terminal-invisible or bidirectional code point never reaches a model.
     if (
       code === 27 ||
       code < 32 ||

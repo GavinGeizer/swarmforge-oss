@@ -177,6 +177,8 @@ async function artifactDownload(
       },
     });
   const start = range.start;
+  // The advertised range is exactly what the response carries: clipped to the artifact and to
+  // the per-response window, never past the last byte that exists.
   const end = Math.min(range.end, start + maxDownloadRange - 1);
   headers.set("content-length", String(end - start + 1));
   headers.set("content-range", `bytes ${start}-${end}/${size}`);
@@ -205,7 +207,9 @@ function byteRange(header: string, size: number) {
     start >= size
   )
     return null;
-  return { start, end };
+  // An end past the stored size is clipped to it, so Content-Range and Content-Length never
+  // advertise bytes the response cannot deliver.
+  return { start, end: Math.min(end, size - 1) };
 }
 async function* rangedChunks(
   c: Coordinator,

@@ -17,7 +17,20 @@ const finalizationStates = [
   "failed",
   "abandoned",
 ] as const;
-const artifactPages = 200;
+// Cumulative finalization totals come from durable events, never from the live record: an
+// attempts counter derived from a record that resets per collection cycle would fall back
+// towards zero while the history keeps growing. Package 2 persists these event names.
+const finalizationOutcomes = [
+  "attempted",
+  "preserved",
+  "failed",
+  "abandoned",
+] as const;
+const artifactPageSize = 100;
+// Safety bound only: one million records at one hundred per page. A scan normally runs until the
+// repository reports its end, and reaching this bound reports an incomplete scan rather than a
+// truncated total, so the bound bounds scrape time rather than correctness.
+const artifactPageGuard = 10000;
 export class Metrics {
   constructor(readonly c: Coordinator) {}
   async render() {
@@ -103,8 +116,19 @@ export class Metrics {
     });
     const captureFailures = new Counter({
       name: "swarmforge_artifacts_failed_total",
-      help: "Artifact captures that failed or were abandoned",
+      help: "Artifact captures that failed",
       labelNames: ["kind"],
+      registers: [registry],
+    });
+    const inFlight = new Gauge({
+      name: "swarmforge_artifacts_in_flight",
+      help: "Artifact captures that are still running",
+      labelNames: ["kind"],
+      registers: [registry],
+    });
+    const scanComplete = new Gauge({
+      name: "swarmforge_artifacts_scan_complete",
+      help: "1 when every persisted artifact record was aggregated, 0 when the scan was cut short",
       registers: [registry],
     });
     const collection = new Histogram({
@@ -121,7 +145,8 @@ export class Metrics {
     });
     const salvage = new Counter({
       name: "swarmforge_finalization_attempts_total",
-      help: "Automatic and operator-triggered artifact collection attempts",
+      help: "Durable artifact finalization events by outcome",
+      labelNames: ["outcome"],
       registers: [registry],
     });
     const all = this.c.store.all();
@@ -181,8 +206,16 @@ export class Metrics {
         if (end) duration.observe((end.at - d.sent_at) / 1000);
       }
     }
-    await this.artifacts(preserved, bytes, captureFailures, collection);
-    let attempts = 0;
+    await this.artifacts(
+      preserved,
+      bytes,
+      captureFailures,
+      inFlight,
+      scanComplete,
+      collection,
+    );
+    // The stage gauge describes the current record; the cumulative counters below are
+    // rebuilt from the durable event log, so a retried or restarted cycle never loses history.
     for (const w of all) {
       const finalization = w.finalization;
       if (!finalization) continue;
@@ -191,28 +224,64 @@ export class Metrics {
           ? finalization.state
           : "pending",
       });
-      attempts += Math.max(0, finalization.attempts);
     }
-    salvage.inc(attempts);
+    this.finalizationEvents(salvage);
     return registry.metrics();
   }
-  // Preserved records and their finalization attempts are reconstructed from durable
-  // storage on every scrape, so restarts and manual retries keep the same totals. Nothing
-  // worker-, task-, path- or content-specific is used as a label or a value.
+  // Durable event contract, owned by the lifecycle package: every collection attempt records
+  // "finalization.attempted" and every settled collection records exactly one of
+  // "finalization.preserved", "finalization.failed" or "finalization.abandoned". Event data
+  // is never read here, so a recorded error can never become a label or a value.
+  private finalizationEvents(salvage: Counter<"outcome">) {
+    const counts = new Map<string, number>();
+    let rows: { type: string; n: number }[] = [];
+    try {
+      rows = this.c.store.db
+        .query(
+          "SELECT type, count(*) n FROM events WHERE type LIKE 'finalization.%' GROUP BY type",
+        )
+        .all() as { type: string; n: number }[];
+    } catch {
+      rows = [];
+    }
+    for (const row of rows) {
+      const outcome = row.type.slice("finalization.".length);
+      const label = (finalizationOutcomes as readonly string[]).includes(
+        outcome,
+      )
+        ? outcome
+        : "other";
+      counts.set(label, (counts.get(label) ?? 0) + Math.max(0, row.n));
+    }
+    for (const outcome of finalizationOutcomes)
+      salvage.inc({ outcome }, counts.get(outcome) ?? 0);
+    const other = counts.get("other") ?? 0;
+    if (other) salvage.inc({ outcome: "other" }, other);
+  }
+  // Artifact records are aggregated as they stream past, so a repository larger than memory
+  // costs no retention. The scan runs until the repository reports its end; a repository that
+  // cannot be read, that stops advancing or that exceeds the safety bound is reported through
+  // swarmforge_artifacts_scan_complete 0 instead of a quietly truncated total.
   private async artifacts(
     preserved: Counter<"kind">,
     bytes: Counter<"kind">,
     failed: Counter<"kind">,
+    inFlight: Gauge<"kind">,
+    scanComplete: Gauge,
     collection: Histogram,
   ) {
     const kind = (value: string) =>
       artifactKinds.has(value) ? value : "other";
     let offset = 0;
-    for (let page = 0; page < artifactPages; page++) {
+    for (let page = 0; page <= artifactPageGuard; page++) {
       let listed: Awaited<ReturnType<Coordinator["artifacts"]["list"]>>;
       try {
-        listed = await this.c.artifacts.list({ offset, limit: 100 });
+        listed = await this.c.artifacts.list({
+          offset,
+          limit: artifactPageSize,
+        });
       } catch {
+        scanComplete.set(0);
         return;
       }
       for (const record of listed.artifacts) {
@@ -224,10 +293,19 @@ export class Metrics {
             collection.observe(
               (record.retrieved_at - record.created_at) / 1000,
             );
-        } else failed.inc(label);
+        } else if (record.state === "failed") failed.inc(label);
+        else inFlight.inc(label);
       }
-      if (listed.next_offset === null || listed.next_offset <= offset) return;
+      if (listed.next_offset === null) {
+        scanComplete.set(1);
+        return;
+      }
+      if (listed.next_offset <= offset) {
+        scanComplete.set(0);
+        return;
+      }
       offset = listed.next_offset;
     }
+    scanComplete.set(0);
   }
 }

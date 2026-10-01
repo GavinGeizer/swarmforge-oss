@@ -1,12 +1,14 @@
 import { createHash } from "node:crypto";
 import {
+  closeSync,
   createReadStream,
   existsSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
+  openSync,
   readdirSync,
-  readFileSync,
+  readSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -21,10 +23,15 @@ import type {
   WorkerArtifactTransport,
 } from "../src/artifact-types";
 
-// Test-only guest filesystem double. It stands in for the package 1 local transport
-// fixture (tests/local-artifact-provider.ts) so the manager API, download and metrics
-// tests can drive real bytes, sizes and checksums without a VM. Layout mirrors the plan's
-// workspace-relative contract: <root>/<vm_id><workspace>/<path>.
+// Intentional unit seam, not a stand-in for the production helper.
+//
+// The package 1 local transport fixture (tests/local-artifact-provider.ts) is the production
+// capture path and must replace this file for the artifact capture tests. Until it exists, this
+// double exists only so the manager API, download and metrics tests can run against real bytes,
+// sizes, checksums and a real gzip archive without a VM; it deliberately does NOT emulate the
+// guest helper's security properties (descriptor-relative O_NOFOLLOW opens, staging, symlink
+// races), which are package 1's tests to prove. Layout mirrors the plan's workspace-relative
+// contract: <root>/<vm_id><workspace>/<path>.
 export function guestRoot() {
   return mkdtempSync(join(tmpdir(), "swarmforge-guest-"));
 }
@@ -86,15 +93,29 @@ export function relative(value: string) {
     throw new Error("invalid workspace-relative path");
   return value;
 }
+// The digest is computed with a fixed-size buffer, so no read is buffered whole, and the
+// transfer is then a second real read of the same bytes.
 function transferOf(target: string, filename: string): ArtifactTransfer {
-  const bytes = readFileSync(target);
+  const size = lstatSync(target).size;
+  const buffer = new Uint8Array(65536);
+  const hash = createHash("sha256");
+  const handle = openSync(target, "r");
+  try {
+    while (true) {
+      const read = readSync(handle, buffer, 0, buffer.length, null);
+      if (read <= 0) break;
+      hash.update(buffer.subarray(0, read));
+    }
+  } finally {
+    closeSync(handle);
+  }
   const node = Readable.toWeb(
     createReadStream(target, { highWaterMark: 65536 }),
   ) as unknown as ReadableStream<Uint8Array>;
   return {
     stream: node,
-    size: bytes.length,
-    sha256: createHash("sha256").update(bytes).digest("hex"),
+    size,
+    sha256: hash.digest("hex"),
     filename,
     cleanup: async () => {},
   };
