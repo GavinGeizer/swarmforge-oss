@@ -7,6 +7,7 @@ import {
   type ArtifactListingOptions,
   type ArtifactOpenOptions,
   type ArtifactSnapshotOptions,
+  cancelTransfers,
   safeFilename,
   validateRelativePath,
   validateRoot,
@@ -62,6 +63,13 @@ export interface HelperTransportOptions {
   installTimeoutMs?: number;
 }
 
+interface CaptureSource {
+  label: string;
+  cwd?: string;
+  git?: boolean;
+  argv: string[];
+}
+
 interface HelperMetadata {
   name: string;
   size: number;
@@ -72,6 +80,12 @@ interface HelperMetadata {
   entries?: number;
   timed_out?: boolean;
   sources_failed?: number;
+  sources?: {
+    label: string;
+    exit?: number;
+    bytes?: number;
+    skipped?: string;
+  }[];
 }
 
 interface ListMetadata {
@@ -223,46 +237,79 @@ export class HelperArtifactTransport implements WorkerArtifactTransport {
     options: ArtifactDiagnosticsOptions,
   ): Promise<ArtifactDiagnostic[]> {
     const validated = validateRoot(root);
-    const staging = await this.stage(vmId, options.signal);
+    const captured: ArtifactDiagnostic[] = [];
     try {
       // Journal and Git state are salvage evidence, not artifact content, so each
       // is staged as its own bounded file and never reaches a command response.
-      const journal = await this.capture(vmId, staging, {
-        key: "journal",
-        path: "logs/opencode-journal.txt",
-        sources: [
-          {
-            argv: [
-              "journalctl",
-              "-u",
-              "swarmforge-opencode",
-              "--no-pager",
-              "-n",
-              "2000",
-              "-o",
-              "cat",
-            ],
-          },
-        ],
-        root: validated,
-        options,
-      });
-      const git = await this.capture(vmId, staging, {
-        key: "git",
-        path: "logs/git-report.txt",
-        sources: [
-          { argv: gitCommand(validated, ["status", "--porcelain=v1", "-b"]) },
-          { argv: gitCommand(validated, ["log", "--oneline", "-n", "200"]) },
-        ],
-        root: validated,
-        options,
-      });
-      return [
-        { path: "logs/opencode-journal.txt", transfer: journal },
-        { path: "logs/git-report.txt", transfer: git },
-      ];
+      // Separate captures mean separate staging directories: removing one staged
+      // copy can never pull the file out from under a stream still being read.
+      captured.push(
+        await this.capture(vmId, {
+          key: "journal",
+          path: "logs/opencode-journal.txt",
+          root: validated,
+          sources: [
+            {
+              label: "opencode-journal",
+              argv: [
+                "journalctl",
+                "-u",
+                "swarmforge-opencode",
+                "--no-pager",
+                "-n",
+                "2000",
+                "-o",
+                "cat",
+              ],
+            },
+          ],
+          options,
+        }),
+      );
+      captured.push(
+        await this.capture(vmId, {
+          key: "git",
+          path: "logs/git-report.txt",
+          root: validated,
+          // The repository lives under the workspace, not at its root. Every Git
+          // command is bounded, refuses external diff helpers and text
+          // conversion, and skips itself when the repository is absent or is a
+          // symlink out of the permitted root.
+          sources: [
+            {
+              label: "git-status",
+              cwd: "repo",
+              git: true,
+              argv: gitCommand(validated, ["status", "--porcelain=v1", "-b"]),
+            },
+            {
+              label: "git-log",
+              cwd: "repo",
+              git: true,
+              argv: gitCommand(validated, ["log", "--oneline", "-n", "200"]),
+            },
+            {
+              label: "git-diff",
+              cwd: "repo",
+              git: true,
+              argv: gitCommand(validated, [
+                "--no-pager",
+                "diff",
+                "HEAD",
+                "--binary",
+                "--no-ext-diff",
+                "--no-textconv",
+              ]),
+            },
+          ],
+          options,
+        }),
+      );
+      return captured;
     } catch (error) {
-      await this.discard(vmId, staging);
+      // Anything captured but not handed over still has a staged copy and an
+      // open stream; both are released before the failure propagates.
+      await cancelTransfers(captured);
       throw error;
     }
   }
@@ -276,7 +323,9 @@ export class HelperArtifactTransport implements WorkerArtifactTransport {
       const helperDir = shellQuote(dirnameOf(this.helperPath));
       await this.host.exec(
         vmId,
-        `mkdir -p -- ${helperDir} ${shellQuote(staging)} && chmod 700 -- ${shellQuote(staging)} && chmod 755 -- ${helperDir}`,
+        // Only ever tightened: the guest's own directory already exists at 0700
+        // and must not be made group- or world-accessible to install a helper.
+        `mkdir -p -- ${helperDir} ${shellQuote(staging)} && chmod 700 -- ${helperDir} ${shellQuote(staging)}`,
         { timeoutMs: this.installTimeoutMs, ...(signal ? { signal } : {}) },
       );
       if (!this.host.writeRaw)
@@ -303,31 +352,37 @@ export class HelperArtifactTransport implements WorkerArtifactTransport {
 
   private async capture(
     vmId: string,
-    staging: string,
     request: {
       key: string;
       path: string;
-      sources: { argv: string[] }[];
       root: string;
+      sources: CaptureSource[];
       options: ArtifactDiagnosticsOptions;
     },
-  ) {
-    const { key, path, sources, root, options } = request;
+  ): Promise<ArtifactDiagnostic> {
+    const { key, path, root, sources, options } = request;
+    const staging = await this.stage(vmId, options.signal);
     const name = `capture-${key}-${randomUUID()}`;
-    const meta = await this.run<HelperMetadata>(
-      vmId,
-      {
-        op: "capture",
-        root,
-        staging,
-        name,
-        max_bytes: options.maxBytes,
-        timeout_ms: this.timeoutMs,
-        sources,
-      },
-      options.signal,
-    );
-    return this.transfer(
+    let meta: HelperMetadata;
+    try {
+      meta = await this.run<HelperMetadata>(
+        vmId,
+        {
+          op: "capture",
+          root,
+          staging,
+          name,
+          max_bytes: options.maxBytes,
+          timeout_ms: this.timeoutMs,
+          sources,
+        },
+        options.signal,
+      );
+    } catch (error) {
+      await this.discard(vmId, staging);
+      throw error;
+    }
+    const transfer = await this.transfer(
       vmId,
       staging,
       name,
@@ -335,6 +390,12 @@ export class HelperArtifactTransport implements WorkerArtifactTransport {
       path.split("/").at(-1)!,
       options.signal,
     );
+    const notes = (meta.sources ?? []).map((source) =>
+      source.skipped
+        ? `${source.label} skipped=${source.skipped}`
+        : `${source.label} exit=${source.exit ?? -1} bytes=${source.bytes ?? 0}`,
+    );
+    return { path, transfer, ...(notes.length ? { notes } : {}) };
   }
 
   private async stage(vmId: string, signal?: AbortSignal): Promise<string> {

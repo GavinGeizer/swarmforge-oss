@@ -14,10 +14,12 @@ import {
   type ArtifactRecord,
   type ArtifactSnapshotRequest,
   type ArtifactTransfer,
+  cancelTransfers,
   hasControlCharacter,
   isSha256,
   safeFilename,
   safeReadLimit,
+  screeningWindow,
   validateRelativePath,
   validateRoot,
   type WorkerArtifactTransport,
@@ -175,7 +177,14 @@ export class ArtifactService {
     return worker;
   }
 
-  /** Bounds concurrent transfers so a burst cannot exhaust host or guest I/O. */
+  /**
+   * Bounds concurrent transfers so a burst cannot exhaust host or guest I/O.
+   *
+   * A slot is handed straight from the releasing caller to the next waiter
+   * rather than being freed and re-taken, so the limit cannot be exceeded by a
+   * caller that arrives in between. An aborted waiter removes its own entry,
+   * so it can never consume a released slot and strand the ones behind it.
+   */
   private async acquire(signal?: AbortSignal): Promise<() => void> {
     signal?.throwIfAborted();
     if (this.active < this.limits.concurrency) {
@@ -183,23 +192,28 @@ export class ArtifactService {
       return () => this.release();
     }
     await new Promise<void>((resolveWait, reject) => {
-      const onAbort = () => {
-        this.waiting = this.waiting.filter((entry) => entry !== onAbort);
-        reject(new Error("Artifact transfer aborted"));
-      };
       const wake = () => {
         signal?.removeEventListener("abort", onAbort);
         resolveWait();
       };
+      const onAbort = () => {
+        const at = this.waiting.indexOf(wake);
+        if (at >= 0) this.waiting.splice(at, 1);
+        reject(new Error("Artifact transfer aborted"));
+      };
       this.waiting.push(wake);
       signal?.addEventListener("abort", onAbort, { once: true });
     });
-    this.active++;
+    // The slot was reserved by the release that woke this waiter.
     return () => this.release();
   }
   private release() {
+    const next = this.waiting.shift();
+    if (next) {
+      next();
+      return;
+    }
     this.active--;
-    this.waiting.shift()?.();
   }
 
   /**
@@ -354,6 +368,15 @@ export class ArtifactService {
           maxDepth: this.limits.maxDepth,
           signal,
         });
+        // An archive that stopped at the entry or depth cap is not the snapshot
+        // that was asked for, and reporting it as preserved would let a caller
+        // conclude that everything was salvaged.
+        if (transfer.truncated) {
+          await transfer.cleanup().catch(() => {});
+          throw new Error(
+            "Snapshot is incomplete: it reached the entry or depth limit",
+          );
+        }
         return this.ingest(record, existing, transfer, signal, rebegin);
       },
       options,
@@ -377,7 +400,7 @@ export class ArtifactService {
             signal,
           });
           const records: ArtifactRecord[] = [];
-          for (const item of captured) {
+          for (const [index, item] of captured.entries()) {
             const existing = this.repository.find({
               worker_id: worker.worker_id,
               run_id: runId,
@@ -392,15 +415,22 @@ export class ArtifactService {
               kind: "diagnostic",
             });
             started.push(record);
-            records.push(
-              await this.ingest(
-                record,
-                existing,
-                item.transfer,
-                signal,
-                rebegin,
-              ),
-            );
+            try {
+              records.push(
+                await this.ingest(
+                  record,
+                  existing,
+                  item.transfer,
+                  signal,
+                  rebegin,
+                ),
+              );
+            } catch (error) {
+              // The remaining captures still hold open streams and private
+              // staged copies; they are released here, not left behind.
+              await cancelTransfers(captured.slice(index + 1));
+              throw error;
+            }
           }
           return records;
         },
@@ -422,10 +452,17 @@ export class ArtifactService {
     options: PreserveInput = {},
   ): Promise<ArtifactRecord[]> {
     const directory = validateRelativePath(path);
-    const listing = await this.listWorkerFiles(workerId, directory, {
+    const listing = await this.listing(workerId, directory, {
       limit: this.limits.maxEntries,
       ...(options.signal ? { signal: options.signal } : {}),
     });
+    // A directory that hit the entry cap is provably only partly collected.
+    // Returning the files that fitted would report completeness that does not
+    // exist, so the collection fails and the caller keeps the source.
+    if (listing.truncated)
+      throw new Error(
+        "Artifact collection is incomplete: the directory reached the entry limit",
+      );
     const records: ArtifactRecord[] = [];
     for (const entry of listing.entries) {
       const child = `${directory}/${entry.name}`;
@@ -477,22 +514,31 @@ export class ArtifactService {
     );
   }
 
-  /** Bounded, credential-free listing of live guest files. */
-  async listWorkerFiles(
+  /** The transport's own bounded listing, before any entry is filtered out. */
+  private async listing(
     workerId: string,
-    path = "",
+    path: string,
     options: { offset?: number; limit?: number; signal?: AbortSignal } = {},
   ): Promise<ArtifactListing> {
     const worker = this.guest(workerId);
     const transport = this.transport();
     const relative = path === "" ? "" : validateRelativePath(path);
-    const listing = await transport.list(worker.vm_id!, this.root, relative, {
+    return transport.list(worker.vm_id!, this.root, relative, {
       offset: options.offset ?? 0,
       limit: Math.min(options.limit ?? 100, this.limits.maxEntries),
       maxEntries: this.limits.maxEntries,
       maxDepth: this.limits.maxDepth,
       ...(options.signal ? { signal: options.signal } : {}),
     });
+  }
+
+  /** Bounded, credential-free listing of live guest files. */
+  async listWorkerFiles(
+    workerId: string,
+    path = "",
+    options: { offset?: number; limit?: number; signal?: AbortSignal } = {},
+  ): Promise<ArtifactListing> {
+    const listing = await this.listing(workerId, path, options);
     return {
       entries: listing.entries.filter((entry) => listable(entry)),
       next_offset: listing.next_offset,
@@ -551,10 +597,10 @@ export class ArtifactService {
     const record = this.repository.get(artifactId);
     if (record.state !== "preserved" || !record.storage_key)
       throw new Error("Artifact has no stored bytes");
-    const pad = Math.max(
-      4096,
-      ...this.secrets().map((secret) => secret.length),
-    );
+    // The overlap comes from the very set this redactor screens, measured in
+    // bytes and across encoded variants, so a secret split across the requested
+    // window is still caught however long or however multi-byte it is.
+    const pad = screeningWindow(this.redactor.secrets());
     const start = Math.max(0, offset - pad);
     const window = await this.storage.read(
       record.storage_key,
@@ -566,14 +612,6 @@ export class ArtifactService {
         "Artifact contains credentials; remove them inside the worker before retrieval",
       );
     return window.slice(offset - start, offset - start + length);
-  }
-
-  private secrets(): string[] {
-    return [
-      this.config.FREESTYLE_API_TOKEN,
-      this.config.SWARMFORGE_MODEL_API_KEY,
-      this.config.SWARMFORGE_API_TOKEN ?? "",
-    ].filter((secret) => secret.length > 0);
   }
 
   /**

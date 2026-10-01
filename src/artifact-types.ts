@@ -66,6 +66,12 @@ export interface ArtifactDiagnostic {
   /** Logical name of the capture, for example `logs/opencode-journal.txt`. */
   path: string;
   transfer: ArtifactTransfer;
+  /**
+   * What the capture itself recorded about its sources, such as a Git
+   * directory that was absent. The same facts are also written inside the
+   * captured bytes, so they survive with the artifact.
+   */
+  notes?: string[];
 }
 
 /**
@@ -221,4 +227,56 @@ export function safeFilename(name: unknown, fallback = "artifact.bin"): string {
 
 export function isSha256(value: unknown): value is string {
   return typeof value === "string" && /^[0-9a-f]{64}$/.test(value);
+}
+
+/** Every spelling of one secret a redactor looks for. */
+export function secretVariants(secret: string): string[] {
+  if (!secret) return [];
+  return [
+    ...new Set([
+      secret,
+      encodeURIComponent(secret),
+      Buffer.from(secret).toString("base64"),
+    ]),
+  ];
+}
+
+/**
+ * The overlap a screened read must inspect around the bytes it returns.
+ *
+ * Widths are byte lengths, because the stored bytes are bytes: a multi-byte
+ * secret is wider than its character count, and an encoded variant is wider
+ * than the secret itself. Bounded, because a read must stay bounded; a secret
+ * too wide to screen inside that bound is refused rather than under-screened.
+ */
+export const screeningOverlapLimit = 65536;
+
+export function screeningWindow(secrets: Iterable<string>): number {
+  let widest = 0;
+  for (const secret of secrets)
+    for (const variant of secretVariants(secret))
+      widest = Math.max(widest, Buffer.byteLength(variant));
+  if (widest > screeningOverlapLimit)
+    throw new Error(
+      "Artifact read refused: a configured secret is wider than the bounded screening window",
+    );
+  return Math.max(4096, widest);
+}
+
+/**
+ * Releases transfers nobody will read: the stream first, then the private
+ * staging copy. Used when a group of captures is abandoned part way through.
+ */
+export async function cancelTransfers(
+  transfers: { transfer: ArtifactTransfer }[],
+): Promise<void> {
+  for (const item of transfers) {
+    try {
+      await item.transfer.stream.cancel();
+    } catch {
+      // A stream that cannot be cancelled is already gone; the staging copy
+      // still has to go.
+    }
+    await item.transfer.cleanup().catch(() => {});
+  }
 }

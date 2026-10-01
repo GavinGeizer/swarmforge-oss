@@ -1,12 +1,67 @@
-import { validateRelativePath } from "./artifact-types";
-import type { ArtifactService } from "./artifacts";
+import { createHash } from "node:crypto";
+import {
+  type ArtifactTransfer,
+  isSha256,
+  screeningWindow,
+  validateRelativePath,
+} from "./artifact-types";
+import { ArtifactService } from "./artifacts";
 import type { Coordinator } from "./coordinator";
 import { redactorFor } from "./security";
 
-// One service per coordinator. The lifecycle layer exposes `coordinator.artifacts`;
-// until it does, the first file read builds the same service lazily rather than
-// falling back to an unsafe stat/read capture.
+// One service per coordinator, so two live reads cannot each build their own
+// storage handle or their own concurrency budget. `coordinator.artifacts` wins
+// as soon as the lifecycle layer exposes it; until then this builds the same
+// service rather than falling back to an unsafe stat/read capture.
 const services = new WeakMap<Coordinator, ArtifactService>();
+
+/**
+ * Consumes one staged transfer under a hard byte bound and checks it against the
+ * size and hash the capture reported. A stream that overruns the bound, ends
+ * early or does not hash to what was captured is cancelled and refused, so a
+ * damaged transfer can never be presented as the worker's file.
+ */
+export async function readTransfer(
+  transfer: ArtifactTransfer,
+  maxBytes: number,
+): Promise<Uint8Array> {
+  if (!Number.isSafeInteger(transfer.size) || transfer.size < 0)
+    throw new Error("Artifact transfer reported an invalid size");
+  if (!isSha256(transfer.sha256))
+    throw new Error("Artifact transfer reported an invalid hash");
+  if (transfer.size > maxBytes)
+    throw new Error("Artifact transfer is larger than the requested window");
+  const reader = transfer.stream.getReader();
+  const hash = createHash("sha256");
+  const chunks: Uint8Array[] = [];
+  let received = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value?.length) continue;
+      received += value.byteLength;
+      if (received > maxBytes)
+        throw new Error("Artifact transfer exceeded its bound");
+      hash.update(value);
+      chunks.push(value);
+    }
+  } catch (error) {
+    await reader.cancel().catch(() => {});
+    throw error;
+  }
+  if (received !== transfer.size)
+    throw new Error("Artifact transfer was truncated");
+  if (hash.digest("hex") !== transfer.sha256)
+    throw new Error("Artifact transfer failed its integrity check");
+  const bytes = new Uint8Array(received);
+  let at = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, at);
+    at += chunk.byteLength;
+  }
+  return bytes;
+}
 
 export class WorkerFiles {
   constructor(readonly c: Coordinator) {}
@@ -16,13 +71,11 @@ export class WorkerFiles {
     if (exposed) return exposed;
     let service = services.get(this.c);
     if (!service) {
-      // Imported lazily to keep this module free of a load-time cycle.
-      const { ArtifactService: Service } = require("./artifacts") as {
-        ArtifactService: new (
-          ...args: ConstructorParameters<typeof ArtifactService>
-        ) => ArtifactService;
-      };
-      service = new Service(this.c.config, this.c.store, this.c.provider);
+      service = new ArtifactService(
+        this.c.config,
+        this.c.store,
+        this.c.provider,
+      );
       services.set(this.c, service);
     }
     return service;
@@ -109,30 +162,30 @@ export class WorkerFiles {
     if (redactorFor(this.c).text(path) !== path)
       throw new Error("Artifact path contains credentials");
     await this.entry(id, path);
-    // Inspect an overlap so credentials split across chunk boundaries still block retrieval.
-    const pad = Math.max(
-      4096,
-      this.c.config.SWARMFORGE_MODEL_API_KEY.length,
-      this.c.config.FREESTYLE_API_TOKEN.length,
-    );
+    // The overlap comes from the same redactor that screens the bytes, measured
+    // in bytes across every encoded variant, so a credential split across the
+    // window is still caught however long or multi-byte it is.
+    const redactor = redactorFor(this.c);
+    const pad = screeningWindow(redactor.secrets());
     const start = Math.max(0, offset - pad);
     const window = length + 2 * pad;
     const transfer = await this.service().openLive(id, this.relative(path), {
       offset: start,
       length: window,
     });
+    let bytes: Uint8Array;
     try {
-      const bytes = new Uint8Array(
-        await new Response(transfer.stream).arrayBuffer(),
-      );
-      if (redactorFor(this.c).contains(bytes))
+      // Bounded and verified against what the capture reported: a short,
+      // oversized or corrupt staging transfer is refused, not returned.
+      bytes = await readTransfer(transfer, window);
+      if (redactor.contains(bytes))
         throw new Error(
           "Artifact contains credentials; remove them inside the worker before retrieval",
         );
-      return bytes.slice(offset - start, offset - start + length);
     } finally {
       await transfer.cleanup();
     }
+    return bytes.slice(offset - start, offset - start + length);
   }
   async logs(id: string, after = 0, limit = 50) {
     const w = this.c.store.get(id);

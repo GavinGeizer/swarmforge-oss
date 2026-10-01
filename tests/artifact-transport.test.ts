@@ -5,6 +5,8 @@ import {
   existsSync,
   mkdirSync,
   readdirSync,
+  rmSync,
+  statSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -524,4 +526,128 @@ test("no artifact or diagnostic byte ever appears in the helper response", async
   expect(responses.length).toBeGreaterThan(0);
   expect(responses).not.toContain("CANARY-BYTES-MUST-NOT-LEAK");
   expect(responses.length).toBeLessThan(4096);
+});
+
+test("diagnostics include a bounded git diff of staged and unstaged work", async () => {
+  const repo = join(ws.root, "repo");
+  mkdirSync(repo, { recursive: true });
+  Bun.spawnSync(["git", "init", "-q", repo]);
+  writeFileSync(join(repo, "tracked.txt"), "one\n");
+  Bun.spawnSync(["git", "-C", repo, "add", "tracked.txt"]);
+  Bun.spawnSync([
+    "git",
+    "-C",
+    repo,
+    "-c",
+    "user.email=a@b",
+    "-c",
+    "user.name=c",
+    "commit",
+    "-qm",
+    "first",
+  ]);
+  writeFileSync(join(repo, "tracked.txt"), "one\ntwo unstaged\n");
+  writeFileSync(join(repo, "staged.txt"), "new staged file\n");
+  Bun.spawnSync(["git", "-C", repo, "add", "staged.txt"]);
+  const results = await ws.transport.diagnostics(ws.vmId, ws.root, {
+    maxBytes: 256 * 1024,
+  });
+  const git = results.find((item) => item.path.includes("git"))!;
+  const bytes = Buffer.from(await collect(git.transfer.stream));
+  expect(bytes.toString()).toContain("+two unstaged");
+  expect(bytes.toString()).toContain("+new staged file");
+  expect(bytes.toString()).toContain("diff --git");
+  expect(git.transfer.size).toBe(bytes.length);
+  await git.transfer.cleanup();
+  for (const item of results) await item.transfer.cleanup();
+});
+
+test("a missing or symlinked git directory is reported, never followed", async () => {
+  const missing = await ws.transport.diagnostics(ws.vmId, ws.root, {
+    maxBytes: 64 * 1024,
+  });
+  const git = missing.find((item) => item.path.includes("git"))!;
+  const report = Buffer.from(await collect(git.transfer.stream)).toString();
+  // The absence itself is preserved as evidence rather than silently empty.
+  expect(report).toMatch(/git/i);
+  expect(report).toMatch(/missing|absent|not found|no \.git/i);
+  await git.transfer.cleanup();
+  for (const item of missing) await item.transfer.cleanup();
+
+  const outside = await localWorkspace();
+  try {
+    writeFileSync("/tmp/swarmforge-outside-secret", "OUTSIDE-GIT-SECRET");
+    Bun.spawnSync(["mkdir", "-p", "-m", "700", "/tmp/swarmforge-outside-repo"]);
+    Bun.spawnSync(["git", "init", "-q", "/tmp/swarmforge-outside-repo"]);
+    symlinkSync("/tmp/swarmforge-outside-repo", join(outside.root, "repo"));
+    const results = await outside.transport.diagnostics(
+      outside.vmId,
+      outside.root,
+      {
+        maxBytes: 64 * 1024,
+      },
+    );
+    const report2 = Buffer.from(
+      await collect(
+        results.find((item) => item.path.includes("git"))!.transfer.stream,
+      ),
+    ).toString();
+    expect(report2).not.toContain("OUTSIDE-GIT-SECRET");
+    expect(report2).toMatch(
+      /missing|absent|not found|not a directory|symlink/i,
+    );
+    for (const item of results) await item.transfer.cleanup();
+  } finally {
+    await outside.cleanup();
+  }
+});
+
+test("each diagnostic gets its own staging directory", async () => {
+  const staged = new Set<string>();
+  const original = ws.host.exec.bind(ws.host);
+  ws.host.exec = async (vm, command, options) => {
+    const result = await original(vm, command, options);
+    const made = /mkdir -m 700 -- '(.*)'/.exec(command);
+    if (made) staged.add(made[1]!);
+    return result;
+  };
+  const results = await ws.transport.diagnostics(ws.vmId, ws.root, {
+    maxBytes: 64 * 1024,
+  });
+  expect(results).toHaveLength(2);
+  const directories = results.map((item) =>
+    item.path === results[0]!.path ? staged.size : staged.size,
+  );
+  expect(staged.size).toBeGreaterThanOrEqual(2);
+  expect(directories).toHaveLength(2);
+  for (const item of results) await item.transfer.cleanup();
+});
+
+test("a staged file removed before it is read fails, as a guest would", async () => {
+  writeFileSync(join(ws.root, "staged.txt"), "bytes");
+  const transfer = await ws.transport.open(ws.vmId, ws.root, "staged.txt", {
+    maxBytes: 1024,
+  });
+  // Nothing has been read yet, so deleting the staged copy must break it.
+  rmSync(ws.staging, { recursive: true, force: true });
+  await expect(collect(transfer.stream)).rejects.toThrow();
+  await transfer.cleanup();
+});
+
+test("installing the helper never loosens the guest's own directory", async () => {
+  writeFileSync(join(ws.root, "x.txt"), "x");
+  await ws.transport.open(ws.vmId, ws.root, "x.txt", { maxBytes: 1024 });
+  const helperDir = ws.host.helperPath.slice(
+    0,
+    ws.host.helperPath.lastIndexOf("/"),
+  );
+  // The guest directory is root-owned and private; installing a helper must not
+  // make it group- or world-accessible.
+  expect(statSync(helperDir).mode & 0o077).toBe(0);
+  expect(statSync(ws.host.helperPath).mode & 0o077).toBe(0);
+  expect(statSync(ws.staging).mode & 0o077).toBe(0);
+  expect(
+    ws.host.commands.some((command) => command.includes("chmod 755")),
+  ).toBe(false);
+  expect(readdirSync(ws.staging)).toHaveLength(1);
 });

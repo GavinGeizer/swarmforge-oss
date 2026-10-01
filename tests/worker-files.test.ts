@@ -1,8 +1,27 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { screeningWindow } from "../src/artifact-types";
 import { WorkerFiles } from "../src/files";
+import { redactorFor } from "../src/security";
 import { type LocalHarness, localHarness } from "./local-artifact-provider";
+
+/** The window a read would get from character counts and a fixed baseline. */
+const baselineWindow = 4096;
+
+/**
+ * A read offset that exact-substring screening only catches when the overlap is
+ * sized from byte lengths across encoded variants. Placing the read between the
+ * baseline window and the correct byte window means an under-sized window
+ * starts after the secret, so the secret would leak.
+ */
+function discriminatingOffset(pad: number): number {
+  if (pad <= baselineWindow) throw new Error("window is not discriminating");
+  const offset = 1000 + Math.floor((baselineWindow + pad) / 2);
+  expect(offset - pad).toBeLessThanOrEqual(1000);
+  expect(offset - baselineWindow).toBeGreaterThan(1000);
+  return offset;
+}
 
 let h: LocalHarness;
 let files: WorkerFiles;
@@ -163,4 +182,101 @@ test("log inspection is unchanged and still needs no guest command", async () =>
   expect(logs.events.length).toBeGreaterThan(0);
   expect(logs.opencode).toBe("local journal line\n");
   expect(execCalls).toBeGreaterThanOrEqual(0);
+});
+
+test("live reads screen long, encoded and per-worker secrets in byte terms", async () => {
+  const longApiToken = `k${"π".repeat(5000)}`;
+  const harness = await localHarness({
+    SWARMFORGE_API_TOKEN: longApiToken,
+    SWARMFORGE_MODEL_API_KEY: "model-secret",
+  });
+  try {
+    const created = harness.spawn();
+    await harness.provider.createWorker(created);
+    // A long per-worker server password is part of the same secret set.
+    const password = `pw${"日".repeat(3000)}`;
+    harness.store.patch(created.worker_id, { server_password: password });
+    const live = new WorkerFiles(harness.coordinator);
+    const directory = join(harness.workspace.root, ".swarmforge", "artifacts");
+    mkdirSync(directory, { recursive: true, mode: 0o700 });
+    const cases = [
+      { name: "api-raw.txt", secret: longApiToken },
+      { name: "pw-raw.txt", secret: password },
+      { name: "api-url.txt", secret: encodeURIComponent(longApiToken) },
+      {
+        name: "api-base64.txt",
+        secret: Buffer.from(longApiToken).toString("base64"),
+      },
+    ];
+    const pad = screeningWindow(redactorFor(harness.coordinator).secrets());
+    for (const item of cases) {
+      const bytes = Buffer.byteLength(item.secret);
+      // A read that only a correctly sized window can still cover.
+      const offset = discriminatingOffset(pad);
+      writeFileSync(
+        join(directory, item.name),
+        Buffer.concat([
+          Buffer.from("A".repeat(1000)),
+          Buffer.from(item.secret),
+          Buffer.from("B".repeat(bytes * 2)),
+        ]),
+      );
+      await expect(
+        live.readArtifact(created.worker_id, item.name, offset, 16),
+      ).rejects.toThrow(/credentials/i);
+      expect(harness.workspace.stagingEntries()).toEqual([]);
+    }
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+test("live reads refuse an unverified staging transfer and clean up", async () => {
+  write("live.txt", "x".repeat(4096));
+  const transport = h.workspace.transport;
+  const original = transport.open.bind(transport);
+  type Transfer = Awaited<ReturnType<typeof original>>;
+  // Each case damages one property of an otherwise real transfer, so the read
+  // has to notice rather than trust what it was handed.
+  const broken: Record<string, (real: Transfer) => Transfer> = {
+    corrupt: (real) => ({ ...real, sha256: "b".repeat(64) }),
+    oversized_size: (real) => ({ ...real, size: 5_000_000 }),
+    wrong_size: (real) => ({ ...real, size: real.size - 1 }),
+    oversized_stream: (real) => ({
+      ...real,
+      size: 65536,
+      stream: new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new Uint8Array(1024 * 1024).fill(2));
+          controller.close();
+        },
+        cancel: () => real.stream.cancel().then(() => {}),
+      }),
+    }),
+  };
+  for (const [name, damage] of Object.entries(broken)) {
+    let cleaned = 0;
+    transport.open = async (vmId, root, path, options) => {
+      const real = await original(vmId, root, path, options);
+      const replacement = damage(real);
+      return {
+        ...replacement,
+        cleanup: async () => {
+          cleaned++;
+          await replacement.cleanup();
+        },
+      };
+    };
+    await expect(
+      files.readArtifact(worker, "live.txt", 0, 1024),
+      name,
+    ).rejects.toThrow();
+    // The private staged copy goes away whichever way the read failed.
+    expect(cleaned, name).toBe(1);
+    expect(h.workspace.stagingEntries(), name).toEqual([]);
+  }
+  transport.open = original;
+  expect((await files.readArtifact(worker, "live.txt", 0, 1024)).length).toBe(
+    1024,
+  );
 });

@@ -8,6 +8,8 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
+import { screeningWindow } from "../src/artifact-types";
+import { redactorFor } from "../src/security";
 import { type LocalHarness, localHarness } from "./local-artifact-provider";
 
 const sha = (bytes: Uint8Array) =>
@@ -25,6 +27,23 @@ const collect = async (stream: ReadableStream<Uint8Array>) => {
   }
   return out;
 };
+
+/** The window a read would get from character counts and a fixed baseline. */
+const baselineWindow = 4096;
+
+/**
+ * A read offset that exact-substring screening only catches when the overlap is
+ * sized from byte lengths across encoded variants. Placing the read between the
+ * baseline window and the correct byte window means an under-sized window
+ * starts after the secret, so the secret would leak.
+ */
+function discriminatingOffset(pad: number): number {
+  if (pad <= baselineWindow) throw new Error("window is not discriminating");
+  const offset = 1000 + Math.floor((baselineWindow + pad) / 2);
+  expect(offset - pad).toBeLessThanOrEqual(1000);
+  expect(offset - baselineWindow).toBeGreaterThan(1000);
+  return offset;
+}
 
 let h: LocalHarness;
 let worker: string;
@@ -568,3 +587,276 @@ function storedFilesIn(dir: string): string[] {
   walk(dir);
   return out.filter((entry) => !entry.startsWith(".incoming"));
 }
+
+test("a queued transfer that aborts does not strand the queue", async () => {
+  const limited = await localHarness({
+    SWARMFORGE_ARTIFACT_CONCURRENCY: "1",
+  });
+  try {
+    const created = limited.spawn();
+    await limited.provider.createWorker(created);
+    mkdirSync(join(limited.workspace.root, "q"), { recursive: true });
+    for (const name of ["one.bin", "two.bin", "three.bin"])
+      writeFileSync(
+        join(limited.workspace.root, "q", name),
+        Buffer.alloc(4096, 1),
+      );
+    // Hold the only slot so the next two callers have to queue behind it.
+    let unblock: (() => void) | null = null;
+    const held = new Promise<void>((resolve) => {
+      unblock = resolve;
+    });
+    let started = 0;
+    let peak = 0;
+    const transport = limited.workspace.transport;
+    const original = transport.open.bind(transport);
+    transport.open = async (...args) => {
+      started++;
+      peak = Math.max(peak, started);
+      if (started === 1) await held;
+      started--;
+      return original(...args);
+    };
+    const first = limited.artifacts.preserve(created.worker_id, "q/one.bin");
+    for (let i = 0; i < 50 && started === 0; i++) await Bun.sleep(5);
+    expect(started).toBe(1);
+    const controller = new AbortController();
+    const stranded = limited.artifacts.preserve(
+      created.worker_id,
+      "q/two.bin",
+      {
+        signal: controller.signal,
+      },
+    );
+    await Bun.sleep(5);
+    controller.abort();
+    await expect(stranded).rejects.toThrow(/abort/i);
+    const third = limited.artifacts.preserve(created.worker_id, "q/three.bin");
+    unblock!();
+    await first;
+    // The aborted waiter must not consume the released slot and strand this one.
+    await third;
+    expect(peak).toBe(1);
+    expect(
+      limited.artifacts
+        .list({ worker_id: created.worker_id })
+        .artifacts.filter((r) => r.state === "preserved")
+        .map((r) => r.original_path)
+        .sort(),
+    ).toEqual(["q/one.bin", "q/three.bin"]);
+  } finally {
+    await limited.cleanup();
+  }
+});
+
+test("the configured limit holds under a burst that includes aborted waiters", async () => {
+  const limited = await localHarness({
+    SWARMFORGE_ARTIFACT_CONCURRENCY: "2",
+  });
+  try {
+    const created = limited.spawn();
+    await limited.provider.createWorker(created);
+    mkdirSync(join(limited.workspace.root, "burst"), { recursive: true });
+    for (let i = 0; i < 8; i++)
+      writeFileSync(
+        join(limited.workspace.root, "burst", `f${i}.bin`),
+        Buffer.alloc(8192, i),
+      );
+    let active = 0;
+    let peak = 0;
+    const transport = limited.workspace.transport;
+    const original = transport.open.bind(transport);
+    transport.open = async (...args) => {
+      active++;
+      peak = Math.max(peak, active);
+      try {
+        await Bun.sleep(5);
+        return await original(...args);
+      } finally {
+        active--;
+      }
+    };
+    const controllers = [new AbortController(), new AbortController()];
+    const jobs = [0, 1, 2, 3, 4, 5, 6, 7].map((i) =>
+      limited.artifacts.preserve(created.worker_id, `burst/f${i}.bin`, {
+        ...(i === 3 ? { signal: controllers[0]!.signal } : {}),
+        ...(i === 6 ? { signal: controllers[1]!.signal } : {}),
+      }),
+    );
+    await Bun.sleep(10);
+    controllers[0]!.abort();
+    controllers[1]!.abort();
+    const settled = await Promise.allSettled(jobs);
+    expect(peak).toBeLessThanOrEqual(2);
+    expect(settled.filter((r) => r.status === "rejected")).toHaveLength(2);
+    expect(
+      settled
+        .filter((r) => r.status === "fulfilled")
+        .map(
+          (r) => (r as PromiseFulfilledResult<{ state: string }>).value.state,
+        ),
+    ).toEqual(Array(6).fill("preserved"));
+  } finally {
+    await limited.cleanup();
+  }
+});
+
+test("screening covers long, encoded and per-worker secrets in byte terms", async () => {
+  const longApiToken = `t${"π".repeat(5000)}`;
+  const harness = await localHarness({
+    SWARMFORGE_API_TOKEN: longApiToken,
+    SWARMFORGE_MODEL_API_KEY: "model-secret",
+  });
+  try {
+    const created = harness.spawn();
+    await harness.provider.createWorker(created);
+    // A long per-worker server password is part of the same secret set.
+    const password = `pw${"日".repeat(3000)}`;
+    harness.store.patch(created.worker_id, { server_password: password });
+    const cases = [
+      { name: "api-raw", secret: longApiToken },
+      { name: "pw-raw", secret: password },
+      { name: "model-raw", secret: harness.config.SWARMFORGE_MODEL_API_KEY },
+      { name: "api-url", secret: encodeURIComponent(longApiToken) },
+      { name: "pw-base64", secret: Buffer.from(password).toString("base64") },
+    ];
+    const pad = screeningWindow(redactorFor(harness.coordinator).secrets());
+    for (const item of cases) {
+      const bytes = Buffer.byteLength(item.secret);
+      // A read that only a correctly sized window can still cover.
+      const offset = discriminatingOffset(pad);
+      expect(bytes).toBeGreaterThan(0);
+      writeFileSync(
+        join(harness.workspace.root, `${item.name}.txt`),
+        Buffer.concat([
+          Buffer.from("A".repeat(1000)),
+          Buffer.from(item.secret),
+          Buffer.from("B".repeat(bytes * 2)),
+        ]),
+      );
+      const record = await harness.artifacts.preserve(
+        created.worker_id,
+        `${item.name}.txt`,
+      );
+      await expect(
+        harness.artifacts.safeRead(record.artifact_id, offset, 16),
+      ).rejects.toThrow(/credentials/i);
+      // Raw private reads stay faithful.
+      expect(
+        (await harness.artifacts.read(record.artifact_id, 1000, bytes))
+          .byteLength,
+      ).toBe(bytes);
+    }
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+test("a truncated listing or snapshot fails instead of reporting completeness", async () => {
+  const limited = await localHarness({
+    SWARMFORGE_ARTIFACT_MAX_ENTRIES: "3",
+  });
+  try {
+    const created = limited.spawn();
+    await limited.provider.createWorker(created);
+    const directory = join(limited.workspace.root, "many");
+    mkdirSync(directory, { recursive: true });
+    for (let i = 0; i < 6; i++)
+      writeFileSync(join(directory, `f${i}.txt`), `body ${i}`);
+    // A directory with more entries than the cap is provably incomplete.
+    await expect(
+      limited.artifacts.collectDirectory(created.worker_id, "many"),
+    ).rejects.toThrow(/limit|incomplete/i);
+    const records = limited.artifacts.list({
+      worker_id: created.worker_id,
+    }).artifacts;
+    expect(records).toHaveLength(0);
+    // A snapshot that stopped at the entry or depth cap is not a faithful
+    // archive either, so it must not be stored as if it were one.
+    await expect(
+      limited.artifacts.snapshot(created.worker_id, { paths: ["many"] }),
+    ).rejects.toThrow(/limit|incomplete/i);
+    const after = limited.artifacts.list({
+      worker_id: created.worker_id,
+    }).artifacts;
+    expect(after.every((r) => r.state === "failed")).toBe(true);
+    expect(after.every((r) => r.storage_key === null)).toBe(true);
+    expect(storedFilesIn(limited.storageDir)).toEqual([]);
+    // With the cap raised the same collection succeeds.
+    const roomy = await localHarness({
+      SWARMFORGE_ARTIFACT_MAX_ENTRIES: "100",
+    });
+    try {
+      const okWorker = roomy.spawn();
+      await roomy.provider.createWorker(okWorker);
+      const roomyDirectory = join(roomy.workspace.root, "many");
+      mkdirSync(roomyDirectory, { recursive: true });
+      for (let i = 0; i < 6; i++)
+        writeFileSync(join(roomyDirectory, `f${i}.txt`), `body ${i}`);
+      const collected = await roomy.artifacts.collectDirectory(
+        okWorker.worker_id,
+        "many",
+      );
+      expect(collected).toHaveLength(6);
+      expect(collected.every((r) => r.state === "preserved")).toBe(true);
+    } finally {
+      await roomy.cleanup();
+    }
+  } finally {
+    await limited.cleanup();
+  }
+});
+
+test("a secret too wide to screen in bounded memory is refused, not under-screened", async () => {
+  // The URL-encoded form of this token is far wider than the bounded overlap.
+  const huge = `h${"π".repeat(30000)}`;
+  const harness = await localHarness({
+    SWARMFORGE_MODEL_API_KEY: huge,
+    SWARMFORGE_API_TOKEN: "small-token-value-1234567",
+  });
+  try {
+    const created = harness.spawn();
+    await harness.provider.createWorker(created);
+    writeFileSync(
+      join(harness.workspace.root, "wide.txt"),
+      Buffer.concat([Buffer.from("A".repeat(100)), Buffer.from(huge)]),
+    );
+    const record = await harness.artifacts.preserve(
+      created.worker_id,
+      "wide.txt",
+    );
+    await expect(
+      harness.artifacts.safeRead(record.artifact_id, 0, 16),
+    ).rejects.toThrow(/screening window/i);
+    // The refusal is about the screen, not about content: a clean range in the
+    // same artifact is refused too rather than returned unscreened.
+    expect(record.state).toBe("preserved");
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+test("a failed diagnostic releases every capture it opened", async () => {
+  const storage = h.artifacts.storage;
+  const original = storage.put.bind(storage);
+  let attempts = 0;
+  storage.put = async (input) => {
+    attempts++;
+    if (attempts === 1) throw new Error("storage unavailable");
+    return original(input);
+  };
+  try {
+    await expect(h.artifacts.diagnostics(worker, {})).rejects.toThrow(
+      /storage unavailable/,
+    );
+    // The second capture was still open when the first failed: its stream and
+    // its staged copy are both released rather than left behind.
+    expect(h.workspace.stagingEntries()).toEqual([]);
+    const records = h.artifacts.list({ worker_id: worker }).artifacts;
+    expect(records).toHaveLength(1);
+    expect(records[0]?.state).toBe("failed");
+    expect(records[0]?.original_path).toBe("logs/opencode-journal.txt");
+  } finally {
+    storage.put = original;
+  }
+});

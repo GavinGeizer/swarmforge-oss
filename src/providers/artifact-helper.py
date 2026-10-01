@@ -567,24 +567,24 @@ def op_snapshot(request):
         os.close(staging_fd)
 
 
-def run_bounded(argv, dst_fd, budget, digest, stats, root, deadline):
+def run_bounded(argv, dst_fd, budget, digest, stats, root, cwd, deadline):
     """Copy a command's stdout into the staged file, strictly inside `budget`."""
     if budget <= 0:
         stats["truncated"] = True
-        return
+        return 0
     try:
         proc = subprocess.Popen(
             argv,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
-            cwd=root,
+            cwd=cwd,
             env=CHILD_ENV,
             start_new_session=True,
         )
     except OSError:
         stats["failed"] += 1
-        return
+        return 0
     total = 0
     try:
         while True:
@@ -622,14 +622,60 @@ def run_bounded(argv, dst_fd, budget, digest, stats, root, deadline):
                 os.killpg(proc.pid, 9)
             except OSError:
                 proc.kill()
-        proc.wait()
-        if proc.returncode:
+        exit_code = proc.wait()
+        if exit_code:
             stats["failed"] += 1
     stats["bytes"] += total
+    return exit_code
 
 
 def _now():
     return time.monotonic()
+
+
+def source_cwd(root, relative):
+    """Resolve a source directory inside the permitted root, refusing symlinks.
+
+    The command must run somewhere the requester could not have redirected out
+    of the root: every component is opened descriptor-relatively with
+    O_NOFOLLOW, so a directory that is really a symlink to somewhere else is
+    reported instead of followed.
+    """
+    if not relative:
+        return root
+    parts = clean_relative(relative)
+    fd = open_dir_at(root, parts)
+    os.close(fd)
+    return "/".join([root.rstrip("/")] + parts)
+
+
+def source_git_dir(root, relative):
+    """True when the directory carries its own Git metadata inside the root."""
+    base = relative.split("/") if relative else []
+    parent = open_dir_at(root, base)
+    try:
+        try:
+            info = os.lstat(".git", dir_fd=parent)
+        except OSError:
+            return False
+        # A symlinked .git would point outside the permitted root.
+        return statmod.S_ISDIR(info.st_mode) or statmod.S_ISREG(info.st_mode)
+    finally:
+        os.close(parent)
+
+
+ANNOTATION = b"# swarmforge-capture "
+
+
+def annotate(dst_fd, digest, stats, label, text, budget):
+    """Record what happened to one source inside the captured bytes."""
+    if budget - stats["bytes"] < len(ANNOTATION) + len(text):
+        stats["truncated"] = True
+        return
+    line = ANNOTATION + text.encode("ascii", "replace") + b"\n"
+    write_all(dst_fd, line)
+    digest.update(line)
+    stats["bytes"] += len(line)
 
 
 def op_capture(request):
@@ -651,24 +697,94 @@ def op_capture(request):
                 raise HelperError("source argv is invalid")
             if len(argument) > 1024:
                 raise HelperError("source argv is invalid")
-        parsed.append(argv)
+        label = source.get("label")
+        if label is not None and (
+            not isinstance(label, str)
+            or not label
+            or len(label) > 64
+            or any(ord(ch) < 32 or ord(ch) == 127 for ch in label)
+        ):
+            raise HelperError("source label is invalid")
+        relative = source.get("cwd", "")
+        if not isinstance(relative, str):
+            raise HelperError("source cwd is invalid")
+        if relative:
+            clean_relative(relative)
+        parsed.append(
+            {
+                "argv": argv,
+                "label": label or "source",
+                "cwd": relative,
+                "git": bool(source.get("git")),
+            }
+        )
     name = field(request, "name")
     staging_fd = open_staging(field(request, "staging"))
     try:
         out_fd = staged_fd(staging_fd, name)
         digest = hashlib.sha256()
         stats = {"truncated": False, "timed_out": False, "failed": 0, "bytes": 0}
+        reported = []
         try:
             deadline = _now() + timeout / 1000.0
-            for argv in parsed:
-                run_bounded(
-                    argv,
+            for source in parsed:
+                label = source["label"]
+                try:
+                    cwd = source_cwd(root, source["cwd"])
+                except HelperError:
+                    # The directory is missing or is a symlink out of the root.
+                    annotate(
+                        out_fd,
+                        digest,
+                        stats,
+                        label,
+                        "%s skipped=directory-missing-or-outside-root" % label,
+                        max_bytes,
+                    )
+                    reported.append({"label": label, "skipped": "no-such-directory"})
+                    continue
+                if source["git"] and not source_git_dir(root, source["cwd"]):
+                    annotate(
+                        out_fd,
+                        digest,
+                        stats,
+                        label,
+                        "%s skipped=no-git-metadata-in-root" % label,
+                        max_bytes,
+                    )
+                    reported.append({"label": label, "skipped": "no-git-metadata"})
+                    continue
+                before = stats["bytes"]
+                exit_code = run_bounded(
+                    source["argv"],
                     out_fd,
                     max_bytes - stats["bytes"],
                     digest,
                     stats,
                     root,
+                    cwd,
                     deadline,
+                )
+                annotate(
+                    out_fd,
+                    digest,
+                    stats,
+                    label,
+                    "%s exit=%d bytes=%d truncated=%s"
+                    % (
+                        label,
+                        exit_code,
+                        stats["bytes"] - before,
+                        "yes" if stats["truncated"] else "no",
+                    ),
+                    max_bytes,
+                )
+                reported.append(
+                    {
+                        "label": label,
+                        "exit": exit_code,
+                        "bytes": stats["bytes"] - before,
+                    }
                 )
                 if stats["timed_out"]:
                     break
@@ -686,6 +802,7 @@ def op_capture(request):
             "truncated": stats["truncated"],
             "timed_out": stats["timed_out"],
             "sources_failed": stats["failed"],
+            "sources": reported,
         }
     finally:
         os.close(staging_fd)

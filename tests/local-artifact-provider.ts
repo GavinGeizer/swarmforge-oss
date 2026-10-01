@@ -1,9 +1,12 @@
 import {
-  createReadStream,
+  closeSync,
   existsSync,
+  constants as fsConstants,
   mkdirSync,
   mkdtempSync,
+  openSync,
   readdirSync,
+  readSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -90,10 +93,7 @@ export class LocalArtifactHost implements ArtifactHost {
     options: { signal?: AbortSignal },
   ) {
     if (options.signal?.aborted) throw new Error("Artifact transfer aborted");
-    // Raw bytes off disk, chunk by chunk, like the guest filesystem transport.
-    return createReadStream(path, {
-      highWaterMark: 64 * 1024,
-    }) as unknown as ReadableStream<Uint8Array>;
+    return lazyFileStream(path, options.signal);
   }
   async writeRaw(
     _vmId: string,
@@ -101,7 +101,7 @@ export class LocalArtifactHost implements ArtifactHost {
     bytes: Uint8Array,
     options: { mode: number },
   ) {
-    mkdirSync(dirname(path), { recursive: true, mode: 0o755 });
+    mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
     writeFileSync(path, bytes, { mode: options.mode });
   }
 }
@@ -119,6 +119,60 @@ export class LocalArtifactTransport extends HelperArtifactTransport {
       timeoutMs: 60000,
     });
   }
+}
+
+/**
+ * A staged file is opened when the first byte is asked for, not when the
+ * transport call returns. That is what the guest's HTTP filesystem transport
+ * does, and it is the only honest local model: a staged copy removed between
+ * the request and the read must fail the transfer instead of quietly serving
+ * whatever an already-open descriptor happens to hold.
+ */
+function lazyFileStream(
+  path: string,
+  signal?: AbortSignal,
+): ReadableStream<Uint8Array> {
+  const chunkSize = 64 * 1024;
+  let handle: number | null = null;
+  let stopped = false;
+  // highWaterMark 0 keeps every read on demand: nothing is touched until the
+  // consumer asks for a byte, exactly like a guest HTTP response body.
+  return new ReadableStream<Uint8Array>(
+    {
+      async pull(controller) {
+        if (stopped) return;
+        if (signal?.aborted) {
+          controller.error(new Error("Artifact transfer aborted"));
+          return;
+        }
+        try {
+          handle ??= openSync(
+            path,
+            fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW,
+          );
+          const buffer = Buffer.alloc(chunkSize);
+          const read = readSync(handle, buffer, 0, chunkSize, null);
+          if (read > 0)
+            controller.enqueue(new Uint8Array(buffer.buffer, 0, read));
+          else {
+            closeSync(handle);
+            handle = null;
+            controller.close();
+          }
+        } catch (error) {
+          controller.error(error);
+        }
+      },
+      cancel() {
+        stopped = true;
+        if (handle !== null) {
+          closeSync(handle);
+          handle = null;
+        }
+      },
+    },
+    { highWaterMark: 0 },
+  );
 }
 
 export interface LocalWorkspace {
