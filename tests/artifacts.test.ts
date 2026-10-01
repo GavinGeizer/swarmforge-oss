@@ -1201,3 +1201,51 @@ test("a refused live read surfaces the refusal class to the caller", async () =>
     text("clean"),
   );
 });
+
+test("a recorded error is screened before it is bounded", async () => {
+  const secret = "cred-that-must-never-be-recorded";
+  const harness = await localHarness({ SWARMFORGE_MODEL_API_KEY: secret });
+  try {
+    const created = harness.spawn();
+    await harness.provider.createWorker(created);
+    const transport = harness.workspace.transport;
+    const original = transport.open.bind(transport);
+    const refuse = async (message: string, path: string) => {
+      transport.open = async () => {
+        throw new Error(message);
+      };
+      try {
+        await expect(
+          harness.artifacts.preserve(created.worker_id, path),
+        ).rejects.toThrow();
+      } finally {
+        transport.open = original;
+      }
+    };
+    // A credential inside the part of the message that survives the cut is
+    // replaced, not merely dropped by the cut.
+    await refuse(
+      `capture refused for token=${secret}`,
+      ".swarmforge/early.txt",
+    );
+    const early = harness.artifacts
+      .list({ worker_id: created.worker_id })
+      .artifacts.at(-1)!;
+    expect(early.state).toBe("failed");
+    expect(early.error).not.toContain(secret);
+    expect(early.error).toContain("[REDACTED]");
+    expect(early.error!.length).toBeLessThanOrEqual(1000);
+    // One buried past the cut is gone as well, because screening happens first.
+    await refuse(
+      `${"x".repeat(4000)} token=${secret} ${"y".repeat(4000)}`,
+      ".swarmforge/deep.txt",
+    );
+    const deep = harness.artifacts
+      .list({ worker_id: created.worker_id })
+      .artifacts.at(-1)!;
+    expect(deep.error).not.toContain(secret);
+    expect(deep.error!.length).toBeLessThanOrEqual(1000);
+  } finally {
+    await harness.cleanup();
+  }
+});

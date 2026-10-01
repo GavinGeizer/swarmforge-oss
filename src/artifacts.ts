@@ -460,7 +460,7 @@ export class ArtifactService {
       // Any diagnostic still marked in flight failed with the collection.
       for (const record of started)
         if (this.repository.get(record.artifact_id).state === "preserving")
-          this.repository.failed(record, message(error));
+          this.fail(record, message(error));
       throw error instanceof Error ? error : new Error(message(error));
     }
   }
@@ -848,9 +848,18 @@ export class ArtifactService {
     }
   }
 
+  /**
+   * Records a failure, with the error text screened before it is stored.
+   *
+   * Order matters: a record's error is a durable, client-visible string, so it is
+   * redacted first and bounded second. Bounding first would keep the first
+   * thousand characters of a message that happens to carry a credential past the
+   * cut, and the artifact bytes themselves are never touched by this.
+   */
   private fail(record: ArtifactRecord, error: string): Error {
-    this.repository.failed(record, error);
-    return new Error(error);
+    const screened = this.redactor.text(String(error)).slice(0, 1000);
+    this.repository.failed(record, screened);
+    return new Error(screened);
   }
 }
 
