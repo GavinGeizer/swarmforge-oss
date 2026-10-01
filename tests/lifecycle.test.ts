@@ -20,6 +20,49 @@ test("creation retries retain idempotency when the queue is full", () => {
   h.store.close();
 });
 
+test("creation idempotency survives the artifact declaration defaults", () => {
+  const h = harness();
+  const first = h.coordinator.spawn({ ...task, request_id: "same" });
+  expect(first.artifacts).toEqual([]);
+  expect(first.snapshot_on_failure).toBe(false);
+  // A retry that spells out the defaults, or reorders its keys, is still the same request.
+  const again = h.coordinator.spawn({
+    ...task,
+    snapshot_on_failure: false,
+    request_id: "same",
+    artifacts: [],
+  });
+  expect(again.worker_id).toBe(first.worker_id);
+  const direct = h.store.create({
+    team_id: "team",
+    task_id: "raw",
+    role: "coder",
+    prompt: "work",
+    timeout_seconds: 60,
+    request_id: "raw",
+  });
+  expect(
+    h.store.create({
+      request_id: "raw",
+      timeout_seconds: 60,
+      prompt: "work",
+      role: "coder",
+      task_id: "raw",
+      team_id: "team",
+      artifacts: [],
+      snapshot_on_failure: false,
+    }).worker_id,
+  ).toBe(direct.worker_id);
+  expect(() =>
+    h.coordinator.spawn({
+      ...task,
+      request_id: "same",
+      artifacts: [{ path: "out.txt" }],
+    }),
+  ).toThrow("request_id already used with different arguments");
+  h.store.close();
+});
+
 test("spawn returns queued before provisioning and preserves session for follow-ups", async () => {
   const h = harness();
   const w = h.coordinator.spawn(task);

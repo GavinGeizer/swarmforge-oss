@@ -1,5 +1,10 @@
 import { z } from "zod";
-import type { WorkerArtifactTransport } from "./artifact-types";
+import {
+  hasControlCharacter,
+  maxArtifactPathBytes,
+  maxArtifactPathComponents,
+  type WorkerArtifactTransport,
+} from "./artifact-types";
 export const states = [
   "queued",
   "provisioning",
@@ -57,31 +62,33 @@ export interface ArtifactDeclaration {
   required: boolean;
   directory: boolean;
 }
-export const artifactDepth = 32;
-// Workspace-relative artifact paths only: no traversal, no absolute paths, no backslashes, no
-// control characters and no wildcards other than the trailing "/**" directory marker.
+export const artifactDepth = maxArtifactPathComponents;
+// Workspace-relative artifact paths only, checked with the same rules the data plane applies
+// when it opens a path: no traversal, no absolute paths, no backslashes, no C0, DEL or C1
+// control characters. The only wildcard accepted is the trailing "/**" directory marker.
 export function artifactPathProblem(raw: string): string | null {
-  if (Buffer.byteLength(raw) > 1024) return "Artifact path exceeds 1024 bytes";
+  if (Buffer.byteLength(raw) > maxArtifactPathBytes)
+    return `Artifact path exceeds ${maxArtifactPathBytes} bytes`;
   if (raw.startsWith("/")) return "Artifact path must be workspace-relative";
   if (raw.includes("\\")) return "Artifact path must not contain backslashes";
-  // biome-ignore lint/suspicious/noControlCharactersInRegex: control characters are the rejection
-  if (/[\0-\x1f\x7f]/.test(raw))
-    return "Artifact path must not contain control characters";
   const directory = raw.endsWith("/**");
   const path = directory ? raw.slice(0, -3) : raw;
   const parts = path.split("/");
   if (!path || parts.some((part) => !part || part === "." || part === ".."))
     return "Artifact path must not contain empty or relative components";
-  if (parts.length > artifactDepth)
-    return `Artifact path exceeds ${artifactDepth} components`;
-  const wildcard = raw.replace(/\/\*\*$/, "").match(/[*?[\]{}]/);
-  if (wildcard) return "Artifact path wildcards are not allowed";
+  if (parts.length > maxArtifactPathComponents)
+    return `Artifact path exceeds ${maxArtifactPathComponents} components`;
+  if (path.startsWith("~")) return "Artifact path must be workspace-relative";
+  if (hasControlCharacter(path))
+    return "Artifact path must not contain control characters";
+  if (parts.some((part) => /[*?[\]{}]/.test(part)))
+    return "Artifact path wildcards are not allowed";
   return null;
 }
 export const artifactPathSchema = z
   .string()
   .min(1)
-  .max(1024)
+  .max(maxArtifactPathBytes)
   .superRefine((value, ctx) => {
     const problem = artifactPathProblem(value);
     if (problem) ctx.addIssue({ code: "custom", message: problem });

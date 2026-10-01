@@ -13,6 +13,15 @@ import type {
   WorkerState,
 } from "./domain";
 
+// Object key order must not change a request fingerprint; array order still must.
+const canonicalKeys = (_key: string, value: unknown) =>
+  value && typeof value === "object" && !Array.isArray(value)
+    ? Object.fromEntries(
+        Object.entries(value as Record<string, unknown>).sort(([a], [b]) =>
+          a < b ? -1 : a > b ? 1 : 0,
+        ),
+      )
+    : value;
 const emptyFinalization = (): WorkerFinalization => ({
   state: "pending",
   run_id: null,
@@ -80,8 +89,20 @@ export class Store {
   }
   create(input: SpawnRequest & { timeout_seconds: number }): Worker {
     return this.db.transaction(() => {
+      // Fingerprinted over the normalized request with canonical key order, so a retry that
+      // spells out the artifact defaults (or reorders keys) still matches the original.
+      const request = {
+        team_id: input.team_id,
+        task_id: input.task_id,
+        role: input.role,
+        prompt: input.prompt,
+        timeout_seconds: input.timeout_seconds,
+        request_id: input.request_id,
+        artifacts: input.artifacts ?? [],
+        snapshot_on_failure: input.snapshot_on_failure ?? false,
+      };
       const fingerprint = createHash("sha256")
-        .update(JSON.stringify(input))
+        .update(JSON.stringify(request, canonicalKeys))
         .digest("hex");
       if (input.request_id) {
         const old = this.db
@@ -96,7 +117,7 @@ export class Store {
       }
       const now = Date.now();
       const w: Worker = {
-        ...input,
+        ...request,
         worker_id: `w-${randomUUID()}`,
         request_fingerprint: fingerprint,
         state: "queued",
@@ -118,8 +139,6 @@ export class Store {
         error: null,
         intent: null,
         force_destroy: false,
-        artifacts: input.artifacts ?? [],
-        snapshot_on_failure: input.snapshot_on_failure ?? false,
       };
       this.db
         .query("INSERT OR IGNORE INTO teams VALUES(?,?)")
@@ -347,13 +366,19 @@ export class Store {
         return null;
       if (f.attempts >= maxAttempts) return null;
       const attempts = f.attempts + 1;
-      this.setFinalization(id, {
-        state: "collecting",
-        attempts,
-        started_at: f.started_at ?? Date.now(),
-        next_retry_at: null,
-        error: null,
-      });
+      // Announced on every attempt, including a restart re-entering an interrupted
+      // collecting row, so the durable event count always matches the persisted attempts.
+      this.setFinalization(
+        id,
+        {
+          state: "collecting",
+          attempts,
+          started_at: f.started_at ?? Date.now(),
+          next_retry_at: null,
+          error: null,
+        },
+        "finalization.collecting",
+      );
       return { run_id: f.run_id, attempts };
     })();
   }
@@ -404,6 +429,14 @@ export class Store {
       if (this.dispatch(id))
         this.transition(id, "ready", { completed_at: null });
     })();
+  }
+  // Persists a validated result against its own run without settling that run, so a Git
+  // handoff that fails or times out can never lose the worker's answer or its attribution.
+  recordResult(id: string, d: Dispatch, result: WorkerResult) {
+    const current = this.dispatches(id).find((x) => x.run_id === d.run_id);
+    if (!current) return null;
+    this.saveDispatch({ ...current, result });
+    return result;
   }
   result(id: string, run?: string) {
     return (

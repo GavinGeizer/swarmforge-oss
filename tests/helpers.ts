@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import type {
-  ArtifactListEntry,
-  ArtifactListResult,
+  ArtifactEntry,
+  ArtifactListing,
   ArtifactTransfer,
   WorkerArtifactTransport,
 } from "../src/artifact-types";
@@ -45,6 +45,8 @@ export class FakeProvider implements WorkerProvider {
   execCommands: string[] = [];
   transportFailure = "";
   transportMissing = new Set<string>();
+  // Paths whose reported digest does not describe the staged bytes.
+  transportCorrupt = new Set<string>();
   transportSlow = false;
   transportAborted = 0;
   // Resolves once a hanging transfer has actually started streaming.
@@ -56,14 +58,26 @@ export class FakeProvider implements WorkerProvider {
   transportDelayMs = 0;
   concurrent = 0;
   maxConcurrent = 0;
-  // Measures how many transport calls are in flight at once, so the shared bound is testable.
-  private async tracked<T>(operation: () => Promise<T>): Promise<T> {
+  // Distinct guests with a transfer in flight at the same moment.
+  activeGuests = new Set<string>();
+  maxActiveGuests = 0;
+  // Measures in-flight transport work, so the shared bounds are observable from a test.
+  private async tracked<T>(
+    guest: string,
+    operation: () => Promise<T>,
+  ): Promise<T> {
     this.concurrent++;
     this.maxConcurrent = Math.max(this.maxConcurrent, this.concurrent);
+    this.activeGuests.add(guest);
+    this.maxActiveGuests = Math.max(
+      this.maxActiveGuests,
+      this.activeGuests.size,
+    );
     try {
       if (this.transportDelayMs) await Bun.sleep(this.transportDelayMs);
       return await operation();
     } finally {
+      this.activeGuests.delete(guest);
       this.concurrent--;
     }
   }
@@ -76,6 +90,14 @@ export class FakeProvider implements WorkerProvider {
   }
   private fail() {
     if (this.transportFailure) throw new Error(this.transportFailure);
+  }
+  // A trusted guest helper resolves workspace paths descriptor-relatively and
+  // refuses a symlinked component, so the fake guest refuses one too instead of
+  // reporting a stat-then-read sequence the real capture never performs.
+  private async noSymlink(id: string, path: string) {
+    const seen = await this.stat(id, path).catch(() => null);
+    if (seen?.isSymlink)
+      throw new Error(`Symlink artifact paths are not allowed: ${path}`);
   }
   private absent(id: string, path: string) {
     const key = this.key(id, path);
@@ -91,6 +113,7 @@ export class FakeProvider implements WorkerProvider {
     return false;
   }
   private transfer(
+    id: string,
     path: string,
     bytes: Uint8Array,
     options: { maxBytes?: number; signal?: AbortSignal } = {},
@@ -101,7 +124,10 @@ export class FakeProvider implements WorkerProvider {
     const slow = this.transportSlow;
     return {
       size: bytes.byteLength,
-      sha256: sha256(bytes),
+      // A corrupted staging digest is what a truncated or tampered capture looks like.
+      sha256: this.transportCorrupt.has(this.key(id, path))
+        ? "0".repeat(64)
+        : sha256(bytes),
       filename: path.split("/").pop() ?? "artifact",
       stream: new ReadableStream<Uint8Array>({
         start: (controller) => {
@@ -126,7 +152,7 @@ export class FakeProvider implements WorkerProvider {
   }
   private children(id: string, root: string, path: string) {
     const target = this.join(root, path);
-    const names = new Map<string, ArtifactListEntry["kind"]>();
+    const names = new Map<string, ArtifactEntry["kind"]>();
     for (const key of this.files.keys())
       if (key.startsWith(`${this.key(id, target)}/`)) {
         const tail = key.slice(`${this.key(id, target)}/`.length);
@@ -147,10 +173,11 @@ export class FakeProvider implements WorkerProvider {
       root: string,
       path: string,
       options = {},
-    ): Promise<ArtifactListResult> =>
-      this.tracked(async () => {
+    ): Promise<ArtifactListing> =>
+      this.tracked(id, async () => {
         this.fail();
         const target = this.join(root, path);
+        await this.noSymlink(id, target);
         if (!this.directory(id, target)) {
           if (this.exists(id, target))
             throw new Error(`ENOTDIR: not a directory, stat '${target}'`);
@@ -162,7 +189,7 @@ export class FakeProvider implements WorkerProvider {
         const names = this.children(id, root, path);
         const start = options.offset ?? 0;
         const limit = options.limit ?? names.length;
-        const entries: ArtifactListEntry[] = [];
+        const entries: ArtifactEntry[] = [];
         for (const [name, kind] of names.slice(start, start + limit)) {
           const bytes = this.files.get(this.key(id, `${target}/${name}`));
           entries.push({
@@ -177,9 +204,10 @@ export class FakeProvider implements WorkerProvider {
         };
       }),
     open: async (id: string, root: string, path: string, options) =>
-      this.tracked(async () => {
+      this.tracked(id, async () => {
         this.fail();
         const target = this.join(root, path);
+        await this.noSymlink(id, target);
         if (!this.exists(id, target))
           throw new Error(
             `ENOENT: no such file or directory, open '${target}'`,
@@ -189,14 +217,24 @@ export class FakeProvider implements WorkerProvider {
             `EISDIR: illegal operation on a directory, open '${target}'`,
           );
         this.transportOpens.push(path);
+        // A windowed open stages only the requested bytes, exactly as the guest helper does.
+        const source = new TextEncoder().encode(
+          this.files.get(this.key(id, target)) ?? "",
+        );
+        const offset = options.offset ?? 0;
+        const window = options.length ?? source.byteLength;
         return this.transfer(
+          id,
           target,
-          new TextEncoder().encode(this.files.get(this.key(id, target)) ?? ""),
-          options,
+          source.slice(offset, offset + window),
+          {
+            ...options,
+            maxBytes: options.length === undefined ? options.maxBytes : window,
+          },
         );
       }),
     snapshot: async (id, root, options) =>
-      this.tracked(async () => {
+      this.tracked(id, async () => {
         this.fail();
         this.transportSnapshots++;
         const prefix = `${this.key(id, root)}/`;
@@ -220,6 +258,7 @@ export class FakeProvider implements WorkerProvider {
           );
         }
         return this.transfer(
+          id,
           `${root}/workspace.tar.gz`,
           new Uint8Array(
             Bun.gzipSync(Buffer.from(`${manifest.join("\n")}\n`, "utf8")),
@@ -228,7 +267,7 @@ export class FakeProvider implements WorkerProvider {
         );
       }),
     diagnostics: async (id, root, options) =>
-      this.tracked(async () => {
+      this.tracked(id, async () => {
         this.fail();
         this.transportDiagnostics++;
         const target = this.join(root, ".swarmforge/diagnostics");
@@ -237,6 +276,7 @@ export class FakeProvider implements WorkerProvider {
           {
             path: ".swarmforge/diagnostics",
             transfer: this.transfer(
+              id,
               target,
               new TextEncoder().encode(
                 this.files.get(this.key(id, target)) ?? "",
@@ -270,6 +310,17 @@ export class FakeProvider implements WorkerProvider {
   }
   async prepare(w: Worker) {
     if (this.failure) throw new Error("boot failure");
+    // The real guest bootstrap creates the standard swarmforge directories; the fake guest
+    // does the same so listings and collections see a prepared workspace.
+    if (w.vm_id)
+      for (const dir of [
+        ".swarmforge",
+        ".swarmforge/artifacts",
+        ".swarmforge/logs",
+      ])
+        this.directories.add(
+          `${w.vm_id}:${config.SWARMFORGE_WORKSPACE}/${dir}`,
+        );
     return `https://${w.vm_id}.example`;
   }
   async pushBranch(w: Worker) {

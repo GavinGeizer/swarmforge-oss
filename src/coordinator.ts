@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { ArtifactService } from "./artifacts";
 import type { Config } from "./config";
 import {
@@ -17,17 +18,15 @@ import {
   type WorkerProvider,
   type WorkerResult,
 } from "./domain";
-import {
-  boundedArtifacts,
-  ConcurrencyLimiter,
-  Finalizer,
-  sleep,
-} from "./finalization";
+import { FinalizationGate, Finalizer, sleep } from "./finalization";
 import { GitHandoffError } from "./git-handoff";
 import { inspectPersistence } from "./safety";
 import { excerptText, redactorFor } from "./security";
 import type { Store } from "./store";
+
+const resultPath = ".swarmforge/result.json";
 export class Coordinator {
+  private readonly resultLimit = 65536;
   private locks = new Map<string, Promise<void>>();
   private steps = new Map<string, number>();
   private tearingDown = new Map<string, number>();
@@ -35,10 +34,8 @@ export class Coordinator {
   private ticking = false;
   private stopped = false;
   private lastReconcile = Date.now();
-  private readonly limiter: ConcurrencyLimiter;
   private readonly finalizer: Finalizer;
-  // The data plane service, and the bounded facade every caller and API surface uses.
-  readonly artifactService: ArtifactService;
+  // The data plane service. It bounds its own transfers, so no second limit is layered here.
   readonly artifacts: ArtifactService;
   readonly inference = new Map<string, number>();
   readonly excerpts = new Map<string, ResponseExcerpt>();
@@ -48,16 +45,12 @@ export class Coordinator {
     readonly provider: WorkerProvider,
     readonly agent: CodingAgent,
   ) {
-    this.limiter = new ConcurrencyLimiter(
-      config.SWARMFORGE_ARTIFACT_CONCURRENCY,
-    );
-    this.artifactService = new ArtifactService(config, store, provider);
-    this.artifacts = boundedArtifacts(this.artifactService, this.limiter);
+    this.artifacts = new ArtifactService(config, store, provider);
     this.finalizer = new Finalizer(
       config,
       store,
-      this.artifactService,
-      this.limiter,
+      this.artifacts,
+      new FinalizationGate(config.SWARMFORGE_ARTIFACT_CONCURRENCY),
     );
   }
   async bounded<T>(
@@ -529,6 +522,9 @@ export class Coordinator {
             : "Provider or OpenCode operation failed; retrying within deadline",
       });
       if (error instanceof GitHandoffError) return;
+      // A control operation owns this step: its failure must never be answered with a
+      // completion or a result-file fallback for a turn the operator is cancelling or destroying.
+      if (w.intent) return;
       if (w.state === "running" || w.state === "waiting") {
         const d = this.store.dispatch(id);
         if (d) {
@@ -683,17 +679,16 @@ export class Coordinator {
       run_id: d.run_id,
     };
   }
+  // Recovers a run's result file from the guest through the data plane capture, never through
+  // a provider stat/read pair: the helper opens the path descriptor-relatively, the window is
+  // bounded, and the staged bytes are verified against the digest it reported.
   private async fallback(w: Worker, d: Dispatch) {
+    if (!w.vm_id || w.vm_missing) return null;
     try {
       const bytes = await this.bounded(
-        this.provider.readFile(
-          w.vm_id!,
-          `${this.config.SWARMFORGE_WORKSPACE}/.swarmforge/result.json`,
-          0,
-          65537,
-        ),
+        this.readResultFile(w.worker_id, this.resultLimit + 1),
       );
-      if (bytes.length > 65536) return null;
+      if (!bytes || bytes.byteLength > this.resultLimit) return null;
       const r = resultSchema.parse(JSON.parse(new TextDecoder().decode(bytes)));
       if (r.run_id !== d.run_id || (r.worker_id && r.worker_id !== w.worker_id))
         return null;
@@ -702,7 +697,44 @@ export class Coordinator {
       return null;
     }
   }
+  private async readResultFile(workerId: string, limit: number) {
+    const transfer = await this.artifacts.openLive(workerId, resultPath, {
+      offset: 0,
+      length: limit,
+    });
+    try {
+      const reader = transfer.stream.getReader();
+      const chunks: Uint8Array[] = [];
+      let total = 0;
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (!value) continue;
+        total += value.byteLength;
+        if (total > limit) return null;
+        chunks.push(value);
+      }
+      const bytes = new Uint8Array(total);
+      let at = 0;
+      for (const chunk of chunks) {
+        bytes.set(chunk, at);
+        at += chunk.byteLength;
+      }
+      // A truncated or corrupted capture is not a result.
+      if (createHash("sha256").update(bytes).digest("hex") !== transfer.sha256)
+        return null;
+      return bytes;
+    } finally {
+      await transfer.cleanup().catch(() => {});
+    }
+  }
   private async complete(w: Worker, d: Dispatch, r: WorkerResult) {
+    this.inference.delete(w.worker_id);
+    this.excerpts.delete(w.worker_id);
+    r = resultSchema.parse(redactorFor(this).value(r));
+    // Durable per run before the handoff can fail or time out: a worker that loses its branch
+    // push still keeps the answer it produced, attributed to the run that produced it.
+    this.store.recordResult(w.worker_id, d, r);
     if (this.config.SWARMFORGE_GIT_PUSH_MODE !== "none") {
       let pushed: Awaited<ReturnType<WorkerProvider["pushBranch"]>>;
       try {
@@ -714,10 +746,8 @@ export class Coordinator {
         throw new GitHandoffError("Git branch push or verification failed");
       }
       r = { ...r, git: { ...r.git, ...pushed, persisted: true, dirty: false } };
+      this.store.recordResult(w.worker_id, d, r);
     }
-    this.inference.delete(w.worker_id);
-    this.excerpts.delete(w.worker_id);
-    r = resultSchema.parse(redactorFor(this).value(r));
     this.store.finish(w.worker_id, d, r);
     // Canonical result is now durable in SQLite even if the best-effort mirror fails.
     try {
@@ -1023,10 +1053,19 @@ export class Coordinator {
               // A guest confirmed gone leaves nothing to inspect or preserve, so the
               // retention checks below could only strand the worker; destruction is a no-op.
               if (outcome === "stopped") {
+                // The handoff gate is about the run that is current, not an earlier run that
+                // happened to succeed: the newest dispatch must itself have completed with a
+                // verified handoff. A model-claimed "persisted" on an unfinished run never
+                // satisfies it.
+                const runs = this.store.dispatches(id);
+                const latest = runs.at(-1);
+                const verified =
+                  latest !== undefined &&
+                  latest.state === "completed" &&
+                  this.store.result(id, latest.run_id)?.git?.persisted === true;
                 if (
                   this.config.SWARMFORGE_GIT_PUSH_MODE !== "none" &&
-                  (this.store.dispatch(id) ||
-                    !this.store.result(id)?.git?.persisted)
+                  (this.store.dispatch(id) || !verified)
                 ) {
                   this.store.cancelDispatches(id);
                   this.store.transition(id, "recovery_required", {

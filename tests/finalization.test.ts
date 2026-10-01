@@ -98,7 +98,7 @@ test("completion preserves the default collection under the settled run id", asy
   expect(report.sha256).toBe(sha256("regression-body"));
   expect(report.size).toBe(Buffer.byteLength("regression-body"));
   expect(report.run_id).toBe(run);
-  expect(decode(h.coordinator.artifacts.read(report.artifact_id))).toBe(
+  expect(decode(await h.coordinator.artifacts.read(report.artifact_id))).toBe(
     "regression-body",
   );
   // Opt-in only: no workspace snapshot and no artifact bytes through exec output.
@@ -133,7 +133,9 @@ test("declared findings survive a malformed result with no model assistance", as
   );
   expect(finding?.run_id).toBe(run);
   expect(
-    JSON.parse(decode(h.coordinator.artifacts.read(finding!.artifact_id))),
+    JSON.parse(
+      decode(await h.coordinator.artifacts.read(finding!.artifact_id)),
+    ),
   ).toEqual({
     findings: ["regression"],
   });
@@ -158,8 +160,10 @@ test("a configured failure snapshots the workspace and an ordinary completion do
   const snapshot = records(h, worker.worker_id).find(
     (r) => r.kind === "snapshot",
   );
-  expect(snapshot?.original_path).toBe("workspace.tar.gz");
+  expect(snapshot?.state).toBe("preserved");
+  expect(snapshot?.filename).toContain("snapshot");
   expect(snapshot?.sha256).toBeTruthy();
+  expect(h.provider.transportSnapshots).toBe(1);
   h.store.close();
 
   const plain = harness(fast);
@@ -243,6 +247,112 @@ test("a workspace result salvages a turn whose OpenCode session is gone", async 
   h.store.close();
 });
 
+test("the result file is read through the capture, never a provider stat/read pair", async () => {
+  const h = harness(fast);
+  const { id, vm, run } = await started(h);
+  await h.provider.writeFile(
+    vm,
+    "/workspace/.swarmforge/result.json",
+    JSON.stringify({
+      worker_id: id,
+      run_id: run,
+      status: "completed",
+      summary: "salvaged from disk",
+    }),
+  );
+  // Any stat/read escape hatch would throw here: the capture is the only route to the bytes.
+  h.provider.readFile = async () => {
+    throw new Error("unsafe provider read");
+  };
+  h.provider.listFiles = async () => {
+    throw new Error("unsafe provider listing");
+  };
+  h.provider.stat = async () => {
+    throw new Error("unsafe provider stat");
+  };
+  h.agent.broken = true;
+  const settled = await finalized(h, id);
+  expect(settled.state).toBe("completed");
+  expect(h.store.result(id)?.summary).toBe("salvaged from disk");
+  expect(h.provider.transportOpens).toContain(".swarmforge/result.json");
+  h.store.close();
+});
+
+test("a corrupted or oversized result file is refused instead of completed", async () => {
+  const h = harness(fast);
+  const worker = h.coordinator.spawn(task);
+  await runToRunning(h, worker.worker_id);
+  const vm = h.store.get(worker.worker_id).vm_id!;
+  const run = h.store.dispatch(worker.worker_id)!.run_id;
+  await h.provider.writeFile(
+    vm,
+    "/workspace/.swarmforge/result.json",
+    JSON.stringify({
+      worker_id: worker.worker_id,
+      run_id: run,
+      status: "completed",
+      summary: "x",
+    }),
+  );
+  h.provider.transportCorrupt.add(`${vm}:/workspace/.swarmforge/result.json`);
+  h.agent.broken = true;
+  for (let i = 0; i < 4; i++) await h.coordinator.tick();
+  expect(h.store.get(worker.worker_id).state).not.toBe("completed");
+  expect(h.store.result(worker.worker_id)).toBeNull();
+
+  // A result file larger than the bounded window is never partially accepted either.
+  const other = harness(fast);
+  const big = await started(other, "big");
+  await other.provider.writeFile(
+    big.vm,
+    "/workspace/.swarmforge/result.json",
+    JSON.stringify({
+      worker_id: big.id,
+      run_id: big.run,
+      status: "completed",
+      summary: "y".repeat(70000),
+    }),
+  );
+  other.agent.broken = true;
+  for (let i = 0; i < 4; i++) await other.coordinator.tick();
+  expect(other.store.get(big.id).state).not.toBe("completed");
+  expect(other.store.result(big.id)).toBeNull();
+  h.store.close();
+  other.store.close();
+});
+
+test("a failed control operation is never answered with a completion", async () => {
+  const h = harness(fast);
+  const { id, vm, run } = await started(h);
+  // A valid result file on disk is what the step's catch handler would otherwise complete from.
+  await h.provider.writeFile(
+    vm,
+    "/workspace/.swarmforge/result.json",
+    JSON.stringify({
+      worker_id: id,
+      run_id: run,
+      status: "completed",
+      summary: "should not be used",
+    }),
+  );
+  h.provider.pauseWorker = async () => {
+    throw new Error("provider unavailable");
+  };
+  h.agent.broken = true;
+  const refused = await h.coordinator.control(id, "pause");
+  // The intent stays durable for the next attempt, and no turn was completed behind it.
+  expect(refused.state).toBe("running");
+  expect(refused.intent).toBe("pause");
+  expect(refused.error).toContain("retrying within deadline");
+  expect(h.store.result(id)).toBeNull();
+  expect(h.store.dispatch(id)?.state).not.toBe("completed");
+  h.provider.pauseWorker = async () => {};
+  const paused = await within(2000, h.coordinator.control(id, "pause"));
+  expect(paused.state).toBe("paused");
+  expect(h.store.result(id)).toBeNull();
+  h.store.close();
+});
+
 test("cancellation stops production promptly and never waits on preservation", async () => {
   const h = harness(fast);
   const { id, vm } = await started(h);
@@ -290,7 +400,7 @@ test("cancellation stops production promptly and never waits on preservation", a
   expect(recovered.finalization?.state).toBe("preserved");
   expect(
     decode(
-      h.coordinator.artifacts.read(
+      await h.coordinator.artifacts.read(
         records(h, id).find(
           (r) => r.original_path === ".swarmforge/artifacts/notes.txt",
         )!.artifact_id,
@@ -373,7 +483,7 @@ test("normal destruction refuses an unpreserved workspace and succeeds once it s
   expect(h.provider.vms.has(vm)).toBe(false);
   expect(
     decode(
-      h.coordinator.artifacts.read(
+      await h.coordinator.artifacts.read(
         records(h, id).find(
           (r) => r.original_path === ".swarmforge/artifacts/keep.txt",
         )!.artifact_id,
@@ -458,6 +568,12 @@ test("a restart retries an interrupted collection and never marks it preserved e
     // The interrupted attempt was already counted, so the restart adds one, not two.
     expect(collected.finalization?.attempts).toBe(2);
     expect(provider.transportOpens.length).toBeGreaterThan(openedBefore);
+    // One durable attempt event per attempt, including the restart re-entering the row.
+    expect(
+      store
+        .events(worker.worker_id)
+        .filter((event) => event.type === "finalization.collecting"),
+    ).toHaveLength(2);
     const opens = provider.transportOpens.length;
     store.close();
     store = new Store(path);
@@ -559,7 +675,9 @@ test("a partially collected run keeps what it captured and a retry completes it"
   );
   expect(first?.state).toBe("preserved");
   expect(first?.sha256).toBe(sha256("one"));
-  expect(decode(h.coordinator.artifacts.read(first!.artifact_id))).toBe("one");
+  expect(decode(await h.coordinator.artifacts.read(first!.artifact_id))).toBe(
+    "one",
+  );
 
   h.provider.transportMissing.clear();
   await h.provider.writeFile(vm, "/workspace/out/second.txt", "two");
@@ -575,7 +693,7 @@ test("a partially collected run keeps what it captured and a retry completes it"
   expect(kept?.artifact_id).toBe(first?.artifact_id);
   expect(
     decode(
-      h.coordinator.artifacts.read(
+      await h.coordinator.artifacts.read(
         records(h, worker.worker_id).find(
           (r) => r.original_path === "out/second.txt",
         )!.artifact_id,
@@ -718,6 +836,9 @@ test("declared artifact paths are validated before a worker exists", () => {
     "deep/**/*.txt",
     "nul\u0000byte",
     "control\u0007bell",
+    "c1\u0085next",
+    "c1\u009flast",
+    "~/home/secret",
     "a".repeat(1025),
     "/leading",
   ];
@@ -789,7 +910,7 @@ test("finalization is visible on the public worker view", async () => {
   h.store.close();
 });
 
-test("finalization and direct artifact calls share the configured bound", async () => {
+test("concurrent finalizations stay inside the configured bound", async () => {
   const h = harness({ ...fast, SWARMFORGE_ARTIFACT_CONCURRENCY: 1 });
   h.provider.transportDelayMs = 2;
   const first = await started(h, "one");
@@ -797,20 +918,19 @@ test("finalization and direct artifact calls share the configured bound", async 
   h.agent.complete(h.store.get(first.id));
   h.agent.complete(h.store.get(second.id));
   await h.coordinator.tick();
+  // Two workers settle at once, but only one guest is ever being collected at a time.
   await Promise.all([
     h.coordinator.finalize(first.id),
     h.coordinator.finalize(second.id),
-    h.coordinator.artifacts.snapshot(first.id),
-    h.coordinator.artifacts.diagnostics(second.id),
   ]);
-  expect(h.provider.maxConcurrent).toBe(1);
+  expect(h.provider.maxActiveGuests).toBe(1);
   expect(h.store.get(first.id).finalization?.state).toBe("preserved");
   expect(h.store.get(second.id).finalization?.state).toBe("preserved");
   h.store.close();
 
-  // Two slots really are two: the bound releases instead of serializing everything.
+  // More slots really are used, so the gate releases instead of serializing everything.
   const wider = harness({ ...fast, SWARMFORGE_ARTIFACT_CONCURRENCY: 4 });
-  wider.provider.transportDelayMs = 2;
+  wider.provider.transportDelayMs = 4;
   const third = await started(wider, "three");
   const fourth = await started(wider, "four");
   wider.agent.complete(wider.store.get(third.id));
@@ -820,7 +940,7 @@ test("finalization and direct artifact calls share the configured bound", async 
     wider.coordinator.finalize(third.id),
     wider.coordinator.finalize(fourth.id),
   ]);
-  expect(wider.provider.maxConcurrent).toBeGreaterThan(1);
+  expect(wider.provider.maxActiveGuests).toBe(2);
   wider.store.close();
 });
 

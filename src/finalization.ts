@@ -9,69 +9,46 @@ import {
 import type { Store } from "./store";
 export const sleep = (ms: number) =>
   new Promise<void>((resolve) => setTimeout(resolve, ms));
-// Every artifact transfer takes a slot here, lifecycle finalization and direct API calls
-// alike, so a salvage burst can never fan out into unbounded provider work.
-export class ConcurrencyLimiter {
+// The data plane service bounds its own transfers, including direct API calls. What it cannot
+// see is how many workers finalize at once, so this gate bounds concurrent finalizations. It
+// cannot deadlock: a slot is only ever held by a finalization that waits on the service, and the
+// service never waits on this gate.
+export class FinalizationGate {
   private active = 0;
   private waiting: (() => void)[] = [];
   constructor(readonly limit: number) {}
-  async run<T>(operation: () => Promise<T>): Promise<T> {
-    await this.acquire();
+  async run<T>(signal: AbortSignal, operation: () => Promise<T>): Promise<T> {
+    await this.acquire(signal);
     try {
+      if (signal.aborted) throw new Error("Artifact preservation was aborted");
       return await operation();
     } finally {
-      this.release();
+      const next = this.waiting.shift();
+      if (next) next();
+      else this.active--;
     }
   }
-  private acquire() {
+  private async acquire(signal: AbortSignal) {
+    if (signal.aborted) throw new Error("Artifact preservation was aborted");
     if (this.active < this.limit) {
       this.active++;
-      return Promise.resolve();
+      return;
     }
-    return new Promise<void>((resolve) => this.waiting.push(resolve));
+    // A queued finalization never waits on a worker that is being cancelled or destroyed.
+    await new Promise<void>((resolve, reject) => {
+      const onAbort = () => {
+        this.waiting = this.waiting.filter((entry) => entry !== onAbort);
+        reject(new Error("Artifact preservation was aborted"));
+      };
+      const wake = () => {
+        signal.removeEventListener("abort", onAbort);
+        resolve();
+      };
+      this.waiting.push(wake);
+      signal.addEventListener("abort", onAbort, { once: true });
+    });
+    this.active++;
   }
-  private release() {
-    const next = this.waiting.shift();
-    if (next) next();
-    else this.active--;
-  }
-}
-export interface ListFilesOptions {
-  offset?: number;
-  limit?: number;
-  signal?: AbortSignal;
-}
-// The data plane service exposes these as the transferring operations. Everything else
-// (list, metadata, read) answers from local storage and must keep its synchronous contract.
-const transferring = new Set([
-  "preserve",
-  "snapshot",
-  "diagnostics",
-  "collectDirectory",
-  "download",
-  "listWorkerFiles",
-  "safeRead",
-]);
-// Direct artifact API calls share the same bound as lifecycle collection, so an operator burst
-// cannot fan out into unbounded provider work. A proxy keeps the exact service contract,
-// including anything the data plane adds later.
-export function boundedArtifacts(
-  inner: ArtifactService,
-  limiter: ConcurrencyLimiter,
-): ArtifactService {
-  return new Proxy(inner, {
-    get(target, property, receiver) {
-      const value: unknown = Reflect.get(target, property, receiver);
-      if (typeof property !== "string" || typeof value !== "function")
-        return value;
-      const method = value as (...args: unknown[]) => unknown;
-      // Bound to the service itself, so private state stays reachable through the facade.
-      if (!transferring.has(property))
-        return (...args: unknown[]) => method.apply(target, args);
-      return (...args: unknown[]) =>
-        limiter.run(async () => method.apply(target, args));
-    },
-  });
 }
 // Safe defaults: the worker's own output directory, its logs, the task result and its
 // task metadata. All optional, so a worker that produced none still preserves successfully.
@@ -107,7 +84,7 @@ export class Finalizer {
     readonly config: Config,
     readonly store: Store,
     readonly artifacts: ArtifactService,
-    readonly limiter: ConcurrencyLimiter,
+    readonly gate: FinalizationGate,
   ) {}
   collectable(w: Worker) {
     return Boolean(w.vm_id) && !w.vm_missing;
@@ -142,6 +119,8 @@ export class Finalizer {
     return entry.promise;
   }
   private async execute(id: string, entry: LiveRun): Promise<void> {
+    // An attempt cancelled before it starts is not an attempt: nothing is persisted for it.
+    if (entry.abort.signal.aborted) return;
     const claim = this.claim(id);
     if (!claim) return;
     const timer = setTimeout(
@@ -150,7 +129,9 @@ export class Finalizer {
     );
     let failure: string | null = null;
     try {
-      await this.limiter.run(() =>
+      // The data plane service bounds its own transfers and applies its own timeout; the
+      // attempt-level signal additionally bounds the listing that classifies a path.
+      await this.gate.run(entry.abort.signal, () =>
         this.collect(id, claim.run_id, entry.abort.signal),
       );
     } catch (error) {
