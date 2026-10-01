@@ -285,7 +285,11 @@ export class LocalArtifactStorage implements ArtifactStorage {
       closeSync(handle);
     }
   }
-  async open(key: string, options: { offset?: number; length?: number } = {}) {
+  async open(
+    key: string,
+    options: { offset?: number; length?: number; signal?: AbortSignal } = {},
+  ) {
+    options.signal?.throwIfAborted();
     const handle = this.handleFor(key);
     let size: number;
     try {

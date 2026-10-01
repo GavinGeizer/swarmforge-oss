@@ -28,7 +28,7 @@ const collect = async (stream: ReadableStream<Uint8Array>) => {
 
 let h: LocalHarness;
 let worker: string;
-let _vm: string;
+let vm: string;
 
 const artifacts = () => join(h.workspace.root, ".swarmforge", "artifacts");
 const write = (name: string, body: string | Uint8Array) => {
@@ -53,7 +53,7 @@ beforeEach(async () => {
   const created = h.spawn();
   await h.provider.createWorker(created);
   worker = created.worker_id;
-  _vm = created.vm_id!;
+  vm = created.vm_id!;
 });
 afterEach(async () => {
   await h.cleanup();
@@ -485,6 +485,31 @@ test("a destroyed or vanished guest has nothing left to preserve", async () => {
     h.artifacts.preserve(other.worker_id, ".swarmforge/artifacts/gone.txt"),
   ).rejects.toThrow();
   expect(storedFiles()).toEqual([]);
+});
+
+test("a preserved artifact outlives the guest it came from", async () => {
+  const body = "salvaged before the guest disappeared\n";
+  write("salvage.txt", body);
+  const record = await h.artifacts.preserve(
+    worker,
+    ".swarmforge/artifacts/salvage.txt",
+    { runId: "run-1" },
+  );
+  // The whole point of preservation: the guest and its filesystem go away.
+  await h.provider.destroyWorker(vm);
+  expect(existsSync(join(h.workspace.root, ".swarmforge", "artifacts"))).toBe(
+    false,
+  );
+  expect(
+    Buffer.from(
+      await h.artifacts.read(record.artifact_id, 0, record.size),
+    ).toString(),
+  ).toBe(body);
+  expect(
+    sha(await collect(await h.artifacts.download(record.artifact_id))),
+  ).toBe(record.sha256!);
+  expect(h.artifacts.metadata(record.artifact_id).state).toBe("preserved");
+  expect(h.artifacts.list({ worker_id: worker }).artifacts).toHaveLength(1);
 });
 
 test("concurrent preservation is bounded and every transfer still lands", async () => {

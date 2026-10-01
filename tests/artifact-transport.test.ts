@@ -66,6 +66,25 @@ test("the production helper lists a bounded, sorted directory page", async () =>
   expect(page.next_offset).toBe(3);
 });
 
+test("listings are bounded by entry count and refused past the depth limit", async () => {
+  mkdirSync(join(ws.root, "many"), { recursive: true });
+  for (let i = 0; i < 40; i++)
+    writeFileSync(join(ws.root, "many", `f${i}`), "x");
+  const bounded = await ws.transport.list(ws.vmId, ws.root, "many", {
+    maxEntries: 10,
+  });
+  expect(bounded.entries).toHaveLength(10);
+  expect(bounded.truncated).toBe(true);
+  expect(bounded.total).toBe(10);
+  const full = await ws.transport.list(ws.vmId, ws.root, "many");
+  expect(full.entries).toHaveLength(40);
+  expect(full.truncated).toBe(false);
+  expect(full.total).toBe(40);
+  await expect(
+    ws.transport.list(ws.vmId, ws.root, "many", { maxDepth: 0 }),
+  ).rejects.toThrow();
+});
+
 test("captured bytes are raw and identical, with a hash the caller can verify", async () => {
   const binary = new Uint8Array(4096);
   for (let i = 0; i < binary.length; i++) binary[i] = i % 256;
