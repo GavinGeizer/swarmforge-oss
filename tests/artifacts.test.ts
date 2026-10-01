@@ -55,6 +55,21 @@ const write = (name: string, body: string | Uint8Array) => {
   mkdirSync(artifacts(), { recursive: true, mode: 0o700 });
   writeFileSync(join(artifacts(), name), body as string);
 };
+/** The objects a storage root holds, relative and without its temporary dir. */
+const storedFilesOf = (root: string): string[] => {
+  const out: string[] = [];
+  const walk = (dir: string, prefix = "") => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      if (entry.name === ".incoming") continue;
+      if (entry.isDirectory())
+        walk(join(dir, entry.name), `${prefix}${entry.name}/`);
+      else out.push(`${prefix}${entry.name}`);
+    }
+  };
+  walk(root);
+  return out.sort();
+};
+
 const storedFiles = (): string[] => {
   const out: string[] = [];
   const walk = (dir: string, prefix = "") => {
@@ -1249,3 +1264,46 @@ test("a recorded error is screened before it is bounded", async () => {
     await harness.cleanup();
   }
 });
+
+test("a hundred real captures stay inside the entry, listing and event bounds", async () => {
+  // Scale through the production helper, not a double: the point is that the
+  // helper, staging, verification and the repository all hold up together, and
+  // that nothing about a large run grows without a bound.
+  const many = await localHarness({ SWARMFORGE_ARTIFACT_MAX_ENTRIES: "500" });
+  try {
+    const created = many.spawn();
+    await many.provider.createWorker(created);
+    const directory = join(many.workspace.root, "bulk");
+    mkdirSync(directory, { recursive: true, mode: 0o700 });
+    for (let index = 0; index < 100; index++)
+      writeFileSync(
+        join(directory, `item-${String(index).padStart(3, "0")}.txt`),
+        `body ${index}\n`,
+      );
+    const records = await many.artifacts.collectDirectory(
+      created.worker_id,
+      "bulk",
+      { runId: "run-1" },
+    );
+    expect(records).toHaveLength(100);
+    for (const record of records) expect(record.state).toBe("preserved");
+    // The listing pages deterministically and the current view is complete.
+    const listed = many.artifacts.list({
+      worker_id: created.worker_id,
+      limit: 100,
+    });
+    expect(listed.artifacts).toHaveLength(100);
+    expect(listed.next_offset).toBeNull();
+    expect(many.artifacts.counters({ worker_id: created.worker_id })).toEqual({
+      attempts: 100,
+      preserved: 100,
+      failed: 0,
+    });
+    // One current record and one stored object per source: no duplicate blobs.
+    const stored = storedFilesOf(many.storageDir);
+    expect(stored).toHaveLength(100);
+    expect(new Set(stored).size).toBe(100);
+  } finally {
+    await many.cleanup();
+  }
+}, 120000);
