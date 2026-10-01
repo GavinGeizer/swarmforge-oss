@@ -80,8 +80,15 @@ export interface HelperTransportOptions {
 interface CaptureSource {
   label: string;
   cwd?: string;
+  /**
+   * A Git source names the subcommand and its arguments only. The helper builds
+   * the command line itself, against a repository it has verified is a real
+   * metadata directory inside the permitted root, so no caller-supplied flags
+   * and no repository-owned configuration can aim a capture elsewhere.
+   */
   git?: boolean;
-  argv: string[];
+  git_args?: string[];
+  argv?: string[];
 }
 
 interface HelperMetadata {
@@ -306,26 +313,33 @@ export class HelperArtifactTransport implements WorkerArtifactTransport {
               label: "git-status",
               cwd: "repo",
               git: true,
-              argv: gitCommand(validated, ["status", "--porcelain=v1", "-b"]),
+              git_args: [
+                "status",
+                "--porcelain=v1",
+                "-b",
+                "--untracked-files=all",
+              ],
             },
             {
               label: "git-log",
               cwd: "repo",
               git: true,
-              argv: gitCommand(validated, ["log", "--oneline", "-n", "200"]),
+              git_args: ["log", "--oneline", "--no-decorate", "-n", "200"],
             },
             {
               label: "git-diff",
               cwd: "repo",
               git: true,
-              argv: gitCommand(validated, [
-                "--no-pager",
+              // No external diff helper and no text conversion: both are commands
+              // or filters chosen by configuration, and a capture runs neither.
+              git_args: [
                 "diff",
                 "HEAD",
                 "--binary",
                 "--no-ext-diff",
                 "--no-textconv",
-              ]),
+                "--no-color",
+              ],
             },
           ],
           options,
@@ -593,9 +607,4 @@ function helperCode(code: unknown, error: unknown): ArtifactErrorCode {
 function dirnameOf(path: string): string {
   const at = path.lastIndexOf("/");
   return at <= 0 ? "/" : path.slice(0, at);
-}
-
-function gitCommand(root: string, arguments_: string[]): string[] {
-  // The repository lives under the workspace, not at the workspace root.
-  return ["git", "-c", "safe.directory=*", "-C", `${root}/repo`, ...arguments_];
 }

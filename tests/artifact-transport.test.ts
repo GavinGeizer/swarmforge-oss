@@ -859,11 +859,13 @@ test("gitdiag-probe: a gitdir pointer file cannot pull a repository into the cap
   writeFileSync(join(repo, ".git"), `gitdir: ${join(outside, ".git")}\n`);
   const report = await gitReportOf(ws.root);
   // Nothing from outside the permitted root, and no name that would prove the
-  // pointer was followed.
+  // pointer was followed. A repository whose metadata is not a real directory
+  // inside the root is not described at all: the capture is disabled, not
+  // redirected, and the refusal is recorded so the reason is not a mystery.
   expect(report).not.toContain(canary);
   expect(report).not.toContain("private.txt");
   expect(report).not.toContain("public.txt");
-  expect(report).toContain("inside.txt");
+  expect(report).toContain("not-applicable=Git metadata is not a directory");
   expect(ws.stagingEntries()).toEqual([]);
 });
 
@@ -911,5 +913,104 @@ test("gitdiag-probe3: an alternates file cannot pull outside object content into
   const report = await gitReportOf(ws.root);
   expect(report).not.toContain(canary);
   expect(report).not.toContain("private.txt");
+  expect(ws.stagingEntries()).toEqual([]);
+});
+
+test("a verifiable repository is still described, and its reasons are kept private", async () => {
+  // The fix must not simply switch Git diagnostics off: a real repository inside
+  // the workspace is exactly what a salvage wants, so it is described normally.
+  const repo = join(ws.root, "repo");
+  mkdirSync(repo, { recursive: true, mode: 0o700 });
+  const run = (args: string[]) =>
+    Bun.spawnSync(["git", ...args], {
+      cwd: repo,
+      stdout: "ignore",
+      stderr: "ignore",
+    });
+  run(["init", "--quiet", "--initial-branch=main", "."]);
+  run(["config", "user.email", "probe@example.invalid"]);
+  run(["config", "user.name", "probe"]);
+  writeFileSync(join(repo, "tracked.txt"), "first version\n");
+  run(["add", "-A"]);
+  run(["commit", "--quiet", "-m", "first"]);
+  writeFileSync(join(repo, "tracked.txt"), "second version\n");
+  const results = await ws.transport.diagnostics(ws.vmId, ws.root, {
+    maxBytes: 256 * 1024,
+  });
+  const git = results.find((item) => item.path.includes("git"))!;
+  const bytes = Buffer.concat(
+    await (async () => {
+      const reader = git.transfer.stream.getReader();
+      const chunks: Buffer[] = [];
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (value) chunks.push(Buffer.from(value));
+      }
+      return chunks;
+    })(),
+  ).toString();
+  expect(git.transfer.incomplete).toBeUndefined();
+  // The status, the log and a real diff of the committed change.
+  expect(bytes).toContain("tracked.txt");
+  expect(bytes).toContain("-first version");
+  expect(bytes).toContain("+second version");
+  expect(bytes).toMatch(/first$/m);
+  // A reason is recorded for every source that ran, and a failure's own stderr is
+  // kept in the private staged file rather than in the metadata response.
+  expect(bytes).toContain("git-status exit=0");
+  expect(git.notes?.some((note) => note.includes("git-diff exit=0"))).toBe(
+    true,
+  );
+  await git.transfer.cleanup();
+  for (const item of results) await item.transfer.cleanup();
+  expect(ws.stagingEntries()).toEqual([]);
+});
+
+test("a repository whose metadata is a symlink is not described", async () => {
+  const outside = join(ws.base, "outside-repo");
+  mkdirSync(join(outside, ".git"), { recursive: true });
+  const repo = join(ws.root, "repo");
+  mkdirSync(repo, { recursive: true, mode: 0o700 });
+  symlinkSync(join(outside, ".git"), join(repo, ".git"));
+  const report = await gitReportOf(ws.root);
+  expect(report).toContain("not-applicable=Git metadata is a symlink");
+  expect(report).not.toContain(canary);
+  expect(ws.stagingEntries()).toEqual([]);
+});
+
+test("an alternates entry that stays inside the root is still allowed", async () => {
+  const repo = join(ws.root, "repo");
+  mkdirSync(repo, { recursive: true, mode: 0o700 });
+  const run = (args: string[]) =>
+    Bun.spawnSync(["git", ...args], {
+      cwd: repo,
+      stdout: "ignore",
+      stderr: "ignore",
+    });
+  run(["init", "--quiet", "--initial-branch=main", "."]);
+  run(["config", "user.email", "probe@example.invalid"]);
+  run(["config", "user.name", "probe"]);
+  writeFileSync(join(repo, "tracked.txt"), "content\n");
+  run(["add", "-A"]);
+  run(["commit", "--quiet", "-m", "inside"]);
+  writeFileSync(join(repo, "tracked.txt"), "changed content\n");
+  // A second object store inside the workspace is legitimate; only one outside
+  // the permitted root is a way out.
+  const shared = join(ws.root, "shared-objects");
+  mkdirSync(shared, { recursive: true, mode: 0o700 });
+  writeFileSync(
+    join(repo, ".git", "objects", "info", "alternates"),
+    // Git resolves a relative entry against the object directory, so three
+    // levels up from `<root>/repo/.git/objects` is the workspace root.
+    "../../../shared-objects\n",
+  );
+  const report = await gitReportOf(ws.root);
+  // The repository is described normally: the alternates entry is inside the
+  // root, so the status, the log and the diff of a real change are all captured.
+  expect(report).toContain("tracked.txt");
+  expect(report).toContain("-content");
+  expect(report).toContain("+changed content");
+  expect(report).not.toContain("not-applicable");
   expect(ws.stagingEntries()).toEqual([]);
 });

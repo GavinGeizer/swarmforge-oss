@@ -47,12 +47,23 @@ EXCLUDED = (".git", "node_modules")
 MAX_SOURCES = 8
 # Nothing inherited from the caller's environment: no secrets, no PYTHON* or
 # GIT_* overrides, no locale surprises in the metadata.
+# Nothing inherited from the caller's environment: no secrets, no PYTHON* or
+# GIT_* overrides, no locale surprises in the metadata. The Git settings below are
+# part of the capture's safety, not of its convenience: system and global
+# configuration are switched off so a repository's own configuration is the only
+# thing that can apply, and that configuration lives inside the pinned root.
 CHILD_ENV = {
     "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
     "HOME": "/root",
     "LC_ALL": "C",
     "GIT_OPTIONAL_LOCKS": "0",
     "GIT_TERMINAL_PROMPT": "0",
+    "GIT_CONFIG_NOSYSTEM": "1",
+    "GIT_CONFIG_GLOBAL": "/dev/null",
+    "GIT_CONFIG_SYSTEM": "/dev/null",
+    "GIT_ATTR_NOSYSTEM": "1",
+    "GIT_DISCOVERY_ACROSS_FILESYSTEM": "0",
+    "GIT_CEILING_DIRECTORIES": "/",
 }
 
 
@@ -800,7 +811,10 @@ def run_bounded(argv, dst_fd, budget, digest, stats, root, cwd, deadline):
             argv,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
+            # A command's own diagnostics are evidence, so they are read - but
+            # they never reach this program's stdout, and they are bounded both
+            # by the capture budget and by STDERR_BOUND.
+            stderr=subprocess.PIPE,
             cwd=cwd,
             env=CHILD_ENV,
             start_new_session=True,
@@ -809,36 +823,49 @@ def run_bounded(argv, dst_fd, budget, digest, stats, root, cwd, deadline):
         stats["failed"] += 1
         return 0
     total = 0
+    errors = b""
     try:
         while True:
             remaining = deadline - _now()
             if remaining <= 0:
                 stats["timed_out"] = True
                 break
-            ready, _, _ = select.select([proc.stdout], [], [], min(remaining, 1.0))
-            if not ready:
-                if proc.poll() is not None:
+            ready, _, _ = select.select(
+                [proc.stdout, proc.stderr], [], [], min(remaining, 0.25)
+            )
+            if proc.stderr in ready and len(errors) < STDERR_BOUND:
+                errors += proc.stderr.read1(STDERR_BOUND - len(errors))
+            if proc.stdout in ready:
+                chunk = proc.stdout.read1(CHUNK)
+                if not chunk:
+                    break
+                room = budget - total
+                if len(chunk) > room:
+                    chunk = chunk[:room]
+                    stats["truncated"] = True
+                if chunk:
+                    write_all(dst_fd, chunk)
+                    digest.update(chunk)
+                    total += len(chunk)
+                if total >= budget:
+                    stats["truncated"] = True
                     break
                 continue
-            chunk = proc.stdout.read1(CHUNK)
-            if not chunk:
-                break
-            room = budget - total
-            if len(chunk) > room:
-                chunk = chunk[:room]
-                stats["truncated"] = True
-            if chunk:
-                write_all(dst_fd, chunk)
-                digest.update(chunk)
-                total += len(chunk)
-            if total >= budget:
-                stats["truncated"] = True
-                break
+            if not ready:
+                if proc.poll() is not None and proc.stdout.readable():
+                    # The child is done and the pipe is at end of file.
+                    if len(errors) < STDERR_BOUND:
+                        try:
+                            errors += proc.stderr.read1(STDERR_BOUND - len(errors))
+                        except OSError:
+                            pass
+                    break
     finally:
-        try:
-            proc.stdout.close()
-        except OSError:
-            pass
+        for pipe in (proc.stdout, proc.stderr):
+            try:
+                pipe.close()
+            except OSError:
+                pass
         killed = False
         if proc.poll() is None:
             killed = True
@@ -850,8 +877,10 @@ def run_bounded(argv, dst_fd, budget, digest, stats, root, cwd, deadline):
         exit_code = proc.wait()
         if exit_code and not killed and not stats["timed_out"]:
             stats["failed"] += 1
+        if len(errors) > STDERR_BOUND:
+            stats["truncated"] = True
     stats["bytes"] += total
-    return exit_code
+    return exit_code, errors
 
 
 def _now():
@@ -874,33 +903,228 @@ def source_cwd(root, relative):
     return "/".join([root.rstrip("/")] + parts)
 
 
-def source_git_dir(root, relative):
-    """True when the directory carries its own Git metadata inside the root."""
+# A Git command is only run against a repository this helper has opened itself.
+# Flags alone are not enough while a repository may name its own metadata
+# elsewhere, so the metadata is verified first and the command is then pinned to
+# the two paths that were verified.
+GIT_PINNED = (
+    "--no-pager",
+    # Nothing in the repository's own configuration may turn a read into a
+    # command, move the work tree, or name a remote: the capture runs against the
+    # two paths this helper verified, and every knob that could aim it elsewhere
+    # is pinned here as well.
+    "-c", "core.bare=false",
+    "-c", "core.logAllRefUpdates=false",
+    "-c", "core.hooksPath=/dev/null",
+    "-c", "core.fsmonitor=false",
+    "-c", "core.alternateRefsCommand=",
+    "-c", "core.attributesFile=/dev/null",
+    "-c", "core.hooksPath=/dev/null",
+    "-c", "diff.external=",
+    "-c", "diff.renames=false",
+    "-c", "diff.algorithm=myers",
+    "-c", "diff.noprefix=false",
+    "-c", "safe.directory=*",
+)
+
+# Bytes a source's own diagnostics may add to the private staged file.
+STDERR_BOUND = 4096
+ALTERNATES_BOUND = 64 * 1024
+
+
+class GitRefusal(Exception):
+    """A repository this helper will not describe, and why."""
+
+
+def _read_bounded_fd(fd, limit):
+    """Read at most `limit` bytes from a pinned descriptor."""
+    out = b""
+    while len(out) < limit:
+        chunk = os.read(fd, min(CHUNK, limit - len(out)))
+        if not chunk:
+            break
+        out += chunk
+    return out
+
+
+def _normalize(parts):
+    """Resolve `.` and `..` lexically, refusing to climb above the start."""
+    out = []
+    for part in parts:
+        if part in ("", "."):
+            continue
+        if part == "..":
+            if not out:
+                raise GitRefusal("alternates entry escapes the permitted root")
+            out.pop()
+            continue
+        out.append(part)
+    return out
+
+
+def _under_root(root_parts, parts):
+    """True when `parts` is the root or sits under it, compared by component.
+
+    A string prefix would accept a sibling whose name merely starts with the
+    root's, so the comparison is component by component.
+    """
+    return parts[: len(root_parts)] == root_parts and len(parts) >= len(root_parts)
+
+
+def _resolve_alternate(root, base, line):
+    """Resolve one alternates entry and require it to stay inside the root.
+
+    A relative entry is resolved against the object directory it was named in; an
+    absolute one is taken as it stands. Either way the result has to be a real
+    directory inside the permitted root, reached the same pinned way as any other
+    path, so an alternates file cannot borrow objects from anywhere else.
+    """
+    line = line.strip()
+    if not line or line.startswith("#"):
+        return
+    if "\x00" in line:
+        raise GitRefusal("alternates entry is not a usable path")
+    root_parts = clean_absolute(root)
+    if line.startswith("/"):
+        parts = _normalize(clean_absolute(line))
+    else:
+        # A relative entry is resolved against the object directory it was named
+        # in, and may legitimately step out of it as long as it stays inside the
+        # permitted root.
+        parts = _normalize(base + line.split("/"))
+    if not _under_root(root_parts, parts):
+        raise GitRefusal("alternates points outside the permitted root")
+    fd = open_at(parts)
+    os.close(fd)
+
+
+def git_repository(root, relative):
+    """Verify a repository and return the two pinned paths to run Git against.
+
+    Everything is opened descriptor-relatively from `/`, so a component that is a
+    symlink is refused rather than followed. A `gitdir:` pointer file is refused
+    outright: it is the one shape whose whole purpose is to name metadata
+    elsewhere, and no flag can make a repository whose metadata is outside the
+    root safe to describe. Descendants git resolves for itself - the object store
+    and the ref store - are checked the same way, and an alternates file that
+    names anything outside the root disables the capture instead of quietly
+    borrowing its objects.
+    """
     base = relative.split("/") if relative else []
-    parent = open_dir_at(root, base)
+    root_parts = clean_absolute(root)
+    try:
+        work_tree_fd = open_dir_at(root, base)
+    except HelperError:
+        raise GitRefusal("no such directory in the workspace")
+    os.close(work_tree_fd)
+    try:
+        parent = open_dir_at(root, base)
+    except HelperError:
+        raise GitRefusal("no such directory in the workspace")
     try:
         try:
             info = os.lstat(".git", dir_fd=parent)
         except OSError:
-            return False
-        # A symlinked .git would point outside the permitted root.
-        return statmod.S_ISDIR(info.st_mode) or statmod.S_ISREG(info.st_mode)
+            raise GitRefusal("no Git metadata in the workspace")
+        if statmod.S_ISLNK(info.st_mode):
+            raise GitRefusal("Git metadata is a symlink")
+        if not statmod.S_ISDIR(info.st_mode):
+            # A `gitdir:` pointer file, a regular file, or anything else that is
+            # not a real metadata directory.
+            raise GitRefusal("Git metadata is not a directory")
     finally:
         os.close(parent)
+    git_parts = base + [".git"]
+    # Both paths are built from the components that were just opened, so the
+    # command line names the same two directories this helper verified.
+    git_dir = "/" + "/".join(root_parts + git_parts)
+    work_tree = "/" + "/".join(root_parts + base)
+    # The directories Git resolves for itself have to be real directories inside
+    # the root, opened the pinned way, before any command runs.
+    for name in ("objects", "refs"):
+        try:
+            fd = open_at(root_parts + git_parts + [name])
+        except HelperError:
+            # A metadata directory without an object store or a ref store is not
+            # a repository this capture can describe. Disabling the Git sources is
+            # the answer; failing the whole diagnostic would not be.
+            raise GitRefusal("Git metadata is missing its %s directory" % name)
+        os.close(fd)
+    for name in ("alternates", "http-alternates"):
+        try:
+            parent = open_at(root_parts + git_parts + ["objects", "info"])
+        except HelperError:
+            break
+        try:
+            try:
+                info = os.lstat(name, dir_fd=parent)
+            except OSError:
+                continue
+            if not statmod.S_ISREG(info.st_mode):
+                raise GitRefusal("Git object alternates is not a regular file")
+            if info.st_size > ALTERNATES_BOUND:
+                raise GitRefusal("Git object alternates is larger than its bound")
+            body = _read_bounded_fd(
+                os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=parent),
+                ALTERNATES_BOUND,
+            )
+        finally:
+            os.close(parent)
+        if name == "http-alternates" and body.strip():
+            # Dumb transport alternates fetch content over the network, which a
+            # bounded salvage never does.
+            raise GitRefusal("Git object alternates names a remote store")
+        for line in body.decode("utf-8", "replace").splitlines():
+            _resolve_alternate(root, root_parts + git_parts + ["objects"], line)
+    return git_dir, work_tree
+
+
+def git_argv(git_dir, work_tree, args):
+    """A Git command pinned to the two verified paths, with no ambient config."""
+    argv = ["git"]
+    for item in GIT_PINNED:
+        argv.append(item)
+    argv.append("--git-dir")
+    argv.append(git_dir)
+    argv.append("--work-tree")
+    argv.append(work_tree)
+    # No `--` separator: Git takes its subcommand first, and the arguments that
+    # follow were validated as plain bounded strings with no NUL.
+    argv.extend(args)
+    return argv
 
 
 ANNOTATION = b"# swarmforge-capture "
 
 
-def annotate(dst_fd, digest, stats, label, text, budget):
+def annotate(dst_fd, digest, stats, label, text, budget, stderr=b""):
     """Record what happened to one source inside the captured bytes."""
-    if budget - stats["bytes"] < len(ANNOTATION) + len(text):
-        stats["truncated"] = True
-        return
-    line = ANNOTATION + text.encode("ascii", "replace") + b"\n"
-    write_all(dst_fd, line)
-    digest.update(line)
-    stats["bytes"] += len(line)
+    parts = [ANNOTATION + text.encode("ascii", "replace") + b"\n"]
+    if stderr:
+        # The reason a command failed is part of the salvage evidence. It is
+        # written into the private staged file - never into this program's stdout
+        # - is bounded, and is marked as cut when the bound cut it.
+        body = stderr[:STDERR_BOUND]
+        if len(stderr) > STDERR_BOUND:
+            stats["truncated"] = True
+        for line in body.split(b"\n"):
+            if not line.strip():
+                continue
+            parts.append(
+                ANNOTATION
+                + b"stderr "
+                + line.replace(b"\r", b" ").decode("utf-8", "replace").encode(
+                    "utf-8", "replace"
+                )[:STDERR_BOUND]
+                + b"\n"
+            )
+    for part in parts:
+        if budget - stats["bytes"] < len(part):
+            stats["truncated"] = True
+            return
+        write_all(dst_fd, part)
+        digest.update(part)
+        stats["bytes"] += len(part)
 
 
 def op_capture(request):
@@ -918,8 +1142,14 @@ def op_capture(request):
             raise HelperError(
             "source is invalid", CODE_UNSAFE_PATH
         )
+        is_git = bool(source.get("git"))
         argv = source.get("argv")
-        if not isinstance(argv, list) or not argv or len(argv) > 64:
+        if is_git:
+            # A Git source never carries its own command line: this helper
+            # supplies the executable and the repository, and the requester
+            # supplies only the subcommand and its arguments.
+            argv = []
+        elif not isinstance(argv, list) or not argv or len(argv) > 64:
             raise HelperError(
             "source argv is invalid", CODE_UNSAFE_PATH
         )
@@ -949,12 +1179,30 @@ def op_capture(request):
         )
         if relative:
             clean_relative(relative)
+        git_args = source.get("git_args") or []
+        if is_git:
+            if (
+                not isinstance(git_args, list)
+                or not git_args
+                or len(git_args) > 32
+                or any(
+                    not isinstance(item, str)
+                    or not item
+                    or len(item) > 256
+                    or "\x00" in item
+                    for item in git_args
+                )
+            ):
+                raise HelperError(
+                    "source git_args is invalid", CODE_UNSAFE_PATH
+                )
         parsed.append(
             {
                 "argv": argv,
+                "git_args": git_args,
                 "label": label or "source",
                 "cwd": relative,
-                "git": bool(source.get("git")),
+                "git": is_git,
             }
         )
     name = field(request, "name")
@@ -1029,25 +1277,36 @@ def op_capture(request):
                     )
                     stats["skipped"] += 1
                     continue
-                if source["git"] and not source_git_dir(root, source["cwd"]):
-                    # A workspace that simply has no repository is not an error:
-                    # it is recorded as not applicable, once, and never as a
-                    # failure that would retry for ever.
-                    annotate(
-                        out_fd,
-                        digest,
-                        stats,
-                        label,
-                        "%s not-applicable=no-git-metadata-in-root" % label,
-                        max_bytes,
-                    )
-                    reported.append(
-                        {"label": label, "skipped": "not_applicable", "reason": "no-git-metadata"}
-                    )
-                    continue
+                if source["git"]:
+                    # The repository is verified once per capture, by this helper,
+                    # from descriptors it opened itself. A repository it cannot
+                    # verify is recorded as not applicable: the capture is
+                    # disabled rather than run against something unverified.
+                    try:
+                        git_dir, work_tree = git_repository(root, source["cwd"])
+                    except GitRefusal as refusal:
+                        annotate(
+                            out_fd,
+                            digest,
+                            stats,
+                            label,
+                            "%s not-applicable=%s" % (label, refusal),
+                            max_bytes,
+                        )
+                        reported.append(
+                            {
+                                "label": label,
+                                "skipped": "not_applicable",
+                                "reason": str(refusal),
+                            }
+                        )
+                        continue
+                    command = git_argv(git_dir, work_tree, source["git_args"])
+                else:
+                    command = source["argv"]
                 before = stats["bytes"]
-                exit_code = run_bounded(
-                    source["argv"],
+                exit_code, errors = run_bounded(
+                    command,
                     out_fd,
                     max_bytes - stats["bytes"],
                     digest,
@@ -1069,6 +1328,7 @@ def op_capture(request):
                         "yes" if stats["truncated"] else "no",
                     ),
                     max_bytes,
+                    stderr=errors,
                 )
                 reported.append(
                     {
