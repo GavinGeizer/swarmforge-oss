@@ -3,9 +3,9 @@ import { createHash, randomUUID } from "node:crypto";
 import {
   chmodSync,
   closeSync,
-  createReadStream,
   constants as fsConstants,
   fstatSync,
+  fsyncSync,
   lstatSync,
   mkdirSync,
   openSync,
@@ -19,7 +19,7 @@ import {
   unlinkSync,
   writeSync,
 } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import type {
   ArtifactListQuery,
   ArtifactListResult,
@@ -62,7 +62,11 @@ const NO_FOLLOW = fsConstants.O_NOFOLLOW;
 // without a second path resolution between the write and its verification.
 const CREATE_NEW =
   fsConstants.O_RDWR | fsConstants.O_CREAT | fsConstants.O_EXCL | NO_FOLLOW;
-const READ_ONLY = fsConstants.O_RDONLY | NO_FOLLOW;
+// O_NONBLOCK keeps a FIFO from parking a read even if one is planted between the
+// resolution and the open; the descriptor is only ever read after S_ISREG.
+const READ_ONLY =
+  fsConstants.O_RDONLY | NO_FOLLOW | (fsConstants.O_NONBLOCK ?? 0);
+const streamChunk = 64 * 1024;
 
 /**
  * Private local storage: 0700 directories, 0600 objects, atomic publication by
@@ -211,18 +215,39 @@ export class LocalArtifactStorage implements ArtifactStorage {
           "Artifact hash mismatch: the transferred bytes do not match the captured hash",
         );
       input.signal?.throwIfAborted();
+      // Durability before publication. The verified bytes reach the medium before
+      // any name points at them, and the destination directory entry is on the
+      // medium before this call returns, so a caller that records the artifact as
+      // preserved afterwards cannot be ahead of the disk.
+      fsyncSync(handle);
       closeSync(handle);
       handle = undefined;
+      fsyncDirectory(dirname(final));
       // One directory tree, so the rename is the atomic step that publishes the
       // object: no reader ever sees a partial artifact under its final key.
       renameSync(temporary, final);
+      fsyncDirectory(dirname(final));
     } catch (error) {
       cleanup();
       throw error;
     }
   }
+  /**
+   * Streams a transfer into the descriptor, refusing to write a byte past the
+   * declared size.
+   *
+   * The bound is checked against the running total, not once at the end, so a
+   * source that keeps producing is stopped instead of filling the disk; and the
+   * pending read is raced against the caller's signal, so an abort while the
+   * source is blocked is honoured immediately rather than after the source
+   * eventually produces something.
+   */
   private async copy(
-    input: { stream: ReadableStream<Uint8Array>; signal?: AbortSignal },
+    input: {
+      stream: ReadableStream<Uint8Array>;
+      size: number;
+      signal?: AbortSignal;
+    },
     handle: number,
   ): Promise<number> {
     const reader = input.stream.getReader();
@@ -230,13 +255,23 @@ export class LocalArtifactStorage implements ArtifactStorage {
     try {
       while (true) {
         input.signal?.throwIfAborted();
-        const { done, value } = await reader.read();
+        const { done, value } = await raced(
+          reader.read(),
+          input.signal,
+          "Artifact transfer aborted",
+        );
         if (done) break;
         if (!value?.length) continue;
+        if (written + value.byteLength > input.size)
+          throw new Error(
+            `Artifact transfer exceeded its declared size of ${input.size} bytes`,
+          );
         written += writeAll(handle, value);
       }
     } finally {
-      await reader.cancel().catch(() => {});
+      // The source stops being read whatever happened: a transfer that overran
+      // its bound must not keep pumping bytes at a handle nobody is draining.
+      void reader.cancel().catch(() => {});
       try {
         reader.releaseLock();
       } catch {}
@@ -272,7 +307,9 @@ export class LocalArtifactStorage implements ArtifactStorage {
     if (length === 0) return new Uint8Array();
     const handle = this.handleFor(key);
     try {
-      const size = fstatSync(handle).size;
+      const info = fstatSync(handle);
+      if (!info.isFile()) throw new ArtifactNotStoredError();
+      const size = info.size;
       const start = Math.min(offset, size);
       const wanted = Math.min(length, size - start);
       if (wanted <= 0) return new Uint8Array();
@@ -285,6 +322,12 @@ export class LocalArtifactStorage implements ArtifactStorage {
       closeSync(handle);
     }
   }
+  /**
+   * A real web stream over the verified descriptor, not a path reopened per
+   * chunk: the object cannot be replaced between the size check and the bytes,
+   * cancelling stops the reads and closes the descriptor, and the service never
+   * has to learn whether a backend produces web or Node streams.
+   */
   async open(
     key: string,
     options: { offset?: number; length?: number; signal?: AbortSignal } = {},
@@ -293,21 +336,23 @@ export class LocalArtifactStorage implements ArtifactStorage {
     const handle = this.handleFor(key);
     let size: number;
     try {
-      size = fstatSync(handle).size;
-    } finally {
+      const info = fstatSync(handle);
+      if (!info.isFile()) throw new ArtifactNotStoredError();
+      size = info.size;
+    } catch (error) {
       closeSync(handle);
+      throw error;
     }
     const offset = Math.max(0, Math.min(options.offset ?? 0, size));
     const length = Math.max(
       0,
       Math.min(options.length ?? size - offset, size - offset),
     );
-    if (length === 0) return emptyStream();
-    const path = this.resolve(key, false);
-    return createReadStream(path, {
-      start: offset,
-      end: offset + length - 1,
-    }) as unknown as ReadableStream<Uint8Array>;
+    if (length === 0) {
+      closeSync(handle);
+      return emptyStream();
+    }
+    return objectStream(handle, offset, length, options.signal);
   }
   async stat(key: string): Promise<{ size: number; sha256: string } | null> {
     let handle: number;
@@ -328,9 +373,20 @@ export class LocalArtifactStorage implements ArtifactStorage {
     const path = this.pathFor(key, true);
     if (path) rmSync(path, { force: true });
   }
-  /** An fd on the object itself: one resolution, then no further path use. */
+  /**
+   * An fd on the object itself: one resolution, then no further path use. A
+   * descriptor that is not a regular file is closed and refused, so a device,
+   * socket or FIFO planted under a key can never be read.
+   */
   private handleFor(key: string): number {
-    return openSync(this.resolve(key, false), READ_ONLY);
+    const handle = openSync(this.resolve(key, false), READ_ONLY);
+    try {
+      if (!fstatSync(handle).isFile()) throw new ArtifactNotStoredError();
+    } catch (error) {
+      closeSync(handle);
+      throw error;
+    }
+    return handle;
   }
   async sweepStale(maxAgeMs: number) {
     const cutoff = Date.now() - Math.max(0, maxAgeMs);
@@ -361,6 +417,108 @@ function emptyStream(): ReadableStream<Uint8Array> {
       controller.close();
     },
   });
+}
+
+/**
+ * A bounded web stream over one pinned descriptor. Nothing here resolves a path
+ * again, so there is no window between the verified object and the bytes served;
+ * cancelling or erroring closes the descriptor, and an abort stops the reads.
+ */
+function objectStream(
+  handle: number,
+  offset: number,
+  length: number,
+  signal?: AbortSignal,
+): ReadableStream<Uint8Array> {
+  let at = offset;
+  let remaining = length;
+  let closed = false;
+  const release = () => {
+    if (closed) return;
+    closed = true;
+    try {
+      closeSync(handle);
+    } catch {}
+  };
+  return new ReadableStream<Uint8Array>(
+    {
+      pull(controller) {
+        if (closed) return;
+        if (signal?.aborted) {
+          release();
+          controller.error(new Error("Artifact transfer aborted"));
+          return;
+        }
+        if (remaining <= 0) {
+          release();
+          controller.close();
+          return;
+        }
+        // A fresh buffer per chunk: a reused one would still be overwritten by
+        // the next pull while a consumer is holding the chunk it was handed.
+        const wanted = Math.min(streamChunk, remaining);
+        const buffer = Buffer.allocUnsafe(wanted);
+        const read = readSync(handle, buffer, 0, wanted, at);
+        if (read <= 0) {
+          // The object ended inside the range it promised: a truncated download
+          // is a failure, not a short body.
+          release();
+          controller.error(
+            new Error("Stored artifact ended before its length"),
+          );
+          return;
+        }
+        at += read;
+        remaining -= read;
+        controller.enqueue(new Uint8Array(buffer.buffer, 0, read));
+      },
+      cancel() {
+        release();
+      },
+    },
+    { highWaterMark: 0 },
+  );
+}
+
+/** Directory entries are durable only once the directory itself is synced. */
+function fsyncDirectory(path: string) {
+  let handle: number | undefined;
+  try {
+    handle = openSync(path, fsConstants.O_RDONLY);
+    fsyncSync(handle);
+  } catch {
+    // A directory that cannot be synced is a platform limitation, not a reason
+    // to withhold bytes that are already verified and published.
+  } finally {
+    if (handle !== undefined) {
+      try {
+        closeSync(handle);
+      } catch {}
+    }
+  }
+}
+
+/**
+ * Races a pending read against an abort. A source that never produces would
+ * otherwise keep the caller waiting past its own deadline.
+ */
+async function raced<T>(
+  operation: Promise<T>,
+  signal: AbortSignal | undefined,
+  reason: string,
+): Promise<T> {
+  if (!signal) return operation;
+  if (signal.aborted) throw new Error(reason);
+  let onAbort: (() => void) | undefined;
+  const stopped = new Promise<never>((_, reject) => {
+    onAbort = () => reject(new Error(reason));
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+  try {
+    return await Promise.race([operation, stopped]);
+  } finally {
+    if (onAbort) signal.removeEventListener("abort", onAbort);
+  }
 }
 
 /** The key resolves to nothing, which a listing may absorb and a read may not. */
@@ -402,6 +560,47 @@ export interface ArtifactBeginInput {
 }
 
 /**
+ * A durable, content-free record of one preservation attempt. Cumulative
+ * attempt, success and failure counts come from these rather than from the live
+ * artifact rows, because a row that is replaced on every recapture cannot
+ * report how many times anything was tried.
+ */
+export interface ArtifactEvent {
+  event_id: number;
+  kind: "artifact.attempted" | "artifact.preserved" | "artifact.failed";
+  artifact_id: string;
+  worker_id: string;
+  task_id: string;
+  run_id: string | null;
+  attempt: number;
+  artifact_kind: string;
+  outcome: "preserved" | "failed" | null;
+  size: number | null;
+  sha256: string | null;
+  error: string | null;
+  at: number;
+}
+
+/** Event names, so a consumer matches on a constant rather than a literal. */
+export const artifactEventNames = {
+  attempted: "artifact.attempted",
+  preserved: "artifact.preserved",
+  failed: "artifact.failed",
+} as const;
+
+/** Most terminal events one artifact may keep; bounds a source that churns. */
+export const maxArtifactEvents = 20;
+
+/**
+ * Where an object lives: two characters of shard, then its own artifact id. A
+ * recapture that changes the content gets a different id and therefore a
+ * different key, which is what lets the previous copy survive a failed one.
+ */
+export function storageKeyFor(artifactId: string): string {
+  return `${artifactId.slice(4, 6)}/${artifactId}`;
+}
+
+/**
  * Durable artifact metadata, created from the coordinator's own database. A
  * record is written before any transfer starts and only becomes `preserved`
  * once the bytes are stored, so an interrupted run leaves an inspectable
@@ -424,69 +623,185 @@ export class ArtifactRepository {
       attempts INTEGER NOT NULL,
       error TEXT,
       created_at INTEGER NOT NULL,
-      retrieved_at INTEGER
+      retrieved_at INTEGER,
+      superseded_by TEXT
     );
     CREATE INDEX IF NOT EXISTS artifacts_worker ON artifacts(worker_id,created_at);
     CREATE INDEX IF NOT EXISTS artifacts_task ON artifacts(task_id,created_at);
     CREATE INDEX IF NOT EXISTS artifacts_state ON artifacts(state);
-    CREATE UNIQUE INDEX IF NOT EXISTS artifacts_source ON artifacts(worker_id,ifnull(run_id,''),original_path,kind);
+
+    CREATE TABLE IF NOT EXISTS artifact_events(
+      event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+      kind TEXT NOT NULL,
+      artifact_id TEXT NOT NULL,
+      worker_id TEXT NOT NULL,
+      task_id TEXT NOT NULL,
+      run_id TEXT,
+      attempt INTEGER NOT NULL,
+      artifact_kind TEXT NOT NULL,
+      outcome TEXT,
+      size INTEGER,
+      sha256 TEXT,
+      error TEXT,
+      at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS artifact_events_worker ON artifact_events(worker_id,at);
+    CREATE INDEX IF NOT EXISTS artifact_events_kind ON artifact_events(kind);
+    CREATE INDEX IF NOT EXISTS artifact_events_artifact ON artifact_events(artifact_id);
     `);
+    // A database written before this column existed keeps working: the field is
+    // only ever read where it is present, and it has to exist before the partial
+    // index below can be built.
+    const columns = this.db.query("PRAGMA table_info(artifacts)").all() as {
+      name: string;
+    }[];
+    if (!columns.some((column) => column.name === "superseded_by"))
+      this.db.exec("ALTER TABLE artifacts ADD COLUMN superseded_by TEXT");
+    // At most one current published copy per worker, run, path and kind. The
+    // index is partial over exactly that predicate, so every attempt, every
+    // failure and every replaced copy can keep its own row without any of them
+    // being able to block the next attempt. Rebuilt once, because the previous
+    // definition covered every row.
+    this.db.exec(`DROP INDEX IF EXISTS artifacts_source;
+      CREATE UNIQUE INDEX IF NOT EXISTS artifacts_source ON artifacts(worker_id,ifnull(run_id,''),original_path,kind)
+        WHERE state='preserved' AND superseded_by IS NULL;`);
   }
-  /** One record per worker, run, path and kind; a retry reuses the record. */
+  /**
+   * A new attempt at one source, as a new record.
+   *
+   * Attempts never share a row: a record that is already published describes
+   * bytes that are on disk, and an attempt that fails must not be able to change
+   * what that record says. The attempt number is still cumulative for the source,
+   * so a client can see how many times a source has been tried.
+   */
   begin(input: ArtifactBeginInput): ArtifactRecord {
+    return this.insert({
+      ...input,
+      run_id: input.run_id ?? null,
+      now: Date.now(),
+    });
+  }
+  /**
+   * A recapture of an already preserved source, as its own attempt record.
+   *
+   * The replacement gets its own identity and its own content key from the moment
+   * it starts, and only becomes the published copy once its bytes are stored.
+   * The previous verified copy keeps its record, its key and its readability, so
+   * an interrupted, corrupted or refused recapture can only mark its own attempt
+   * failed: it can never remove the copy that was already there.
+   */
+  beginAttempt(input: {
+    record: ArtifactRecord;
+    size: number;
+    sha256: string;
+  }): ArtifactRecord {
     return this.db.transaction(() => {
-      const existing = this.find(input);
-      const now = Date.now();
-      if (existing) {
-        this.db
-          .query(
-            "UPDATE artifacts SET state='preserving',attempts=attempts+1,error=NULL WHERE artifact_id=?",
-          )
-          .run(existing.artifact_id);
-        return this.get(existing.artifact_id);
-      }
-      const record: ArtifactRecord = {
-        artifact_id: `art-${randomUUID()}`,
-        worker_id: input.worker_id,
-        task_id: input.task_id,
-        run_id: input.run_id ?? null,
-        original_path: input.original_path,
-        storage_key: null,
-        filename: input.filename,
-        size: 0,
-        sha256: null,
-        kind: input.kind,
-        state: "preserving",
-        attempts: 1,
-        error: null,
-        created_at: now,
-        retrieved_at: null,
-      };
+      const current = this.get(input.record.artifact_id);
+      // The attempt this record is being replaced by is named straight away, so
+      // exactly one record is ever the current one for a source. It is cleared
+      // again if the attempt fails, which is what puts the previous copy back in
+      // charge with its bytes untouched.
+      const artifact_id = `art-${randomUUID()}`;
+      this.db
+        .query("UPDATE artifacts SET superseded_by=? WHERE artifact_id=?")
+        .run(artifact_id, current.artifact_id);
+      const attempt = this.insert({
+        worker_id: current.worker_id,
+        task_id: current.task_id,
+        run_id: current.run_id,
+        original_path: current.original_path,
+        filename: current.filename,
+        kind: current.kind,
+        now: Date.now(),
+        artifact_id,
+      });
+      // The key is this attempt's own, and the captured identity is recorded
+      // before the transfer starts, so an interrupted attempt is still
+      // attributable to the bytes it was going to store.
       this.db
         .query(
-          `INSERT INTO artifacts(artifact_id,worker_id,task_id,run_id,original_path,storage_key,filename,size,sha256,kind,state,attempts,error,created_at,retrieved_at)
-           VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+          "UPDATE artifacts SET storage_key=?,size=?,sha256=? WHERE artifact_id=?",
         )
         .run(
-          record.artifact_id,
-          record.worker_id,
-          record.task_id,
-          record.run_id,
-          record.original_path,
-          null,
-          record.filename,
-          0,
-          null,
-          record.kind,
-          record.state,
-          record.attempts,
-          null,
-          now,
-          null,
+          storageKeyFor(attempt.artifact_id),
+          input.size,
+          input.sha256,
+          attempt.artifact_id,
         );
-      return record;
+      return this.get(attempt.artifact_id);
     })();
   }
+  private insert(input: {
+    worker_id: string;
+    task_id: string;
+    run_id: string | null;
+    original_path: string;
+    filename: string;
+    kind: string;
+    now: number;
+    artifact_id?: string;
+  }): ArtifactRecord {
+    const attempts = (
+      this.db
+        .query(
+          `SELECT count(*) total FROM artifacts WHERE worker_id=? AND ifnull(run_id,'')=?
+           AND original_path=? AND kind=?`,
+        )
+        .get(
+          input.worker_id,
+          input.run_id ?? "",
+          input.original_path,
+          input.kind,
+        ) as { total: number }
+    ).total;
+    const record: ArtifactRecord = {
+      artifact_id: input.artifact_id ?? `art-${randomUUID()}`,
+      task_id: input.task_id,
+      worker_id: input.worker_id,
+      run_id: input.run_id,
+      original_path: input.original_path,
+      storage_key: null,
+      filename: input.filename,
+      size: 0,
+      sha256: null,
+      kind: input.kind,
+      state: "preserving",
+      attempts: attempts + 1,
+      error: null,
+      created_at: input.now,
+      retrieved_at: null,
+      superseded_by: null,
+    };
+    this.db
+      .query(
+        `INSERT INTO artifacts(artifact_id,worker_id,task_id,run_id,original_path,storage_key,filename,size,sha256,kind,state,attempts,error,created_at,retrieved_at,superseded_by)
+         VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      )
+      .run(
+        record.artifact_id,
+        record.worker_id,
+        record.task_id,
+        record.run_id,
+        record.original_path,
+        null,
+        record.filename,
+        0,
+        null,
+        record.kind,
+        record.state,
+        record.attempts,
+        null,
+        input.now,
+        null,
+        null,
+      );
+    this.event(artifactEventNames.attempted, record, record.attempts);
+    return record;
+  }
+  /**
+   * A stored object. The record it replaces is marked, not deleted, so the
+   * history keeps both the copy that was there and the copy that replaced it.
+   */
   preserved(input: {
     artifact_id: string;
     storage_key: string;
@@ -494,19 +809,45 @@ export class ArtifactRepository {
     sha256: string;
     filename?: string;
   }): ArtifactRecord {
-    this.db
-      .query(
-        "UPDATE artifacts SET state='preserved',storage_key=?,size=?,sha256=?,error=NULL,retrieved_at=? WHERE artifact_id=?",
-      )
-      .run(
-        input.storage_key,
-        input.size,
-        input.sha256,
-        Date.now(),
-        input.artifact_id,
-      );
-    return this.get(input.artifact_id);
+    return this.db.transaction(() => {
+      this.db
+        .query(
+          "UPDATE artifacts SET state='preserved',storage_key=?,size=?,sha256=?,error=NULL,retrieved_at=? WHERE artifact_id=?",
+        )
+        .run(
+          input.storage_key,
+          input.size,
+          input.sha256,
+          Date.now(),
+          input.artifact_id,
+        );
+      // Last publisher wins for a source: any other current copy, whether it is
+      // the one this attempt was told to replace or a concurrent attempt that
+      // finished first, becomes history. The transaction is what keeps exactly
+      // one current row per source while both are being written.
+      const source = this.get(input.artifact_id);
+      this.db
+        .query(
+          `UPDATE artifacts SET superseded_by=? WHERE worker_id=? AND ifnull(run_id,'')=?
+           AND original_path=? AND kind=? AND artifact_id<>? AND state='preserved' AND superseded_by IS NULL`,
+        )
+        .run(
+          input.artifact_id,
+          source.worker_id,
+          source.run_id,
+          source.original_path,
+          source.kind,
+          input.artifact_id,
+        );
+      const settled = this.get(input.artifact_id);
+      this.event(artifactEventNames.preserved, settled, settled.attempts, {
+        size: input.size,
+        sha256: input.sha256,
+      });
+      return settled;
+    })();
   }
+
   failed(record: { artifact_id: string }, error: string): ArtifactRecord {
     const message = String(error).slice(0, 1000);
     this.db
@@ -514,7 +855,103 @@ export class ArtifactRepository {
         "UPDATE artifacts SET state='failed',error=?,retrieved_at=coalesce(retrieved_at,?) WHERE artifact_id=?",
       )
       .run(message, Date.now(), record.artifact_id);
-    return this.get(record.artifact_id);
+    // A failed attempt replaces nothing, so whatever it was superseding is the
+    // current copy again. Its bytes were never touched.
+    this.db
+      .query("UPDATE artifacts SET superseded_by=NULL WHERE superseded_by=?")
+      .run(record.artifact_id);
+    const settled = this.get(record.artifact_id);
+    this.event(artifactEventNames.failed, settled, settled.attempts, {
+      error: message,
+    });
+    return settled;
+  }
+  /**
+   * One content-free event row: a name, an attempt number, a bounded error and
+   * a verified size. No artifact contents are ever recorded, and the number of
+   * terminal events per artifact is bounded so a source that keeps changing
+   * cannot grow the table without limit.
+   */
+  private event(
+    kind: ArtifactEvent["kind"],
+    record: ArtifactRecord,
+    attempt: number,
+    extra: {
+      size?: number | null;
+      sha256?: string | null;
+      error?: string | null;
+    } = {},
+  ) {
+    if (kind !== artifactEventNames.attempted) {
+      const terminal = (
+        this.db
+          .query(
+            "SELECT count(*) total FROM artifact_events WHERE artifact_id=? AND kind<>'artifact.attempted'",
+          )
+          .get(record.artifact_id) as { total: number }
+      ).total;
+      if (terminal >= maxArtifactEvents) return;
+    }
+    this.db
+      .query(
+        `INSERT INTO artifact_events(kind,artifact_id,worker_id,task_id,run_id,attempt,artifact_kind,outcome,size,sha256,error,at)
+         VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
+      )
+      .run(
+        kind,
+        record.artifact_id,
+        record.worker_id,
+        record.task_id,
+        record.run_id,
+        Math.max(1, attempt),
+        record.kind,
+        kind === artifactEventNames.preserved
+          ? "preserved"
+          : kind === artifactEventNames.failed
+            ? "failed"
+            : null,
+        extra.size ?? null,
+        extra.sha256 ?? null,
+        extra.error ?? null,
+        Date.now(),
+      );
+  }
+  /** Bounded, oldest-last history for one artifact. Never its contents. */
+  events(artifactId: string, limit = 20): ArtifactEvent[] {
+    const bounded = Math.min(200, Math.max(1, Math.floor(limit) || 1));
+    return this.db
+      .query(
+        "SELECT * FROM artifact_events WHERE artifact_id=? ORDER BY event_id DESC LIMIT ?",
+      )
+      .all(artifactId, bounded)
+      .reverse() as ArtifactEvent[];
+  }
+  /** Cumulative attempt, success and failure counts from durable events. */
+  counters(filter: { worker_id?: string } = {}): {
+    attempts: number;
+    preserved: number;
+    failed: number;
+  } {
+    const where = filter.worker_id ? "AND worker_id=?" : "";
+    const argument = filter.worker_id ? [filter.worker_id] : [];
+    const row = this.db
+      .query(
+        `SELECT
+           count(*) total,
+           sum(CASE WHEN kind='artifact.preserved' THEN 1 ELSE 0 END) preserved,
+           sum(CASE WHEN kind='artifact.failed' THEN 1 ELSE 0 END) failed
+         FROM artifact_events WHERE kind<>'artifact.attempted' ${where}`,
+      )
+      .get(...argument) as {
+      total: number;
+      preserved: number;
+      failed: number;
+    };
+    return {
+      attempts: Number(row?.total ?? 0),
+      preserved: Number(row?.preserved ?? 0),
+      failed: Number(row?.failed ?? 0),
+    };
   }
   get(artifactId: string): ArtifactRecord {
     const row = this.db
@@ -523,6 +960,12 @@ export class ArtifactRepository {
     if (!row) throw new Error("Artifact not found");
     return row;
   }
+  /**
+   * The current published copy for one source, if there is one. A failed or
+   * still-running attempt is not a copy anybody can read, so it is deliberately
+   * not returned: the next attempt for that source starts a new record rather
+   * than reviving one that has a failure attached to it.
+   */
   find(filter: {
     worker_id?: string;
     run_id?: string | null;
@@ -533,7 +976,9 @@ export class ArtifactRepository {
     const row = this.db
       .query(
         `SELECT * FROM artifacts WHERE worker_id=? AND ifnull(run_id,'')=? AND original_path=?
-         ${filter.kind === undefined ? "" : "AND kind=?"}`,
+         AND state='preserved' AND (superseded_by IS NULL)
+         ${filter.kind === undefined ? "" : "AND kind=?"}
+         ORDER BY created_at DESC,rowid DESC LIMIT 1`,
       )
       .get(
         filter.worker_id,
@@ -543,10 +988,17 @@ export class ArtifactRepository {
       ) as ArtifactRecord | null;
     return row;
   }
+  /**
+   * The current artifacts, newest last. A record a later attempt replaced is
+   * left out: it is history, not the copy a client should read, and it is still
+   * reachable by its own id. Counting it would inflate both a listing and any
+   * metric derived from one.
+   */
   list(query: ArtifactListQuery = {}): ArtifactListResult {
     const offset = Math.max(0, query.offset ?? 0);
     const limit = Math.min(200, Math.max(1, query.limit ?? 50));
-    const where = `(? IS NULL OR worker_id=?) AND (? IS NULL OR task_id=?)`;
+    const where = `(? IS NULL OR worker_id=?) AND (? IS NULL OR task_id=?)
+      AND (superseded_by IS NULL)`;
     const rows = this.db
       .query(
         `SELECT * FROM artifacts WHERE ${where} ORDER BY created_at,rowid LIMIT ? OFFSET ?`,
@@ -584,7 +1036,9 @@ export class ArtifactRepository {
     if (!state) return 0;
     return (
       this.db
-        .query("SELECT count(*) total FROM artifacts WHERE state=?")
+        .query(
+          "SELECT count(*) total FROM artifacts WHERE state=? AND (superseded_by IS NULL)",
+        )
         .get(state) as { total: number }
     ).total;
   }

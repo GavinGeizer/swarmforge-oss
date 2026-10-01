@@ -234,10 +234,11 @@ test("the metadata repository is atomic, idempotent and queryable", () => {
   expect(first.attempts).toBe(1);
   expect(first.sha256).toBeNull();
   expect(first.storage_key).toBeNull();
+  // A second attempt on the same source is a second record: one row per attempt
+  // is what keeps a failed recapture from being able to touch a published copy.
   const repeat = repository.begin(input);
-  expect(repeat.artifact_id).toBe(first.artifact_id);
+  expect(repeat.artifact_id).not.toBe(first.artifact_id);
   expect(repeat.attempts).toBe(2);
-  expect(repository.get(first.artifact_id).state).toBe("preserving");
   const preserved = repository.preserved({
     artifact_id: first.artifact_id,
     storage_key: "aa/artifact",
@@ -247,21 +248,34 @@ test("the metadata repository is atomic, idempotent and queryable", () => {
   expect(preserved.state).toBe("preserved");
   expect(preserved.retrieved_at).toBeGreaterThan(0);
   expect(preserved.size).toBe(12);
-  // A failed attempt is durable and visible, never silently dropped.
+  // A failed attempt is durable and visible, never silently dropped, and it is a
+  // record of its own: the next attempt for that source does not inherit it.
   const third = repository.begin(input);
-  expect(third.artifact_id).toBe(first.artifact_id);
+  expect(third.artifact_id).not.toBe(first.artifact_id);
   const failed = repository.failed(third, "source changed during capture");
   expect(failed.state).toBe("failed");
   expect(failed.error).toBe("source changed during capture");
   expect(failed.attempts).toBe(3);
   expect(failed.retrieved_at).toBeGreaterThan(0);
+  // The published copy is still the current one for that source: a failure
+  // somewhere else never takes it out of the listing.
   expect(
     repository.find({
       worker_id: "w-1",
       run_id: "run-1",
       original_path: input.original_path,
     }),
-  ).toMatchObject({ artifact_id: first.artifact_id, state: "failed" });
+  ).toMatchObject({ artifact_id: first.artifact_id, state: "preserved" });
+  expect(repository.events(third.artifact_id).map((e) => e.kind)).toEqual([
+    "artifact.attempted",
+    "artifact.failed",
+  ]);
+  expect(repository.events(third.artifact_id)[0]?.attempt).toBe(3);
+  expect(repository.counters({ worker_id: "w-1" })).toEqual({
+    attempts: 2,
+    preserved: 1,
+    failed: 1,
+  });
   expect(
     repository.find({
       worker_id: "w-1",
@@ -397,4 +411,132 @@ test("a storage implementation only needs the shared interface", async () => {
   expect(readFileSync("/dev/null").length).toBe(0);
   expect(chmodSync).toBeDefined();
   expect(existsSync(storage.pathFor("object-key", true) ?? "")).toBe(false);
+});
+
+test("a transfer that overruns its declared size is stopped while it runs", async () => {
+  let produced = 0;
+  const block = new Uint8Array(64 * 1024);
+  // A source that would keep producing for ever: the bound is a running count,
+  // so the write stops at the declared size instead of filling the disk.
+  const endless = new ReadableStream<Uint8Array>({
+    pull(controller) {
+      produced++;
+      controller.enqueue(block);
+    },
+  });
+  await expect(
+    storage.put({
+      key: "w-1/endless",
+      stream: endless,
+      size: block.length * 2,
+      sha256: sha(new Uint8Array(0)),
+    }),
+  ).rejects.toThrow(/declared size/);
+  // The transfer is stopped after the declared size, and nothing is published:
+  // a source may be pulled one chunk ahead of the consumer, never without end.
+  expect(produced).toBeLessThanOrEqual(6);
+  expect(storage.pathFor("w-1/endless", true)).toBeNull();
+  expect(readdirSync(join(base, "artifacts", ".incoming"))).toEqual([]);
+});
+
+test("an abort while the source is blocked wakes the write promptly", async () => {
+  const controller = new AbortController();
+  let cancelled = false;
+  const blocked = new ReadableStream<Uint8Array>({
+    pull() {
+      // A source that never produces and never resolves on its own.
+      return new Promise<void>(() => {});
+    },
+    cancel() {
+      cancelled = true;
+    },
+  });
+  const pending = storage.put({
+    key: "w-1/blocked",
+    stream: blocked,
+    size: 1024,
+    sha256: sha(new Uint8Array(0)),
+    signal: controller.signal,
+  });
+  const started = Date.now();
+  controller.abort();
+  await expect(pending).rejects.toThrow(/abort/i);
+  expect(Date.now() - started).toBeLessThan(1000);
+  expect(cancelled).toBe(true);
+  expect(storage.pathFor("w-1/blocked", true)).toBeNull();
+  expect(readdirSync(join(base, "artifacts", ".incoming"))).toEqual([]);
+});
+
+test("a download is a real web stream that can be read and cancelled", async () => {
+  const bytes = new Uint8Array(300 * 1024).map((_, i) => (i * 7) % 256);
+  const key = "w-1/streamed";
+  await storage.put({
+    key,
+    stream: stream(bytes),
+    size: bytes.length,
+    sha256: sha(bytes),
+  });
+  const download = await storage.open(key);
+  expect(typeof download.getReader).toBe("function");
+  const reader = download.getReader();
+  const chunks: Uint8Array[] = [];
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(value!);
+  }
+  const joined = Buffer.concat(chunks.map((chunk) => Buffer.from(chunk)));
+  expect(joined.length).toBe(bytes.length);
+  expect(sha(new Uint8Array(joined))).toBe(sha(bytes));
+  // Cancelling stops the reads at once instead of leaving a half-read object.
+  const partial = await storage.open(key);
+  const stopping = partial.getReader();
+  await stopping.read();
+  const cancelledAt = Date.now();
+  await stopping.cancel();
+  expect(Date.now() - cancelledAt).toBeLessThan(1000);
+  // The object itself is untouched and still complete.
+  expect(sha(await storage.read(key, 0, bytes.length))).toBe(sha(bytes));
+});
+
+test("an aborted download stops reading the pinned descriptor", async () => {
+  const bytes = new Uint8Array(200 * 1024).fill(7);
+  const key = "w-1/signal";
+  await storage.put({
+    key,
+    stream: stream(bytes),
+    size: bytes.length,
+    sha256: sha(bytes),
+  });
+  const controller = new AbortController();
+  const download = await storage.open(key, { signal: controller.signal });
+  const reader = download.getReader();
+  await reader.read();
+  controller.abort();
+  await expect(reader.read()).rejects.toThrow(/abort/i);
+  expect(readFileSync(storage.pathFor(key)!).length).toBe(bytes.length);
+});
+
+test("an object is durable before its record can claim it", async () => {
+  // Publication order is observable: the object is on the medium, and the
+  // directory that names it is synced, before `put` resolves. A crash between
+  // the rename and the caller's own bookkeeping can therefore only lose the
+  // record, never the bytes it names.
+  const bytes = new Uint8Array(4096).fill(1);
+  const key = "w-1/durable";
+  await storage.put({
+    key,
+    stream: stream(bytes),
+    size: bytes.length,
+    sha256: sha(bytes),
+  });
+  // The temporary copy is gone and the object is complete under its own key, so
+  // a caller that records the artifact after this returns is never ahead of the
+  // bytes it names.
+  expect(readdirSync(join(base, "artifacts", ".incoming"))).toEqual([]);
+  expect(statSync(storage.pathFor(key)!).size).toBe(bytes.length);
+  expect(await storage.stat(key)).toEqual({
+    size: bytes.length,
+    sha256: sha(bytes),
+  });
 });

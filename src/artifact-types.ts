@@ -122,6 +122,12 @@ export interface ArtifactRecord {
   attempts: number;
   error: string | null;
   kind: string;
+  /**
+   * Set on a record whose published copy a later attempt replaced. The record
+   * and its bytes stay: a failed recapture must not be able to take away the copy
+   * that was already verified.
+   */
+  superseded_by?: string | null;
 }
 
 export interface ArtifactListQuery {
@@ -203,6 +209,13 @@ export function validateRelativePath(path: unknown): string {
 export function validateRoot(root: unknown): string {
   if (typeof root !== "string" || !root.startsWith("/"))
     throw new ArtifactPathError("Artifact root must be an absolute path");
+  // The whole VM filesystem is never a permitted capture root: it is not
+  // coordinator-private, it cannot be walked with every component pinned, and a
+  // configured workspace that resolves to it is a configuration error.
+  if (root === "/")
+    throw new ArtifactPathError(
+      "Artifact root must be a directory inside the guest, not the filesystem root",
+    );
   if (root.includes("\\") || root.includes("\0"))
     throw new ArtifactPathError("Artifact root contains an invalid character");
   if (Buffer.byteLength(root) > 4096)

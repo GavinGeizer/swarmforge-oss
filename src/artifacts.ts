@@ -2,15 +2,18 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { isAbsolute, resolve } from "node:path";
 import {
+  type ArtifactEvent,
   ArtifactRepository,
   type ArtifactStorage,
   LocalArtifactStorage,
+  storageKeyFor,
 } from "./artifact-store";
 import {
   type ArtifactEntry,
   type ArtifactListing,
   type ArtifactListQuery,
   type ArtifactListResult,
+  ArtifactPathError,
   type ArtifactRecord,
   type ArtifactSnapshotRequest,
   type ArtifactTransfer,
@@ -229,21 +232,19 @@ export class ArtifactService {
       filename: string;
       kind: string;
     },
-  ): { record: ArtifactRecord; rebegin: () => ArtifactRecord } {
-    const begin = () =>
-      this.repository.begin({
-        worker_id: worker.worker_id,
-        task_id: worker.task_id,
-        run_id: input.runId,
-        original_path: input.original_path,
-        filename: input.filename,
-        kind: input.kind,
-      });
-    // A preserved artifact keeps its identity while its bytes stay the same.
-    return {
-      record: input.existing?.state === "preserved" ? input.existing : begin(),
-      rebegin: begin,
-    };
+  ): ArtifactRecord {
+    // A source that already has a published copy keeps that record for this
+    // attempt; anything else starts a new one, so two attempts on one source are
+    // two records and never one record claiming two things at once.
+    if (input.existing?.state === "preserved") return input.existing;
+    return this.repository.begin({
+      worker_id: worker.worker_id,
+      task_id: worker.task_id,
+      run_id: input.runId,
+      original_path: input.original_path,
+      filename: input.filename,
+      kind: input.kind,
+    });
   }
 
   /**
@@ -252,25 +253,17 @@ export class ArtifactService {
    * (no transport, refused path, aborted signal) is recorded too, so no
    * `preserving` row is left claiming work that is no longer running.
    */
-  private async attempt(
+  private async attempt<T>(
     record: ArtifactRecord,
     run: (
       transport: WorkerArtifactTransport,
       vmId: string,
       signal: AbortSignal,
-    ) => Promise<ArtifactRecord | ArtifactRecord[]>,
+    ) => Promise<T>,
     options: { signal?: AbortSignal },
-  ): Promise<never> {
+  ): Promise<T> {
     try {
-      return (await this.capture(
-        record.worker_id,
-        run as (
-          transport: WorkerArtifactTransport,
-          vmId: string,
-          signal: AbortSignal,
-        ) => Promise<ArtifactRecord>,
-        options,
-      )) as never;
+      return await this.capture(record.worker_id, run, options);
     } catch (error) {
       if (this.repository.get(record.artifact_id).state === "preserving")
         throw this.fail(record, message(error));
@@ -314,7 +307,7 @@ export class ArtifactService {
       original_path: requested,
       kind,
     });
-    const { record, rebegin } = this.record(worker, {
+    const record = this.record(worker, {
       existing,
       runId,
       original_path: requested,
@@ -328,7 +321,7 @@ export class ArtifactService {
           maxBytes: this.limits.maxBytes,
           signal,
         });
-        return this.ingest(record, existing, transfer, signal, rebegin);
+        return this.ingest(record, existing, transfer, signal);
       },
       options,
     );
@@ -351,7 +344,7 @@ export class ArtifactService {
       original_path: original,
       kind: "snapshot",
     });
-    const { record, rebegin } = this.record(worker, {
+    const record = this.record(worker, {
       existing,
       runId,
       original_path: original,
@@ -377,7 +370,7 @@ export class ArtifactService {
             "Snapshot is incomplete: it reached the entry or depth limit",
           );
         }
-        return this.ingest(record, existing, transfer, signal, rebegin);
+        return this.ingest(record, existing, transfer, signal);
       },
       options,
     );
@@ -407,7 +400,7 @@ export class ArtifactService {
               original_path: item.path,
               kind: "diagnostic",
             });
-            const { record, rebegin } = this.record(worker, {
+            const record = this.record(worker, {
               existing,
               runId,
               original_path: item.path,
@@ -417,13 +410,7 @@ export class ArtifactService {
             started.push(record);
             try {
               records.push(
-                await this.ingest(
-                  record,
-                  existing,
-                  item.transfer,
-                  signal,
-                  rebegin,
-                ),
+                await this.ingest(record, existing, item.transfer, signal),
               );
             } catch (error) {
               // The remaining captures still hold open streams and private
@@ -445,7 +432,16 @@ export class ArtifactService {
     }
   }
 
-  /** Every regular file in a live guest directory, with directories snapshotted. */
+  /**
+   * Every regular file in one live guest directory level.
+   *
+   * The whole level is paged in, not just the first page, and a listing that
+   * reached a cap is refused rather than reported as a complete collection: the
+   * caller keeps the source instead of concluding that everything was salvaged.
+   * A nested directory is not flattened and not silently dropped either; it is
+   * left to an explicit request, which is the only thing that can decide how deep
+   * a salvage should go.
+   */
   async collectDirectory(
     workerId: string,
     path: string,
@@ -454,6 +450,7 @@ export class ArtifactService {
     const directory = validateRelativePath(path);
     const listing = await this.listing(workerId, directory, {
       limit: this.limits.maxEntries,
+      maxEntries: this.limits.maxEntries,
       ...(options.signal ? { signal: options.signal } : {}),
     });
     // A directory that hit the entry cap is provably only partly collected.
@@ -465,24 +462,14 @@ export class ArtifactService {
       );
     const records: ArtifactRecord[] = [];
     for (const entry of listing.entries) {
+      if (!listable(entry) || entry.kind !== "file") continue;
       const child = `${directory}/${entry.name}`;
-      if (entry.kind === "file")
-        records.push(
-          await this.preserve(workerId, child, {
-            ...(options.signal ? { signal: options.signal } : {}),
-            ...(options.runId === undefined ? {} : { runId: options.runId }),
-          }),
-        );
-      // A nested directory is preserved as its own archive rather than being
-      // dropped or flattened into the parent.
-      else if (entry.kind === "directory")
-        records.push(
-          await this.snapshot(workerId, {
-            paths: [child],
-            ...(options.signal ? { signal: options.signal } : {}),
-            ...(options.runId === undefined ? {} : { runId: options.runId }),
-          }),
-        );
+      records.push(
+        await this.preserve(workerId, child, {
+          ...(options.signal ? { signal: options.signal } : {}),
+          ...(options.runId === undefined ? {} : { runId: options.runId }),
+        }),
+      );
     }
     return records;
   }
@@ -518,34 +505,95 @@ export class ArtifactService {
   private async listing(
     workerId: string,
     path: string,
-    options: { offset?: number; limit?: number; signal?: AbortSignal } = {},
+    options: {
+      offset?: number;
+      limit?: number;
+      maxEntries?: number;
+      signal?: AbortSignal;
+    } = {},
   ): Promise<ArtifactListing> {
     const worker = this.guest(workerId);
     const transport = this.transport();
     const relative = path === "" ? "" : validateRelativePath(path);
+    const maxEntries = Math.min(
+      options.maxEntries ?? this.limits.maxEntries,
+      this.limits.maxEntries,
+    );
     return transport.list(worker.vm_id!, this.root, relative, {
       offset: options.offset ?? 0,
-      limit: Math.min(options.limit ?? 100, this.limits.maxEntries),
-      maxEntries: this.limits.maxEntries,
+      limit: Math.min(options.limit ?? 100, maxEntries),
+      maxEntries,
       maxDepth: this.limits.maxDepth,
       ...(options.signal ? { signal: options.signal } : {}),
     });
   }
 
-  /** Bounded, credential-free listing of live guest files. */
+  /**
+   * Bounded, credential-free listing of live guest files.
+   *
+   * The page is filled with entries a caller may actually use: filtering after
+   * the transport has paged can hand back an empty page for a directory whose
+   * first entries are symlinks, and a caller that reads an empty page as the end
+   * of the directory would then conclude the worker has no artifacts at all. The
+   * returned `next_offset` is the transport's own, so paging continues exactly
+   * where the transport stopped and no entry is skipped or repeated.
+   */
   async listWorkerFiles(
     workerId: string,
     path = "",
     options: { offset?: number; limit?: number; signal?: AbortSignal } = {},
   ): Promise<ArtifactListing> {
-    const listing = await this.listing(workerId, path, options);
+    const wanted = Math.max(1, Math.min(options.limit ?? 50, 1000));
+    if (options.offset !== undefined && !Number.isSafeInteger(options.offset))
+      throw new ArtifactPathError("Invalid artifact page offset");
+    if (options.offset !== undefined && options.offset < 0)
+      throw new ArtifactPathError("Invalid artifact page offset");
+    if (options.limit !== undefined && !Number.isSafeInteger(options.limit))
+      throw new ArtifactPathError("Invalid artifact page size");
+    let offset = options.offset ?? 0;
+    const entries: ArtifactEntry[] = [];
+    let next: number | null = null;
+    let truncated = false;
+    let total: number | undefined;
+    // Bounded by the entry budget rather than by wall time: a directory is
+    // either fully described inside the budget or the scan is refused.
+    const budget = this.limits.maxEntries;
+    let seen = 0;
+    while (true) {
+      const listing = await this.listing(workerId, path, {
+        offset,
+        limit: wanted,
+        maxEntries: budget,
+        ...(options.signal ? { signal: options.signal } : {}),
+      });
+      if (listing.truncated) truncated = true;
+      if (listing.total !== undefined) total = listing.total;
+      for (const entry of listing.entries) {
+        seen++;
+        if (listable(entry)) entries.push(entry);
+        if (entries.length >= wanted) break;
+      }
+      if (entries.length >= wanted) {
+        // Continue from the transport's own next offset so a page boundary never
+        // re-reads or skips an entry.
+        next = listing.next_offset ?? null;
+        break;
+      }
+      if (listing.next_offset === null) {
+        next = null;
+        break;
+      }
+      if (listing.next_offset <= offset || seen >= budget) {
+        next = listing.next_offset;
+        break;
+      }
+      offset = listing.next_offset;
+    }
     return {
-      entries: listing.entries.filter((entry) => listable(entry)),
-      next_offset: listing.next_offset,
-      ...(listing.truncated === undefined
-        ? {}
-        : { truncated: listing.truncated }),
-      ...(listing.total === undefined ? {} : { total: listing.total }),
+      entries: entries.slice(0, wanted),
+      next_offset: next,
+      ...(truncated ? { truncated: true } : {}),
+      ...(total === undefined ? {} : { total }),
     };
   }
 
@@ -557,7 +605,14 @@ export class ArtifactService {
     return this.repository.get(artifactId);
   }
 
-  /** Raw, faithful, bounded bytes. Never screened: this is the private path. */
+  /**
+   * Raw, faithful, bounded bytes. Never screened: this is the private path.
+   *
+   * The cap is explicit, so a caller cannot turn a metadata read into an
+   * arbitrary whole-object transfer through a range; anything larger is served by
+   * {@link download}, which streams from the pinned descriptor instead of
+   * allocating the object.
+   */
   async read(artifactId: string, offset = 0, length = safeReadLimit) {
     const record = this.repository.get(artifactId);
     if (record.state !== "preserved" || !record.storage_key)
@@ -566,10 +621,16 @@ export class ArtifactService {
       throw new Error("Invalid artifact byte range");
     if (!Number.isSafeInteger(length) || length < 0)
       throw new Error("Invalid artifact byte range");
+    if (length > safeReadLimit)
+      throw new Error("Artifact read exceeds 32768 bytes; stream it instead");
     return this.storage.read(record.storage_key, offset, length);
   }
 
-  /** Whole-object raw stream for an authenticated download. */
+  /**
+   * Whole-object raw stream for an authenticated download, straight from the
+   * verified descriptor: no byte range is assembled in memory and cancelling the
+   * response stops the reads.
+   */
   async download(
     artifactId: string,
     signal?: AbortSignal,
@@ -578,6 +639,17 @@ export class ArtifactService {
     if (record.state !== "preserved" || !record.storage_key)
       throw new Error("Artifact has no stored bytes");
     return this.storage.open(record.storage_key, signal ? { signal } : {});
+  }
+
+  /** Bounded, content-free attempt history for one artifact. */
+  events(artifactId: string, limit = 20): ArtifactEvent[] {
+    this.repository.get(artifactId);
+    return this.repository.events(artifactId, limit);
+  }
+
+  /** Cumulative attempt, success and failure counts, optionally per worker. */
+  counters(filter: { worker_id?: string } = {}) {
+    return this.repository.counters(filter);
   }
 
   /**
@@ -615,24 +687,33 @@ export class ArtifactService {
   }
 
   /**
-   * Streams a staged transfer into storage and only then marks the record
-   * preserved. Storage re-hashes what reached the disk, so a transport that
-   * lies about its own bytes cannot commit them.
+   * Streams a staged transfer into storage and only then marks it published.
+   *
+   * Storage re-hashes what reached the disk, so a transport that lies about its
+   * own bytes cannot commit them. What is published is always a key of this
+   * attempt's own: a first capture stores under the record's key, and a recapture
+   * of changed content stores under a new key held by a new attempt record. The
+   * previous verified copy keeps its record and its key for as long as the
+   * replacement has not been stored, so a transfer that is interrupted,
+   * corrupted or refused leaves the earlier copy exactly as it was, readable
+   * under the record that still points at it, and its failure puts that copy back
+   * in charge. Only a verified replacement supersedes it, and only then is the
+   * superseded object dropped.
    */
   private async ingest(
     record: ArtifactRecord,
     existing: ArtifactRecord | null | undefined,
     transfer: ArtifactTransfer,
     signal: AbortSignal,
-    rebegin: () => ArtifactRecord,
   ): Promise<ArtifactRecord> {
     if (!Number.isSafeInteger(transfer.size) || transfer.size < 0)
       throw this.fail(record, "Artifact transfer reported an invalid size");
     if (!isSha256(transfer.sha256))
       throw this.fail(record, "Artifact transfer reported an invalid hash");
-    // Re-capturing the same bytes for a source that is already durable changes
-    // nothing: the stored object stays, the record is not rewritten, and the
-    // staged copy is dropped. Changed content replaces it below.
+    // Re-capturing the same bytes for a source that is already durable rewrites
+    // nothing: the verified object stays as it is and the staged copy is dropped.
+    // This attempt becomes the current record for the source, so a listing never
+    // shows two current copies of one artifact and nothing is stored twice.
     if (
       existing?.storage_key &&
       existing.state === "preserved" &&
@@ -641,13 +722,30 @@ export class ArtifactService {
       (await this.storage.stat(existing.storage_key))?.sha256 ===
         transfer.sha256
     ) {
+      const unchanged =
+        record.artifact_id === existing.artifact_id
+          ? existing
+          : this.repository.preserved({
+              artifact_id: record.artifact_id,
+              storage_key: existing.storage_key,
+              size: transfer.size,
+              sha256: transfer.sha256,
+            });
       await transfer.cleanup().catch(() => {});
-      return existing;
+      return unchanged;
     }
-    // Content that differs from what is stored is a new attempt on the same
-    // source, so the record's history keeps both the attempt and its outcome.
-    const target = existing?.state === "preserved" ? rebegin() : record;
-    const key = `${target.artifact_id.slice(4, 6)}/${target.artifact_id}`;
+    // Changed content is a new attempt with its own key, so the replacement and
+    // the copy it replaces never share a name on disk.
+    const replacement =
+      existing?.state === "preserved" && existing.storage_key
+        ? this.repository.beginAttempt({
+            record: existing,
+            size: transfer.size,
+            sha256: transfer.sha256,
+          })
+        : record;
+    const key =
+      replacement.storage_key ?? storageKeyFor(replacement.artifact_id);
     try {
       signal.throwIfAborted();
       await this.storage.put({
@@ -657,16 +755,27 @@ export class ArtifactService {
         sha256: transfer.sha256,
         signal,
       });
-      return this.repository.preserved({
-        artifact_id: target.artifact_id,
+      const published = this.repository.preserved({
+        artifact_id: replacement.artifact_id,
         storage_key: key,
         size: transfer.size,
         sha256: transfer.sha256,
       });
+      // The replaced copy is no longer the current one for this source, so it is
+      // dropped only now that a verified replacement exists under its own key.
+      if (
+        existing?.storage_key &&
+        existing.artifact_id !== replacement.artifact_id &&
+        existing.storage_key !== key
+      )
+        await this.storage.remove(existing.storage_key).catch(() => {});
+      return published;
     } catch (error) {
-      // Bytes that failed verification must not remain readable under the key.
-      await this.storage.remove(key).catch(() => {});
-      throw this.fail(target, message(error));
+      // Only this attempt's own key is cleaned up, and only if it was ever
+      // published: the previous copy keeps its bytes and its record.
+      if (await this.storage.stat(key))
+        await this.storage.remove(key).catch(() => {});
+      throw this.fail(replacement, message(error));
     } finally {
       await transfer.cleanup().catch(() => {});
     }

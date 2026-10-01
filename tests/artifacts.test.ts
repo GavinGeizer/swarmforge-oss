@@ -125,7 +125,15 @@ test("binary and large artifacts survive the round trip untouched", async () => 
     worker,
     ".swarmforge/artifacts/blob.bin",
   );
-  expect(await h.artifacts.read(small.artifact_id, 0, binary.length)).toEqual(
+  // A raw range read is explicitly capped: a large object is streamed, never
+  // assembled in memory by a metadata call.
+  await expect(
+    h.artifacts.read(small.artifact_id, 0, binary.length),
+  ).rejects.toThrow();
+  expect(await h.artifacts.read(small.artifact_id, 0, 32768)).toEqual(
+    binary.subarray(0, 32768),
+  );
+  expect(await collect(await h.artifacts.download(small.artifact_id))).toEqual(
     binary,
   );
   // 12 MiB through the real stream: no truncation, no buffering, hash matched.
@@ -144,9 +152,6 @@ test("binary and large artifacts survive the round trip untouched", async () => 
   );
   expect(record.size).toBe(size);
   expect(record.sha256).toBe(digest.digest("hex"));
-  expect(sha(await h.artifacts.read(record.artifact_id, 0, size))).toBe(
-    record.sha256!,
-  );
   const streamed = await collect(
     await h.artifacts.download(record.artifact_id),
   );
@@ -171,28 +176,46 @@ test("preserving the same source twice is idempotent, and a retry re-attempts", 
       runId: "run-1",
     },
   );
-  expect(again.artifact_id).toBe(first.artifact_id);
-  expect(again.attempts).toBe(1);
+  // Identical bytes: one current record, one stored object, nothing rewritten.
   expect(storedFiles()).toEqual([`${first.storage_key}`]);
-  // The same source is one artifact: new content replaces the stored bytes and
-  // bumps the attempt count, rather than leaving a record describing content
-  // that is no longer there.
+  expect(h.artifacts.list({ worker_id: worker }).artifacts).toHaveLength(1);
+  expect(h.artifacts.metadata(again.artifact_id).storage_key).toBe(
+    first.storage_key,
+  );
+  // Changed content is a new attempt with its own key and its own record, so the
+  // copy that was already verified is still there, still readable and marked as
+  // the one this attempt replaced.
   write("stable.txt", "different output entirely");
   const changed = await h.artifacts.preserve(
     worker,
     ".swarmforge/artifacts/stable.txt",
     { runId: "run-1" },
   );
-  expect(changed.artifact_id).toBe(first.artifact_id);
-  expect(changed.attempts).toBe(2);
+  expect(changed.artifact_id).not.toBe(first.artifact_id);
   expect(changed.sha256).toBe(sha(text("different output entirely")));
-  expect(changed.storage_key).toBe(first.storage_key);
-  expect(storedFiles()).toEqual([`${first.storage_key}`]);
+  expect(changed.storage_key).not.toBe(first.storage_key);
+  expect(changed.superseded_by).toBeNull();
+  // Only the current copy is kept once its replacement is verified.
+  expect(storedFiles()).toEqual([`${changed.storage_key}`]);
   expect(
     Buffer.from(
       await h.artifacts.read(changed.artifact_id, 0, changed.size),
     ).toString(),
   ).toBe("different output entirely");
+  const replaced = h.artifacts.metadata(first.artifact_id);
+  expect(replaced.superseded_by).toBe(changed.artifact_id);
+  // A verified replacement supersedes the old copy, so only one object is kept
+  // and the replaced record is history rather than a second stored blob.
+  expect(h.artifacts.metadata(first.artifact_id).storage_key).toBe(
+    first.storage_key,
+  );
+  expect(storedFiles()).toEqual([`${changed.storage_key}`]);
+  // Exactly one current record per source, so a listing cannot grow with retries.
+  expect(
+    h.artifacts
+      .list({ worker_id: worker })
+      .artifacts.map((record) => record.artifact_id),
+  ).toEqual([changed.artifact_id]);
 });
 
 test("an oversized or missing source fails closed with a durable record", async () => {
@@ -232,8 +255,14 @@ test("an oversized or missing source fails closed with a durable record", async 
       ".swarmforge/big.bin",
     );
     expect(retry.state).toBe("preserved");
-    expect(retry.attempts).toBe(2);
-    expect(retry.artifact_id).toBe(failed.artifact_id);
+    // The failed attempt stays as its own durable record; the retry is a new one,
+    // and its attempt number continues the source's history.
+    expect(retry.artifact_id).not.toBe(failed.artifact_id);
+    expect(retry.attempts).toBeGreaterThan(failed.attempts);
+    expect(limited.artifacts.metadata(failed.artifact_id).state).toBe("failed");
+    expect(
+      limited.artifacts.counters({ worker_id: created.worker_id }),
+    ).toEqual({ attempts: 3, preserved: 1, failed: 2 });
   } finally {
     await limited.cleanup();
   }
@@ -324,12 +353,10 @@ test("collecting a directory stores each regular file and skips the rest", async
   expect(records.map((r) => r.original_path).sort()).toEqual([
     ".swarmforge/artifacts/one.txt",
     ".swarmforge/artifacts/two.bin",
-    "snapshot:.swarmforge/artifacts/nested",
   ]);
-  // A directory becomes its own snapshot so nothing inside it is silently lost.
-  expect(records.find((r) => r.original_path.endsWith("nested"))?.kind).toBe(
-    "snapshot",
-  );
+  // One level is what a directory declaration means; a nested directory is left
+  // to an explicit request rather than silently flattened or silently dropped.
+  expect(records.some((r) => r.original_path.includes("nested"))).toBe(false);
   for (const record of records) expect(record.state).toBe("preserved");
 });
 
@@ -859,4 +886,158 @@ test("a failed diagnostic releases every capture it opened", async () => {
   } finally {
     storage.put = original;
   }
+});
+
+test("a failed recapture keeps the previous verified copy readable", async () => {
+  write("keep.txt", "the good copy");
+  const first = await h.artifacts.preserve(
+    worker,
+    ".swarmforge/artifacts/keep.txt",
+    { runId: "run-1" },
+  );
+  // The source changed and the recapture is then interrupted: the replacement is
+  // written to a key of its own, so the copy that was already verified is still
+  // there, still current and still readable afterwards.
+  write("keep.txt", "half a different copy");
+  const controller = new AbortController();
+  const transport = h.workspace.transport;
+  const original = transport.open.bind(transport);
+  transport.open = async (...args) => {
+    const transfer = await original(...args);
+    const stream = transfer.stream;
+    return {
+      ...transfer,
+      stream: new ReadableStream<Uint8Array>({
+        async start(read) {
+          const reader = stream.getReader();
+          const { value } = await reader.read();
+          read.enqueue(value!);
+          await reader.cancel();
+          controller.abort();
+        },
+      }),
+    };
+  };
+  try {
+    await expect(
+      h.artifacts.preserve(worker, ".swarmforge/artifacts/keep.txt", {
+        runId: "run-1",
+        signal: controller.signal,
+      }),
+    ).rejects.toThrow();
+  } finally {
+    transport.open = original;
+  }
+  const current = h.artifacts.metadata(first.artifact_id);
+  expect(current.state).toBe("preserved");
+  expect(current.superseded_by).toBeNull();
+  expect(current.storage_key).toBe(first.storage_key);
+  expect(
+    Buffer.from(
+      await h.artifacts.read(current.artifact_id, 0, current.size),
+    ).toString(),
+  ).toBe("the good copy");
+  expect(storedFiles()).toEqual([`${first.storage_key}`]);
+  // The failed attempt is recorded on its own, so the failure is visible without
+  // the good copy losing its identity.
+  const listed = h.artifacts.list({ worker_id: worker }).artifacts;
+  expect(listed.map((record) => record.state).sort()).toEqual([
+    "failed",
+    "preserved",
+  ]);
+  const failedRecord = listed.find((record) => record.state === "failed")!;
+  const failed = h.artifacts
+    .events(failedRecord.artifact_id)
+    .filter((event) => event.kind === "artifact.failed");
+  expect(failed.length).toBeGreaterThan(0);
+  expect(failed.at(-1)?.error).toMatch(/abort/i);
+});
+
+test("a failed recapture keeps the copy readable after the guest is destroyed", async () => {
+  write("survivor.txt", "durable content");
+  const first = await h.artifacts.preserve(
+    worker,
+    ".swarmforge/artifacts/survivor.txt",
+    { runId: "run-1" },
+  );
+  // A recapture that fails its integrity check, not one that is interrupted.
+  const transport = h.workspace.transport;
+  const original = transport.open.bind(transport);
+  transport.open = async (...args) => {
+    const transfer = await original(...args);
+    return { ...transfer, sha256: sha(text("a different hash entirely")) };
+  };
+  try {
+    await expect(
+      h.artifacts.preserve(worker, ".swarmforge/artifacts/survivor.txt", {
+        runId: "run-1",
+      }),
+    ).rejects.toThrow(/hash/i);
+  } finally {
+    transport.open = original;
+  }
+  await h.provider.destroyWorker(vm);
+  const current = h.artifacts.metadata(first.artifact_id);
+  expect(current.state).toBe("preserved");
+  expect(current.sha256).toBe(first.sha256);
+  expect(
+    Buffer.from(
+      await h.artifacts.read(current.artifact_id, 0, current.size),
+    ).toString(),
+  ).toBe("durable content");
+  expect(storedFiles()).toEqual([`${first.storage_key}`]);
+  // The failed attempt and the success before it are both countable afterwards.
+  expect(h.artifacts.counters({ worker_id: worker })).toEqual({
+    attempts: 2,
+    preserved: 1,
+    failed: 1,
+  });
+});
+
+test("a successful recapture supersedes the old record and drops its object", async () => {
+  write("swap.txt", "first version");
+  const first = await h.artifacts.preserve(
+    worker,
+    ".swarmforge/artifacts/swap.txt",
+    { runId: "run-1" },
+  );
+  write("swap.txt", "second version");
+  const second = await h.artifacts.preserve(
+    worker,
+    ".swarmforge/artifacts/swap.txt",
+    { runId: "run-1" },
+  );
+  expect(second.storage_key).not.toBe(first.storage_key);
+  expect(h.artifacts.metadata(first.artifact_id).superseded_by).toBe(
+    second.artifact_id,
+  );
+  expect(storedFiles()).toEqual([`${second.storage_key}`]);
+  expect(h.artifacts.list({ worker_id: worker }).artifacts).toHaveLength(1);
+  expect(h.artifacts.counters({ worker_id: worker })).toMatchObject({
+    preserved: 2,
+    failed: 0,
+  });
+});
+
+test("durable events count attempts, successes and failures without contents", async () => {
+  write("evented.txt", "body");
+  const record = await h.artifacts.preserve(
+    worker,
+    ".swarmforge/artifacts/evented.txt",
+  );
+  const events = h.artifacts.events(record.artifact_id);
+  expect(events.map((event) => event.kind)).toEqual([
+    "artifact.attempted",
+    "artifact.preserved",
+  ]);
+  expect(events[1]).toMatchObject({
+    worker_id: worker,
+    artifact_kind: "file",
+    outcome: "preserved",
+    size: "body".length,
+    attempt: 1,
+  });
+  // The event stream carries no artifact bytes, only the verified size and hash.
+  expect(JSON.stringify(events)).not.toContain("body");
+  expect(events.length).toBeLessThanOrEqual(21);
 });
