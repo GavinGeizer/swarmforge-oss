@@ -930,16 +930,18 @@ export class Coordinator {
     if (!f) throw new Error("Worker has no artifact preservation to retry");
     if (f.state === "abandoned")
       throw new Error("Artifact preservation was explicitly abandoned");
-    if (f.state === "preserved")
-      throw new Error("Artifact preservation already succeeded");
+    // Retrying preservation that already succeeded is a no-op, not a failure: the records it
+    // produced are the answer, and a repeated retry must not duplicate them.
+    if (f.state === "preserved") return w;
     if (!this.finalizer.collectable(w))
       throw new Error(
         "Worker VM is unavailable; there is no workspace to preserve",
       );
     if (this.finalizer.live(id))
       throw new Error("Artifact preservation is already running");
-    if (f.next_retry_at && Date.now() < f.next_retry_at)
-      throw new Error("Artifact preservation retry is already scheduled");
+    // A deliberate retry supersedes a scheduled automatic one: attempts restart, the backoff is
+    // cleared, and exactly one attempt runs now. Stacking is impossible because a worker has at
+    // most one live collection.
     this.store.setFinalization(id, {
       state: "pending",
       attempts: 0,
@@ -947,7 +949,10 @@ export class Coordinator {
       next_retry_at: null,
       completed_at: null,
     });
-    return this.finalize(id);
+    // Exactly one deliberate attempt, bounded by the configured transfer timeout: the automatic
+    // schedule keeps retrying in the background, so an operator call never blocks on a backoff.
+    await this.finalizer.run(id);
+    return this.store.get(id);
   }
   private async applyControl(w: Worker) {
     const id = w.worker_id;

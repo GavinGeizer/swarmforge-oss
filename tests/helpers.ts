@@ -44,6 +44,9 @@ export class FakeProvider implements WorkerProvider {
   created = 0;
   execCommands: string[] = [];
   transportFailure = "";
+  // "helper": the guest helper's deliberately unspecific vocabulary, where listing a missing
+  // directory and listing a file produce the same message.
+  transportStyle: "fake" | "helper" = "fake";
   transportMissing = new Set<string>();
   // Paths whose reported digest does not describe the staged bytes.
   transportCorrupt = new Set<string>();
@@ -150,21 +153,21 @@ export class FakeProvider implements WorkerProvider {
       cleanup: async () => {},
     };
   }
+  // A real directory listing names every direct child, and a child that only exists as a
+  // prefix of a stored file is still a directory.
   private children(id: string, root: string, path: string) {
     const target = this.join(root, path);
+    const prefix = `${this.key(id, target)}/`;
     const names = new Map<string, ArtifactEntry["kind"]>();
-    for (const key of this.files.keys())
-      if (key.startsWith(`${this.key(id, target)}/`)) {
-        const tail = key.slice(`${this.key(id, target)}/`.length);
-        if (tail.includes("/") || this.transportMissing.has(key)) continue;
-        names.set(tail, "file");
-      }
-    for (const key of this.directories.keys())
-      if (key.startsWith(`${this.key(id, target)}/`)) {
-        const tail = key.slice(`${this.key(id, target)}/`.length);
-        if (tail.includes("/")) continue;
-        names.set(tail, "directory");
-      }
+    const add = (key: string, kind: ArtifactEntry["kind"]) => {
+      if (!key.startsWith(prefix) || this.transportMissing.has(key)) return;
+      const tail = key.slice(prefix.length);
+      const head = tail.split("/")[0];
+      if (!head) return;
+      names.set(head, tail.includes("/") ? "directory" : kind);
+    };
+    for (const key of this.files.keys()) add(key, "file");
+    for (const key of this.directories.keys()) add(key, "directory");
     return [...names].sort((a, b) => a[0].localeCompare(b[0]));
   }
   artifactTransport: WorkerArtifactTransport = {
@@ -179,6 +182,8 @@ export class FakeProvider implements WorkerProvider {
         const target = this.join(root, path);
         await this.noSymlink(id, target);
         if (!this.directory(id, target)) {
+          if (this.transportStyle === "helper")
+            throw new Error("path component is missing or not a directory");
           if (this.exists(id, target))
             throw new Error(`ENOTDIR: not a directory, stat '${target}'`);
           throw new Error(
@@ -208,10 +213,13 @@ export class FakeProvider implements WorkerProvider {
         this.fail();
         const target = this.join(root, path);
         await this.noSymlink(id, target);
-        if (!this.exists(id, target))
+        if (!this.exists(id, target)) {
+          if (this.transportStyle === "helper")
+            throw new Error("artifact is missing or is not a regular file");
           throw new Error(
             `ENOENT: no such file or directory, open '${target}'`,
           );
+        }
         if (this.directory(id, target))
           throw new Error(
             `EISDIR: illegal operation on a directory, open '${target}'`,

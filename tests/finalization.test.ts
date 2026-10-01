@@ -383,19 +383,8 @@ test("cancellation stops production promptly and never waits on preservation", a
   expect((await within(2000, h.coordinator.control(id, "cancel"))).state).toBe(
     "cancelled",
   );
-  h.store.patch(id, {
-    finalization: {
-      ...backing.finalization!,
-      next_retry_at: Date.now() + 600000,
-    },
-  });
-  await expect(h.coordinator.retryFinalization(id)).rejects.toThrow(
-    "already scheduled",
-  );
   h.provider.transportFailure = "";
-  h.store.patch(id, {
-    finalization: { ...backing.finalization!, next_retry_at: null },
-  });
+  // A deliberate retry supersedes the scheduled automatic one instead of waiting it out.
   const recovered = await within(5000, h.coordinator.retryFinalization(id));
   expect(recovered.finalization?.state).toBe("preserved");
   expect(
@@ -572,7 +561,7 @@ test("a restart retries an interrupted collection and never marks it preserved e
     expect(
       store
         .events(worker.worker_id)
-        .filter((event) => event.type === "finalization.collecting"),
+        .filter((event) => event.type === "finalization.attempted"),
     ).toHaveLength(2);
     const opens = provider.transportOpens.length;
     store.close();
@@ -607,8 +596,11 @@ test("exhausted retries retain the VM and a deliberate retry recovers it", async
   expect(h.provider.vms.has(vm)).toBe(true);
   const events = h.store.events(id);
   expect(
-    events.filter((event) => event.type === "finalization.collecting"),
+    events.filter((event) => event.type === "finalization.attempted"),
   ).toHaveLength(2);
+  expect(
+    events.filter((event) => event.type === "finalization.failed"),
+  ).toHaveLength(1);
   h.provider.transportFailure = "";
   const recovered = await within(5000, h.coordinator.retryFinalization(id));
   expect(recovered.finalization?.state).toBe("preserved");
@@ -638,10 +630,11 @@ test("a provider without artifact transport fails preservation clearly", async (
   expect(settled.finalization?.error ?? "").toContain("transport");
   expect(settled.finalization?.attempts).toBe(3);
   expect(h.provider.vms.has(vm)).toBe(true);
-  expect(
-    (await within(5000, h.coordinator.retryFinalization(id))).finalization
-      ?.state,
-  ).toBe("failed");
+  // A deliberate retry runs exactly one attempt and reports it rather than waiting out a backoff.
+  const retried = await within(5000, h.coordinator.retryFinalization(id));
+  expect(retried.finalization?.attempts).toBe(1);
+  expect(retried.finalization?.error ?? "").toContain("transport");
+  expect(["pending", "failed"]).toContain(retried.finalization?.state ?? "");
   h.provider.artifactTransport = transport;
   const recovered = await within(5000, h.coordinator.retryFinalization(id));
   expect(recovered.finalization?.state).toBe("preserved");
@@ -779,8 +772,22 @@ test("each run keeps its own artifacts and run id while events retain both outco
       .map((r) => r.run_id),
   ).toEqual([second]);
   const types = h.store.events(id).map((event) => event.type);
-  expect(types.filter((t) => t === "finalization.pending")).toHaveLength(2);
+  expect(types.filter((t) => t === "finalization.attempted")).toHaveLength(2);
   expect(types.filter((t) => t === "finalization.preserved")).toHaveLength(2);
+  // The event vocabulary is exactly the durable attempt and settled-outcome pair the metrics
+  // rebuild their cumulative counters from.
+  expect(
+    types.filter(
+      (t) =>
+        t.startsWith("finalization.") &&
+        ![
+          "finalization.attempted",
+          "finalization.preserved",
+          "finalization.failed",
+          "finalization.abandoned",
+        ].includes(t),
+    ),
+  ).toEqual([]);
   h.store.close();
 });
 
@@ -907,6 +914,54 @@ test("finalization is visible on the public worker view", async () => {
   );
   await finalized(h, id);
   expect(publicWorker(h.coordinator, id).finalization?.state).toBe("preserved");
+  h.store.close();
+});
+
+test("declarations classify from listings, never from the guest's error wording", async () => {
+  const h = harness({ ...fast, SWARMFORGE_FINALIZATION_MAX_ATTEMPTS: 1 });
+  h.provider.transportStyle = "helper";
+  const worker = h.coordinator.spawn({
+    ...task,
+    artifacts: [
+      { path: "out/first.txt" },
+      { path: "out/nested/**" },
+      { path: "absent/deeper/required.txt", required: true },
+    ],
+  });
+  await runToRunning(h, worker.worker_id);
+  const vm = h.store.get(worker.worker_id).vm_id!;
+  await h.provider.writeFile(vm, "/workspace/out/first.txt", "one");
+  await h.provider.writeFile(vm, "/workspace/out/nested/deep.txt", "two");
+  h.agent.complete(h.store.get(worker.worker_id));
+  await h.coordinator.tick();
+  const settled = await finalized(h, worker.worker_id);
+  // The helper reports a missing directory and a file identically; only a listing can tell them
+  // apart, so the required absence fails while the present files are still captured.
+  expect(settled.finalization?.state).toBe("failed");
+  expect(settled.finalization?.attempts).toBe(1);
+  expect(settled.finalization?.error ?? "").toContain(
+    "absent/deeper/required.txt",
+  );
+  const captured = records(h, worker.worker_id).map((r) => r.original_path);
+  expect(captured).toContain("out/first.txt");
+  expect(captured).toContain("out/nested/deep.txt");
+  h.store.close();
+});
+
+test("a missing optional declaration is skipped under the guest's own error wording", async () => {
+  const h = harness(fast);
+  h.provider.transportStyle = "helper";
+  const worker = h.coordinator.spawn({
+    ...task,
+    artifacts: [{ path: "never/written.txt" }, { path: "reports/**" }],
+  });
+  await runToRunning(h, worker.worker_id);
+  h.agent.complete(h.store.get(worker.worker_id));
+  await h.coordinator.tick();
+  const settled = await finalized(h, worker.worker_id);
+  // Nothing optional is missing, so the default collection still preserves successfully.
+  expect(settled.finalization?.state).toBe("preserved");
+  expect(settled.finalization?.attempts).toBe(1);
   h.store.close();
 });
 

@@ -206,8 +206,12 @@ export type EventType =
   | `worker.${WorkerState | "requested" | "resumed"}`
   | "result.received"
   | "artifact.created"
-  | `finalization.${FinalizationState}`
-  | "finalization.attempt_failed";
+  // One attempted event per collection attempt, persisted before any transfer starts, plus
+  // exactly one settled outcome per collection. Cumulative counters are rebuilt from these.
+  | "finalization.attempted"
+  | "finalization.preserved"
+  | "finalization.failed"
+  | "finalization.abandoned";
 export interface WorkerEvent {
   id: number;
   worker_id: string;

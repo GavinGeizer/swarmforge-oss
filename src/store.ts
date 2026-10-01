@@ -318,6 +318,8 @@ export class Store {
       // One record per run: a repeated settle for the same run never resets its attempts or
       // reopens an exhausted or abandoned record.
       if (w.finalization && w.finalization.run_id === run_id) return w;
+      // Record creation is not an attempt, so it announces nothing: only the attempt itself and
+      // the settled collection are durable events.
       return this.setFinalization(id, {
         state: "pending",
         run_id,
@@ -343,7 +345,13 @@ export class Store {
       ...(next.error ? { error: next.error } : {}),
     };
     if (event) this.event(id, event, payload);
-    else if (before.finalization?.state !== next.state)
+    // A settled collection is announced once; a scheduled retry is not a new outcome.
+    else if (
+      before.finalization?.state !== next.state &&
+      (next.state === "preserved" ||
+        next.state === "failed" ||
+        next.state === "abandoned")
+    )
       this.event(id, `finalization.${next.state}`, payload);
     return updated;
   }
@@ -366,8 +374,8 @@ export class Store {
         return null;
       if (f.attempts >= maxAttempts) return null;
       const attempts = f.attempts + 1;
-      // Announced on every attempt, including a restart re-entering an interrupted
-      // collecting row, so the durable event count always matches the persisted attempts.
+      // Announced on every attempt, including a restart re-entering an interrupted collecting
+      // row, so the durable attempt count always matches the persisted attempts counter.
       this.setFinalization(
         id,
         {
@@ -377,7 +385,7 @@ export class Store {
           next_retry_at: null,
           error: null,
         },
-        "finalization.collecting",
+        "finalization.attempted",
       );
       return { run_id: f.run_id, attempts };
     })();

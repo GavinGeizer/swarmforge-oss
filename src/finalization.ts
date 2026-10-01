@@ -1,3 +1,4 @@
+import type { ArtifactEntry, ArtifactListing } from "./artifact-types";
 import type { ArtifactService } from "./artifacts";
 import type { Config } from "./config";
 import {
@@ -72,14 +73,20 @@ function describe(error: unknown) {
   const message = error instanceof Error ? error.message : String(error);
   return (message || "Unknown artifact error").slice(0, 500);
 }
-// A missing source and a failed transport are different outcomes: a declared optional path is
-// skipped, a required one fails preservation, and any other transport error is always a failure.
-const missingPattern =
-  /no such file|not found|enoent|does not exist|no such directory/i;
+// The guest helper reports a missing directory and a non-directory identically, so its wording
+// is never parsed: a path's kind comes from a listing of a directory known to exist, and only a
+// listing failure is ever treated as a failure.
+const listingPage = 200;
 const notDirectoryPattern =
   /not a directory|enotdir|illegal operation on a directory/i;
 export class Finalizer {
   private runs = new Map<string, LiveRun>();
+  // Listings are cached per attempt: the default targets share their parents, and one capture
+  // run must not turn into a listing per declared path.
+  private listings = new Map<
+    string,
+    { entries: ArtifactEntry[]; truncated: boolean }
+  >();
   constructor(
     readonly config: Config,
     readonly store: Store,
@@ -181,6 +188,8 @@ export class Finalizer {
     run_id: string | null,
     signal: AbortSignal,
   ) {
+    // Listings never outlive an attempt: a retry must see the workspace as it is now.
+    this.listings.clear();
     const w = this.store.get(id);
     if (!this.collectable(w)) throw new Error("Worker VM is unavailable");
     for (const target of [...w.artifacts, ...defaultTargets]) {
@@ -227,16 +236,71 @@ export class Finalizer {
       kind: "declared",
     });
   }
-  private async classify(id: string, path: string, signal: AbortSignal) {
-    try {
-      await this.artifacts.listWorkerFiles(id, path, { signal });
-      return "directory" as const;
-    } catch (error) {
-      const message = describe(error);
-      if (missingPattern.test(message)) return "missing" as const;
-      if (notDirectoryPattern.test(message)) return "file" as const;
-      throw new Error(`Artifact ${path} could not be inspected: ${message}`);
+  private async listing(id: string, path: string, signal: AbortSignal) {
+    const cached = this.listings.get(path);
+    if (cached) return cached;
+    const entries: ArtifactEntry[] = [];
+    let truncated = false;
+    for (let offset = 0; ; ) {
+      const page: ArtifactListing = await this.artifacts.listWorkerFiles(
+        id,
+        path,
+        {
+          offset,
+          limit: listingPage,
+          signal,
+        },
+      );
+      entries.push(...page.entries);
+      truncated = truncated || page.truncated === true;
+      if (page.next_offset === null) break;
+      // A page cursor that does not advance, or more entries than the configured bound, is a
+      // listing failure rather than a listing of this directory.
+      if (
+        page.next_offset <= offset ||
+        entries.length > this.config.SWARMFORGE_ARTIFACT_MAX_ENTRIES
+      )
+        throw new Error(`Listing ${path} did not advance`);
+      offset = page.next_offset;
     }
+    const value = { entries, truncated };
+    this.listings.set(path, value);
+    return value;
+  }
+  private async classify(id: string, path: string, signal: AbortSignal) {
+    const parts = path.split("/");
+    let failure: string | null = null;
+    // Walk up to the nearest ancestor that can be listed. Only an entry in a listing of a
+    // directory known to exist decides the kind; a listing that never succeeds is a failure.
+    for (let depth = parts.length - 1; depth >= 0; depth--) {
+      const parent = parts.slice(0, depth).join("/");
+      let listing: { entries: ArtifactEntry[]; truncated: boolean };
+      try {
+        listing = await this.listing(id, parent, signal);
+      } catch (error) {
+        failure ??= describe(error);
+        continue;
+      }
+      const entry = listing.entries.find((item) => item.name === parts[depth]);
+      if (!entry) {
+        // A truncated listing cannot prove an absence, so it is a failure and never a skip.
+        if (listing.truncated)
+          throw new Error(
+            `Listing ${parent || "."} is truncated; absence of ${path} cannot be confirmed`,
+          );
+        return "missing" as const;
+      }
+      if (depth < parts.length - 1)
+        throw new Error(
+          `Artifact path ${path} could not be inspected: ${parent} is not listable`,
+        );
+      if (entry.kind === "directory") return "directory" as const;
+      // A symlink or special file is never captured: it is treated as absent.
+      return entry.kind === "file" ? ("file" as const) : ("missing" as const);
+    }
+    throw new Error(
+      `Artifact path ${path} could not be inspected: ${failure ?? "no listable parent"}`,
+    );
   }
   // Only the attempt that still owns the record may settle it, so an aborted, abandoned or
   // superseded collection can never mark a worker preserved.
@@ -263,16 +327,14 @@ export class Finalizer {
     }
     const backoff =
       this.config.SWARMFORGE_FINALIZATION_RETRY_MS * 2 ** (claim.attempts - 1);
-    this.store.setFinalization(
-      id,
-      {
-        state: "pending",
-        error: reason,
-        next_retry_at: Date.now() + backoff,
-        completed_at: null,
-      },
-      "finalization.attempt_failed",
-    );
+    // Not an outcome: the attempt already announced itself, and its error and retry time are
+    // durable on the record, so only a settled collection emits an outcome event.
+    this.store.setFinalization(id, {
+      state: "pending",
+      error: reason,
+      next_retry_at: Date.now() + backoff,
+      completed_at: null,
+    });
   }
   private recordSuccess(id: string, claim: Claim) {
     if (!this.current(this.store.get(id).finalization, claim)) return;
