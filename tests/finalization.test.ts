@@ -17,7 +17,6 @@ import {
   sha256,
   task,
 } from "./helpers";
-import { localHarness } from "./local-artifact-provider";
 
 // Collection is bounded and retried on a short clock so behavioural tests stay deterministic.
 const fast = {
@@ -1007,10 +1006,177 @@ test("a missing optional declaration is skipped under the guest's own error word
 // The real guest helper, run by python3 against a temporary guest tree. Package 2 behaviour is
 // verified end to end here whenever that interpreter exists.
 const python = process.env.SWARMFORGE_TEST_PYTHON ?? "python3";
-const hasHelper = Bun.spawnSync([python, "-c", "pass"]).success;
+// The data plane owns its real-helper fixture; a rename there must not break package 2.
+const hasHelper =
+  Bun.spawnSync([python, "-c", "pass"]).success &&
+  (await import("./local-artifact-provider").then(
+    (module) => typeof module.localHarness === "function",
+    () => false,
+  ));
+
+test("a lost VM keeps the run it lost in its preservation record", async () => {
+  const h = harness(fast);
+  const { id, vm, run } = await started(h);
+  await h.provider.writeFile(
+    vm,
+    "/workspace/.swarmforge/artifacts/lost.txt",
+    "x",
+  );
+  h.provider.vms.delete(vm);
+  await h.coordinator.recover();
+  const settled = await finalized(h, id);
+  // The run is resolved before the dispatches are cancelled, so the record still names it.
+  expect(settled.state).toBe("failed");
+  expect(settled.vm_missing).toBe(true);
+  expect(settled.finalization?.run_id).toBe(run);
+  expect(settled.finalization?.state).toBe("failed");
+  expect(h.store.dispatches(id).every((d) => d.state === "cancelled")).toBe(
+    true,
+  );
+  h.store.close();
+});
+
+test("a duplicate ordinary destroy cannot downgrade an in-flight forced destruction", async () => {
+  const h = harness(fast);
+  const { id, vm } = await started(h);
+  let release: () => void = () => {};
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const destroy = h.provider.destroyWorker.bind(h.provider);
+  h.provider.destroyWorker = async (target: string) => {
+    await gate;
+    return destroy(target);
+  };
+  const forced = h.coordinator.control(id, "destroy", true);
+  await Bun.sleep(5);
+  expect(h.store.get(id).force_destroy).toBe(true);
+  // The duplicate ordinary destroy arrives while the forced one is still in flight. It cannot
+  // resolve until the forced step finishes, so only the durable flag is asserted meanwhile.
+  const duplicate = h.coordinator.control(id, "destroy");
+  await Bun.sleep(5);
+  expect(h.store.get(id).force_destroy).toBe(true);
+  expect(h.store.get(id).intent).toBe("destroy");
+  release();
+  await within(5000, Promise.all([forced, duplicate]));
+  const destroyed = h.store.get(id);
+  expect(destroyed.state).toBe("destroyed");
+  expect(h.provider.vms.has(vm)).toBe(false);
+  h.store.close();
+});
+
+test("a forced destruction never rewrites a preserved record", async () => {
+  const h = harness(fast);
+  const { id, vm } = await started(h);
+  await h.provider.writeFile(
+    vm,
+    "/workspace/.swarmforge/artifacts/keep.txt",
+    "keep",
+  );
+  h.agent.complete(h.store.get(id));
+  await h.coordinator.tick();
+  expect((await finalized(h, id)).finalization?.state).toBe("preserved");
+  const destroyed = await within(
+    5000,
+    h.coordinator.control(id, "destroy", true),
+  );
+  expect(destroyed.state).toBe("destroyed");
+  // Preservation that already succeeded is a fact, not a decision a later force may undo.
+  expect(destroyed.finalization?.state).toBe("preserved");
+  expect(h.store.events(id).map((event) => event.type)).not.toContain(
+    "finalization.abandoned",
+  );
+  const kept = records(h, id).find(
+    (r) => r.original_path === ".swarmforge/artifacts/keep.txt",
+  );
+  expect(decode(await h.coordinator.artifacts.read(kept!.artifact_id))).toBe(
+    "keep",
+  );
+  h.store.close();
+});
+
+test("the canonical result mirror is written before preservation can start", async () => {
+  const h = harness(fast);
+  const { id, run } = await started(h);
+  let release: () => void = () => {};
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const mirror = h.provider.writeFile.bind(h.provider);
+  h.provider.writeFile = async (
+    target: string,
+    path: string,
+    content: string,
+  ) => {
+    await gate;
+    return mirror(target, path, content);
+  };
+  h.agent.complete(h.store.get(id), {
+    status: "completed",
+    summary: "ordered",
+  });
+  const completing = h.coordinator.tick();
+  await Bun.sleep(5);
+  // The outcome is not settled while the mirror is in flight, so no collection can capture the
+  // previous run's result bytes under this run.
+  expect(h.store.get(id).finalization).toBeUndefined();
+  release();
+  await completing;
+  expect(h.store.get(id).state).toBe("completed");
+  expect(h.store.get(id).finalization?.run_id).toBe(run);
+  const settled = await finalized(h, id);
+  expect(settled.finalization?.state).toBe("preserved");
+  const captured = records(h, id).find(
+    (r) => r.original_path === ".swarmforge/result.json",
+  );
+  expect(
+    JSON.parse(
+      decode(await h.coordinator.artifacts.read(captured!.artifact_id)),
+    ).run_id,
+  ).toBe(run);
+  h.store.close();
+});
+
+test("a result file that names another run is never attributed to this one", async () => {
+  const h = harness(fast);
+  const { id, vm, run } = await started(h);
+  // A stale canonical result left on disk by a failed mirror from an earlier run.
+  await h.provider.writeFile(
+    vm,
+    "/workspace/.swarmforge/result.json",
+    JSON.stringify({
+      run_id: "an-earlier-run",
+      status: "completed",
+      summary: "old",
+    }),
+  );
+  h.provider.writeFile = async () => {
+    throw new Error("mirror unavailable");
+  };
+  h.agent.complete(h.store.get(id), {
+    status: "completed",
+    summary: "current",
+  });
+  await h.coordinator.tick();
+  const settled = await finalized(h, id);
+  expect(settled.finalization?.state).toBe("failed");
+  expect(settled.finalization?.error ?? "").toContain("an-earlier-run");
+  expect(settled.finalization?.error ?? "").toContain(run);
+  // The bytes are still stored faithfully; only the attribution is refused.
+  const captured = records(h, id).find(
+    (r) => r.original_path === ".swarmforge/result.json",
+  );
+  expect(
+    JSON.parse(
+      decode(await h.coordinator.artifacts.read(captured!.artifact_id)),
+    ).summary,
+  ).toBe("old");
+  h.store.close();
+});
 
 test("the real guest helper preserves defaults once and never fails on optional boot metadata", async () => {
   if (!hasHelper) return;
+  const { localHarness } = await import("./local-artifact-provider");
   const h = await localHarness({
     SWARMFORGE_FINALIZATION_RETRY_MS: "1",
     SWARMFORGE_ARTIFACT_TIMEOUT_MS: "20000",
@@ -1097,6 +1263,7 @@ test("the real guest helper preserves defaults once and never fails on optional 
 
 test("the real guest helper fails a required absence without naming it a transport error", async () => {
   if (!hasHelper) return;
+  const { localHarness } = await import("./local-artifact-provider");
   const h = await localHarness({
     SWARMFORGE_FINALIZATION_RETRY_MS: "1",
     SWARMFORGE_ARTIFACT_TIMEOUT_MS: "20000",

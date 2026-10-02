@@ -51,6 +51,10 @@ export class FinalizationGate {
     this.active++;
   }
 }
+// The canonical result file the coordinator mirrors into the workspace, and the bound used both
+// to capture it and to read it back for its run attribution.
+const resultTarget = ".swarmforge/result.json";
+const resultLimit = 65536;
 // Safe defaults: the worker's own output directory, its logs, the task result and its
 // task metadata. All optional, so a worker that produced none still preserves successfully.
 export const defaultTargets: ArtifactDeclaration[] =
@@ -259,11 +263,34 @@ export class Finalizer {
     // The kind is the data plane's own "file" for a regular file, deliberately: a declared path
     // and the automatic directory collection are then the same capture, so one worker, run,
     // path and content yields one record and one stored blob instead of a duplicate.
-    await this.artifacts.preserve(id, target.path, {
+    const record = await this.artifacts.preserve(id, target.path, {
       signal,
       runId: run_id,
       kind: "file",
     });
+    if (target.path === resultTarget) await this.checkResultRun(record, run_id);
+  }
+  // A preserved result file is only ever attributed to the run that produced it. A file naming a
+  // different run is the previous run's bytes (a failed mirror, or a stale worker file), so the
+  // attempt fails instead of reporting another run's answer as this run's.
+  private async checkResultRun(
+    record: { artifact_id: string },
+    run_id: string | null,
+  ) {
+    const bytes = await this.artifacts.read(record.artifact_id, 0, resultLimit);
+    let named: unknown;
+    try {
+      named = (
+        JSON.parse(new TextDecoder().decode(bytes)) as { run_id?: unknown }
+      ).run_id;
+    } catch {
+      // A result file that is not JSON is the worker's own output, not a stale canonical result.
+      return;
+    }
+    if (typeof named === "string" && named !== run_id)
+      throw new Error(
+        `Result file ${resultTarget} belongs to run ${named}, not ${run_id ?? "an earlier run"}`,
+      );
   }
   private async listing(id: string, path: string, signal: AbortSignal) {
     const cached = this.listings.get(path);

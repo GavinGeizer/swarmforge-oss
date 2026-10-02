@@ -406,6 +406,9 @@ export class Coordinator {
             if (!vm) {
               this.inference.delete(w.worker_id);
               this.excerpts.delete(w.worker_id);
+              // Captured before the dispatches are cancelled: a cancelled dispatch no longer
+              // resolves, and the preservation record must still name the run that was lost.
+              const run = this.store.dispatch(w.worker_id)?.run_id ?? null;
               this.store.cancelDispatches(w.worker_id);
               // The lost VM is recorded as a preservation failure too, so an operator sees why
               // nothing could be salvaged instead of finding a silently absent workspace.
@@ -418,7 +421,7 @@ export class Coordinator {
                   deadline_at: null,
                   intent: null,
                 },
-                this.store.dispatch(w.worker_id)?.run_id ?? null,
+                run,
               );
               return;
             }
@@ -494,6 +497,8 @@ export class Coordinator {
       if (w.state === "running" || w.state === "waiting") {
         const vm = await this.bounded(this.provider.getWorker(w.vm_id!));
         if (!vm) {
+          // The run is resolved before the dispatches are cancelled, for the same reason.
+          const run = this.store.dispatch(id)?.run_id ?? null;
           this.store.settle(
             id,
             "failed",
@@ -502,7 +507,7 @@ export class Coordinator {
               vm_missing: true,
               deadline_at: null,
             },
-            this.store.dispatch(id)?.run_id ?? null,
+            run,
           );
           this.store.cancelDispatches(id);
           return;
@@ -755,8 +760,11 @@ export class Coordinator {
       r = { ...r, git: { ...r.git, ...pushed, persisted: true, dirty: false } };
       this.store.recordResult(w.worker_id, d, r);
     }
-    this.store.finish(w.worker_id, d, r);
-    // Canonical result is now durable in SQLite even if the best-effort mirror fails.
+    // The mirror is written before the outcome settles, because finishing opens this run's
+    // preservation: a collection that started first would otherwise capture the previous run's
+    // result bytes and attribute them to this run. The canonical result is already durable in
+    // SQLite, so a mirror failure still leaves the answer, and the collection then skips the
+    // absent default instead of capturing a stale file.
     try {
       await this.bounded(
         this.provider.writeFile(
@@ -766,6 +774,7 @@ export class Coordinator {
         ),
       );
     } catch {}
+    this.store.finish(w.worker_id, d, r);
   }
   // "stopped": OpenCode generation is provably over (the service confirmed it down, or the
   // worker never had a guest). "paused": the guest is alive but not provably stopped, so it
@@ -888,7 +897,13 @@ export class Coordinator {
         previous_intent: w.intent,
         intent,
       });
-    this.store.patch(id, { intent, force_destroy: force });
+    // A force acknowledgement is sticky: a duplicate ordinary destroy that arrives while a forced
+    // one is in flight may never downgrade it back to a checked destruction.
+    const stick = w.intent === "destroy" && w.force_destroy;
+    this.store.patch(id, {
+      intent,
+      force_destroy: force || stick,
+    });
     await this.applyIntent(id);
     return this.store.get(id);
   }
@@ -1056,13 +1071,18 @@ export class Coordinator {
     }
     if (w.intent === "destroy") {
       await this.teardown(id, async () => {
-        if (w.vm_id) {
-          if (!w.force_destroy) {
-            const vm = await this.bounded(this.provider.getWorker(w.vm_id));
+        // Re-read after quiesce: a force acknowledgement may have arrived while this step ran,
+        // and the destruction must act on the strongest request rather than a stale snapshot.
+        const current = this.store.get(id);
+        if (current.vm_id) {
+          if (!current.force_destroy) {
+            const vm = await this.bounded(
+              this.provider.getWorker(current.vm_id),
+            );
             if (vm) {
               if (["paused", "stopped"].includes(vm.state))
-                await this.bounded(this.provider.resumeWorker(w.vm_id));
-              const outcome = await this.quiesce(w);
+                await this.bounded(this.provider.resumeWorker(current.vm_id));
+              const outcome = await this.quiesce(current);
               if (outcome === "missing")
                 this.store.patch(id, { vm_missing: true });
               if (outcome === "paused") {
@@ -1135,16 +1155,18 @@ export class Coordinator {
             }
           } else {
             // Forced destruction: the live collection is aborted without waiting for the worker
-            // lock, and the abandonment is durable before the provider deletes anything.
+            // lock, and the abandonment is durable before the provider deletes anything. A
+            // record that already succeeded is never rewritten: preserved stays preserved.
             this.finalizer.abort(id);
-            this.store.setFinalization(id, {
-              state: "abandoned",
-              error: "Artifact preservation abandoned by forced destruction",
-              next_retry_at: null,
-              completed_at: Date.now(),
-            });
+            if (this.store.get(id).finalization?.state !== "preserved")
+              this.store.setFinalization(id, {
+                state: "abandoned",
+                error: "Artifact preservation abandoned by forced destruction",
+                next_retry_at: null,
+                completed_at: Date.now(),
+              });
           }
-          await this.bounded(this.provider.destroyWorker(w.vm_id));
+          await this.bounded(this.provider.destroyWorker(current.vm_id));
         }
         this.inference.delete(id);
         this.excerpts.delete(id);
