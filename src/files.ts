@@ -1,83 +1,172 @@
+import { createHash } from "node:crypto";
+import {
+  type ArtifactTransfer,
+  isSha256,
+  screeningWindow,
+  validateRelativePath,
+} from "./artifact-types";
+import { ArtifactService } from "./artifacts";
 import type { Coordinator } from "./coordinator";
 import { redactorFor } from "./security";
+
+// One service per coordinator, so two live reads cannot each build their own
+// storage handle or their own concurrency budget. `coordinator.artifacts` wins
+// as soon as the lifecycle layer exposes it; until then this builds the same
+// service rather than falling back to an unsafe stat/read capture.
+const services = new WeakMap<Coordinator, ArtifactService>();
+
+/**
+ * Consumes one staged transfer under a hard byte bound and checks it against the
+ * size and hash the capture reported. A stream that overruns the bound, ends
+ * early or does not hash to what was captured is cancelled and refused, so a
+ * damaged transfer can never be presented as the worker's file.
+ */
+export async function readTransfer(
+  transfer: ArtifactTransfer,
+  maxBytes: number,
+): Promise<Uint8Array> {
+  if (!Number.isSafeInteger(transfer.size) || transfer.size < 0)
+    throw new Error("Artifact transfer reported an invalid size");
+  if (!isSha256(transfer.sha256))
+    throw new Error("Artifact transfer reported an invalid hash");
+  if (transfer.size > maxBytes)
+    throw new Error("Artifact transfer is larger than the requested window");
+  const reader = transfer.stream.getReader();
+  const hash = createHash("sha256");
+  const chunks: Uint8Array[] = [];
+  let received = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value?.length) continue;
+      received += value.byteLength;
+      if (received > maxBytes)
+        throw new Error("Artifact transfer exceeded its bound");
+      hash.update(value);
+      chunks.push(value);
+    }
+  } catch (error) {
+    await reader.cancel().catch(() => {});
+    throw error;
+  }
+  if (received !== transfer.size)
+    throw new Error("Artifact transfer was truncated");
+  if (hash.digest("hex") !== transfer.sha256)
+    throw new Error("Artifact transfer failed its integrity check");
+  const bytes = new Uint8Array(received);
+  let at = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, at);
+    at += chunk.byteLength;
+  }
+  return bytes;
+}
+
 export class WorkerFiles {
   constructor(readonly c: Coordinator) {}
+  private service(): ArtifactService {
+    const exposed = (this.c as unknown as { artifacts?: ArtifactService })
+      .artifacts;
+    if (exposed) return exposed;
+    let service = services.get(this.c);
+    if (!service) {
+      service = new ArtifactService(
+        this.c.config,
+        this.c.store,
+        this.c.provider,
+      );
+      services.set(this.c, service);
+    }
+    return service;
+  }
   private worker(id: string) {
     const w = this.c.store.get(id);
     if (!w.vm_id || w.state === "destroyed")
       throw new Error("Worker files unavailable");
     return w;
   }
-  private path(path: string) {
-    if (
-      !path ||
-      path.length > 1024 ||
-      path.startsWith("/") ||
-      path.includes("\\") ||
-      path
-        .split("/")
-        .some((p) => !p || p === "." || p === ".." || p.includes("\0"))
-    )
-      throw new Error("Invalid relative artifact path");
-    return `${this.c.config.SWARMFORGE_WORKSPACE}/.swarmforge/artifacts/${path}`;
+  /** Live worker artifacts live under the workspace's own artifact directory. */
+  private static readonly root = ".swarmforge/artifacts";
+  private relative(path: string) {
+    const validated = validateRelativePath(path);
+    return `${WorkerFiles.root}/${validated}`;
   }
-  private async checked(id: string, path: string) {
-    const w = this.worker(id);
-    const full = this.path(path);
-    await this.noSymlinks(w.vm_id!, full);
-    const stat = await this.c.bounded(this.c.provider.stat(w.vm_id!, full));
-    if (!stat.isFile) throw new Error("Artifact is not a file");
-    return { w, full, stat };
-  }
-  private async noSymlinks(vm: string, full: string) {
-    let path = "";
-    for (const part of full.split("/").filter(Boolean)) {
-      path += `/${part}`;
-      const stat = await this.c.bounded(this.c.provider.stat(vm, path));
-      if (stat.isSymlink)
-        throw new Error("Symlink artifact paths are not allowed");
+  /**
+   * Finds one live file's size from a bounded, descriptor-relative directory
+   * listing. There is deliberately no stat-then-read pair here: the listing and
+   * the capture each open the path in one trusted helper run.
+   *
+   * The search follows the listing's own `next_offset` rather than advancing by
+   * its own page size, so an entry that sorts after a page of entries a caller
+   * cannot use is still found, and the scan is bounded by the listing's entry
+   * budget instead of by a page count.
+   */
+  private async entry(id: string, path: string) {
+    const worker = this.worker(id);
+    const relative = this.relative(path);
+    const directory = relative.split("/").slice(0, -1).join("/");
+    const name = relative.split("/").at(-1)!;
+    const limit = 200;
+    const max = 10000;
+    let offset = 0;
+    for (let page = 0; page * limit < max; page++) {
+      const listing = await this.service().listWorkerFiles(id, directory, {
+        offset,
+        limit,
+      });
+      const found = listing.entries.find((entry) => entry.name === name);
+      if (found) return { worker, found };
+      if (listing.next_offset === null) break;
+      if (listing.next_offset <= offset) break;
+      offset = listing.next_offset;
     }
+    throw new Error("Artifact not found");
   }
   async artifacts(id: string, directory = "", offset = 0, limit = 50) {
-    const w = this.worker(id);
-    const root = directory
-      ? this.path(directory)
-      : `${this.c.config.SWARMFORGE_WORKSPACE}/.swarmforge/artifacts`;
-    if (directory) {
-      for (const part of directory.split("/"))
-        if (!part || part === "..") throw new Error("Invalid directory");
-    }
-    await this.noSymlinks(w.vm_id!, root);
-    const entries = await this.c.bounded(
-      this.c.provider.listFiles(w.vm_id!, root),
+    this.worker(id);
+    if (!Number.isSafeInteger(offset) || offset < 0)
+      throw new Error("Invalid artifact page");
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1000)
+      throw new Error("Invalid artifact page size");
+    if (directory && redactorFor(this.c).text(directory) !== directory)
+      throw new Error("Artifact path contains credentials");
+    const listing = await this.service().listWorkerFiles(
+      id,
+      directory ? this.relative(directory) : WorkerFiles.root,
+      { offset, limit },
     );
-    const safe = entries
-      .filter(
-        (e) =>
-          e.kind !== "symlink" &&
-          !e.name.includes("/") &&
-          !e.name.includes("\\") &&
-          e.name !== "." &&
-          e.name !== "..",
-      )
-      .sort((a, b) => a.name.localeCompare(b.name));
     return {
-      entries: safe.slice(offset, offset + limit),
-      next_offset: offset + limit < safe.length ? offset + limit : null,
+      entries: listing.entries.filter(
+        (entry) => !entry.name.includes("/") && !entry.name.includes("\\"),
+      ),
+      next_offset: listing.next_offset,
     };
   }
   async artifact(id: string, path: string, offset = 0, length = 32768) {
+    if (!Number.isSafeInteger(offset) || offset < 0)
+      throw new Error("Invalid artifact byte range");
+    if (
+      !Number.isSafeInteger(length) ||
+      length < 1 ||
+      length > 32768 ||
+      offset > Number.MAX_SAFE_INTEGER - length
+    )
+      throw new Error("Invalid artifact byte range");
     if (redactorFor(this.c).text(path) !== path)
       throw new Error("Artifact path contains credentials");
-    const { stat } = await this.checked(id, path);
+    const { found } = await this.entry(id, path);
+    if (found.kind !== "file" || found.size === undefined)
+      throw new Error("Artifact is not a file");
+    const size = found.size;
     return {
-      name: path,
-      size: stat.size,
+      name: validateRelativePath(path),
+      size,
       mimeType: "application/octet-stream",
       uri: `swarmforge://workers/${encodeURIComponent(id)}/artifacts/${encodeURIComponent(path)}?offset=${offset}&length=${length}`,
       offset,
-      length: Math.min(length, Math.max(0, stat.size - offset)),
-      next_offset: offset + length < stat.size ? offset + length : null,
+      length: Math.min(length, Math.max(0, size - offset)),
+      next_offset: offset + length < size ? offset + length : null,
     };
   }
   async readArtifact(id: string, path: string, offset = 0, length = 32768) {
@@ -89,21 +178,32 @@ export class WorkerFiles {
       length > 32768
     )
       throw new Error("Invalid artifact byte range");
-    const { w, full } = await this.checked(id, path);
-    // Inspect an overlap so credentials split across chunk boundaries still block retrieval.
-    const pad = Math.max(
-      4096,
-      this.c.config.SWARMFORGE_MODEL_API_KEY.length,
-      this.c.config.FREESTYLE_API_TOKEN.length,
-    );
+    if (redactorFor(this.c).text(path) !== path)
+      throw new Error("Artifact path contains credentials");
+    await this.entry(id, path);
+    // The overlap comes from the same redactor that screens the bytes, measured
+    // in bytes across every encoded variant, so a credential split across the
+    // window is still caught however long or multi-byte it is.
+    const redactor = redactorFor(this.c);
+    const pad = screeningWindow(redactor.secrets());
     const start = Math.max(0, offset - pad);
-    const bytes = await this.c.bounded(
-      this.c.provider.readFile(w.vm_id!, full, start, length + 2 * pad),
-    );
-    if (redactorFor(this.c).contains(bytes))
-      throw new Error(
-        "Artifact contains credentials; remove them inside the worker before retrieval",
-      );
+    const window = length + 2 * pad;
+    const transfer = await this.service().openLive(id, this.relative(path), {
+      offset: start,
+      length: window,
+    });
+    let bytes: Uint8Array;
+    try {
+      // Bounded and verified against what the capture reported: a short,
+      // oversized or corrupt staging transfer is refused, not returned.
+      bytes = await readTransfer(transfer, window);
+      if (redactor.contains(bytes))
+        throw new Error(
+          "Artifact contains credentials; remove them inside the worker before retrieval",
+        );
+    } finally {
+      await transfer.cleanup();
+    }
     return bytes.slice(offset - start, offset - start + length);
   }
   async logs(id: string, after = 0, limit = 50) {

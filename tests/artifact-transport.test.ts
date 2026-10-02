@@ -1,0 +1,1277 @@
+import { afterEach, beforeEach, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { join } from "node:path";
+import { type ArtifactErrorCode, validateRoot } from "../src/artifact-types";
+import { artifactHelperSource } from "../src/providers/artifact-helper";
+import {
+  artifactErrorCode,
+  shellQuote,
+} from "../src/providers/artifact-transport";
+import {
+  boundedExecTimeout,
+  guestExecTimeoutLimit,
+} from "../src/providers/freestyle";
+import { type LocalWorkspace, localWorkspace } from "./local-artifact-provider";
+
+let ws: LocalWorkspace;
+const sha = (bytes: Uint8Array) =>
+  createHash("sha256").update(bytes).digest("hex");
+const collect = async (stream: ReadableStream<Uint8Array>) => {
+  const chunks: Uint8Array[] = [];
+  for await (const chunk of stream as unknown as AsyncIterable<Uint8Array>)
+    chunks.push(chunk);
+  let total = 0;
+  for (const chunk of chunks) total += chunk.length;
+  const out = new Uint8Array(total);
+  let at = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, at);
+    at += chunk.length;
+  }
+  return out;
+};
+
+beforeEach(async () => {
+  ws = await localWorkspace();
+});
+afterEach(async () => {
+  await ws.cleanup();
+});
+
+test("the production helper lists a bounded, sorted directory page", async () => {
+  writeFileSync(join(ws.root, "a.txt"), "aaa");
+  writeFileSync(join(ws.root, "b.bin"), "bbbb");
+  mkdirSync(join(ws.root, "sub"));
+  symlinkSync("/etc/passwd", join(ws.root, "escape"));
+  mkdirSync(join(ws.root, ".git"));
+  const all = await ws.transport.list(ws.vmId, ws.root, "");
+  expect(all.entries.map((e) => e.name)).toEqual([
+    ".git",
+    "a.txt",
+    "b.bin",
+    "escape",
+    "sub",
+  ]);
+  expect(all.entries.find((e) => e.name === "a.txt")).toEqual({
+    name: "a.txt",
+    kind: "file",
+    size: 3,
+  });
+  expect(all.entries.find((e) => e.name === "escape")?.kind).toBe("symlink");
+  expect(all.entries.find((e) => e.name === "sub")?.kind).toBe("directory");
+  expect(all.next_offset).toBeNull();
+  const page = await ws.transport.list(ws.vmId, ws.root, "", {
+    offset: 1,
+    limit: 2,
+  });
+  expect(page.entries.map((e) => e.name)).toEqual(["a.txt", "b.bin"]);
+  expect(page.next_offset).toBe(3);
+});
+
+test("listings are bounded by entry count and refused past the depth limit", async () => {
+  mkdirSync(join(ws.root, "many"), { recursive: true });
+  for (let i = 0; i < 40; i++)
+    writeFileSync(join(ws.root, "many", `f${i}`), "x");
+  const bounded = await ws.transport.list(ws.vmId, ws.root, "many", {
+    maxEntries: 10,
+  });
+  expect(bounded.entries).toHaveLength(10);
+  expect(bounded.truncated).toBe(true);
+  expect(bounded.total).toBe(10);
+  const full = await ws.transport.list(ws.vmId, ws.root, "many");
+  expect(full.entries).toHaveLength(40);
+  expect(full.truncated).toBe(false);
+  expect(full.total).toBe(40);
+  await expect(
+    ws.transport.list(ws.vmId, ws.root, "many", { maxDepth: 0 }),
+  ).rejects.toThrow();
+});
+
+test("captured bytes are raw and identical, with a hash the caller can verify", async () => {
+  const binary = new Uint8Array(4096);
+  for (let i = 0; i < binary.length; i++) binary[i] = i % 256;
+  writeFileSync(join(ws.root, "blob.bin"), binary);
+  writeFileSync(join(ws.root, "text.txt"), "hello\nworld\n");
+  const text = await ws.transport.open(ws.vmId, ws.root, "text.txt", {
+    maxBytes: 1024,
+  });
+  expect(text.filename).toBe("text.txt");
+  expect(text.size).toBe(12);
+  expect(text.sha256).toBe(sha(new TextEncoder().encode("hello\nworld\n")));
+  expect(await collect(text.stream)).toEqual(
+    new TextEncoder().encode("hello\nworld\n"),
+  );
+  await text.cleanup();
+  const blob = await ws.transport.open(ws.vmId, ws.root, "blob.bin", {
+    maxBytes: 8192,
+  });
+  expect(blob.size).toBe(4096);
+  expect(blob.sha256).toBe(sha(binary));
+  expect(await collect(blob.stream)).toEqual(binary);
+  await blob.cleanup();
+});
+
+test("a large file streams through without truncation or whole-file buffering", async () => {
+  const size = 24 * 1024 * 1024;
+  const digest = createHash("sha256");
+  const handle = await Bun.file(join(ws.root, "big.bin")).writer();
+  const block = new Uint8Array(1024 * 1024);
+  for (let i = 0; i < block.length; i++) block[i] = (i * 7 + 13) % 256;
+  for (let i = 0; i < size / block.length; i++) {
+    digest.update(block);
+    await handle.write(block);
+  }
+  await handle.end();
+  const expected = digest.digest("hex");
+  const transfer = await ws.transport.open(ws.vmId, ws.root, "big.bin", {
+    maxBytes: size * 2,
+  });
+  expect(transfer.size).toBe(size);
+  expect(transfer.sha256).toBe(expected);
+  const seen = createHash("sha256");
+  let received = 0;
+  let maxChunk = 0;
+  for await (const chunk of transfer.stream as unknown as AsyncIterable<Uint8Array>) {
+    seen.update(chunk);
+    received += chunk.length;
+    maxChunk = Math.max(maxChunk, chunk.length);
+  }
+  expect(received).toBe(size);
+  expect(seen.digest("hex")).toBe(expected);
+  expect(maxChunk).toBeLessThanOrEqual(1024 * 1024);
+  await transfer.cleanup();
+});
+
+test("a bounded window of a large file is captured without the whole file", async () => {
+  const body = new Uint8Array(1024 * 1024).fill(0x41);
+  writeFileSync(join(ws.root, "window.bin"), body);
+  const transfer = await ws.transport.open(ws.vmId, ws.root, "window.bin", {
+    maxBytes: 4096,
+    offset: 1000,
+    length: 2048,
+  });
+  expect(transfer.size).toBe(2048);
+  const bytes = await collect(transfer.stream);
+  expect(bytes.length).toBe(2048);
+  expect(bytes.every((b) => b === 0x41)).toBe(true);
+  await transfer.cleanup();
+});
+
+test("traversal, absolute, encoded and control-character paths are refused", async () => {
+  writeFileSync("/tmp/swarmforge-outside-secret", "outside");
+  const bad = [
+    "../outside-secret",
+    "../../etc/passwd",
+    "/etc/passwd",
+    "sub\\file",
+    "nul\0byte",
+    "bell\u0007",
+    "",
+    ".",
+    "..",
+    "a//b",
+    `${"deep/".repeat(33)}file`,
+    `${"x".repeat(1025)}`,
+  ];
+  for (const path of bad)
+    await expect(
+      ws.transport.open(ws.vmId, ws.root, path, { maxBytes: 1024 }),
+    ).rejects.toThrow();
+  await expect(ws.transport.list(ws.vmId, ws.root, "../")).rejects.toThrow();
+  await expect(
+    ws.transport.snapshot(ws.vmId, ws.root, {
+      maxBytes: 1024,
+      maxEntries: 10,
+      maxDepth: 8,
+      paths: ["../outside-secret"],
+    }),
+  ).rejects.toThrow();
+  expect(existsSync("/tmp/swarmforge-outside-secret")).toBe(true);
+});
+
+test("a symlinked component or leaf never resolves to a file outside the root", async () => {
+  writeFileSync("/tmp/swarmforge-outside-secret", "outside-bytes");
+  mkdirSync(join(ws.root, "real"));
+  writeFileSync(join(ws.root, "real", "inside.txt"), "inside-bytes");
+  symlinkSync("/tmp/swarmforge-outside-secret", join(ws.root, "leaf-link"));
+  symlinkSync("/tmp", join(ws.root, "dir-link"));
+  symlinkSync("real", join(ws.root, "rel-link"));
+  for (const path of [
+    "leaf-link",
+    "dir-link/outside-secret",
+    "rel-link/inside.txt",
+  ])
+    await expect(
+      ws.transport.open(ws.vmId, ws.root, path, { maxBytes: 1024 }),
+    ).rejects.toThrow();
+  // A relative symlink to a directory inside the root is still refused: the
+  // contract is descriptor-relative opening, never path re-resolution.
+  expect(existsSync(join(ws.root, "rel-link"))).toBe(true);
+  const ok = await ws.transport.open(ws.vmId, ws.root, "real/inside.txt", {
+    maxBytes: 1024,
+  });
+  expect(await collect(ok.stream)).toEqual(
+    new TextEncoder().encode("inside-bytes"),
+  );
+  await ok.cleanup();
+});
+
+test("directories, fifos, sockets and missing paths are refused for capture", async () => {
+  mkdirSync(join(ws.root, "sub"));
+  Bun.spawnSync(["mkfifo", join(ws.root, "pipe")]);
+  await expect(
+    ws.transport.open(ws.vmId, ws.root, "sub", { maxBytes: 1024 }),
+  ).rejects.toThrow();
+  await expect(
+    ws.transport.open(ws.vmId, ws.root, "pipe", { maxBytes: 1024 }),
+  ).rejects.toThrow();
+  await expect(
+    ws.transport.open(ws.vmId, ws.root, "absent.txt", { maxBytes: 1024 }),
+  ).rejects.toThrow();
+  expect(existsSync(join(ws.root, "pipe"))).toBe(true);
+});
+
+test("swapping a component for a symlink mid-capture never leaks outside bytes", async () => {
+  writeFileSync("/tmp/swarmforge-outside-secret", "TOP-SECRET-OUTSIDE");
+  mkdirSync(join(ws.root, "swap"));
+  writeFileSync(join(ws.root, "swap", "file.txt"), "inside-bytes");
+  const link = join(ws.root, "swap-link");
+  let sawInside = 0;
+  for (let round = 0; round < 40; round++) {
+    Bun.spawnSync(["ln", "-sfn", "/tmp/swarmforge-outside-secret", link]);
+    Bun.spawnSync(["rm", "-rf", join(ws.root, "swap")]);
+    Bun.spawnSync(["mkdir", "-p", join(ws.root, "swap")]);
+    Bun.spawnSync([
+      "sh",
+      "-c",
+      `printf 'inside-bytes' > ${JSON.stringify(join(ws.root, "swap", "file.txt"))}`,
+    ]);
+    try {
+      const transfer = await ws.transport.open(
+        ws.vmId,
+        ws.root,
+        "swap/file.txt",
+        {
+          maxBytes: 1024,
+        },
+      );
+      const bytes = Buffer.from(await collect(transfer.stream)).toString();
+      await transfer.cleanup();
+      expect(bytes).toBe("inside-bytes");
+      sawInside++;
+    } catch (error) {
+      expect(String(error)).not.toContain("TOP-SECRET-OUTSIDE");
+    }
+  }
+  expect(sawInside).toBeGreaterThan(0);
+});
+
+test("a source whose metadata changes during capture fails closed", async () => {
+  const path = join(ws.root, "moving.bin");
+  writeFileSync(path, Buffer.alloc(16 * 1024 * 1024, 0x5a));
+  let _stop = false;
+  const churn = Bun.spawn(
+    [
+      "sh",
+      "-c",
+      `while [ ! -f ${JSON.stringify(join(ws.root, "stop"))} ]; do touch ${JSON.stringify(path)}; done`,
+    ],
+    { stdout: "ignore", stderr: "ignore" },
+  );
+  try {
+    await expect(
+      ws.transport.open(ws.vmId, ws.root, "moving.bin", {
+        maxBytes: 64 * 1024 * 1024,
+      }),
+    ).rejects.toThrow(/changed/i);
+  } finally {
+    _stop = true;
+    writeFileSync(join(ws.root, "stop"), "");
+    churn.kill();
+  }
+  expect(ws.stagingEntries()).toEqual([]);
+});
+
+test("capture refuses anything larger than the bound and leaves no staged bytes", async () => {
+  writeFileSync(join(ws.root, "big.bin"), Buffer.alloc(2 * 1024 * 1024, 7));
+  await expect(
+    ws.transport.open(ws.vmId, ws.root, "big.bin", { maxBytes: 1024 * 1024 }),
+  ).rejects.toThrow();
+  expect(ws.stagingEntries()).toEqual([]);
+});
+
+test("cleanup removes the private staging directory and is idempotent", async () => {
+  writeFileSync(join(ws.root, "x.txt"), "x");
+  const transfer = await ws.transport.open(ws.vmId, ws.root, "x.txt", {
+    maxBytes: 1024,
+  });
+  expect(ws.stagingEntries()).toHaveLength(1);
+  const [staged] = readdirSync(ws.staging);
+  expect(readdirSync(join(ws.staging, staged!)).length).toBe(1);
+  await transfer.cleanup();
+  await transfer.cleanup();
+  expect(ws.stagingEntries()).toEqual([]);
+});
+
+test("staging must be private: a group-readable staging directory is refused", async () => {
+  writeFileSync(join(ws.root, "x.txt"), "x");
+  // Model a guest with a loose umask: the staged copy must be refused rather
+  // than left readable by the worker's own account.
+  const original = ws.host.exec.bind(ws.host);
+  ws.host.exec = async (vm, command, options) => {
+    const result = await original(vm, command, options);
+    const created = /^mkdir -m 700 -- '(.*)'$/.exec(command);
+    if (created) chmodSync(created[1]!, 0o755);
+    return result;
+  };
+  await expect(
+    ws.transport.open(ws.vmId, ws.root, "x.txt", { maxBytes: 1024 }),
+  ).rejects.toThrow(/private/);
+  expect(ws.stagingEntries()).toEqual([]);
+});
+
+test("an aborted transfer fails and removes its staging directory", async () => {
+  writeFileSync(join(ws.root, "x.bin"), Buffer.alloc(3 * 1024 * 1024, 3));
+  const controller = new AbortController();
+  controller.abort();
+  await expect(
+    ws.transport.open(ws.vmId, ws.root, "x.bin", {
+      maxBytes: 4 * 1024 * 1024,
+      signal: controller.signal,
+    }),
+  ).rejects.toThrow();
+  expect(ws.stagingEntries()).toEqual([]);
+});
+
+test("a snapshot is a readable tar.gz of regular files only", async () => {
+  mkdirSync(join(ws.root, "src", "nested"), { recursive: true });
+  writeFileSync(join(ws.root, "src", "one.txt"), "one");
+  writeFileSync(
+    join(ws.root, "src", "nested", "two.bin"),
+    Buffer.from([0, 1, 2, 255]),
+  );
+  mkdirSync(join(ws.root, "src", ".git"));
+  writeFileSync(join(ws.root, "src", ".git", "HEAD"), "ref: refs/heads/main");
+  mkdirSync(join(ws.root, "src", "node_modules"));
+  writeFileSync(join(ws.root, "src", "node_modules", "big.js"), "ignored");
+  symlinkSync("/etc/passwd", join(ws.root, "src", "passwd"));
+  Bun.spawnSync(["mkfifo", join(ws.root, "src", "fifo")]);
+  const transfer = await ws.transport.snapshot(ws.vmId, ws.root, {
+    paths: ["src"],
+    maxBytes: 8 * 1024 * 1024,
+    maxEntries: 100,
+    maxDepth: 8,
+  });
+  expect(transfer.filename.endsWith(".tar.gz")).toBe(true);
+  const bytes = await collect(transfer.stream);
+  expect(bytes.length).toBe(transfer.size);
+  expect(sha(bytes)).toBe(transfer.sha256);
+  expect(bytes[0]).toBe(0x1f);
+  expect(bytes[1]).toBe(0x8b);
+  const list = Bun.spawnSync(["tar", "-tzvf", "-"], {
+    stdin: bytes,
+  }).stdout.toString();
+  expect(list).toContain("src/one.txt");
+  expect(list).toContain("src/nested/two.bin");
+  expect(list).not.toContain(".git/HEAD");
+  expect(list).not.toContain("node_modules/big.js");
+  expect(list).not.toContain("passwd");
+  expect(list).not.toContain("fifo");
+  const extracted = Bun.spawnSync(["tar", "-xzO", "-", "src/one.txt"], {
+    stdin: bytes,
+  }).stdout;
+  expect(extracted.toString()).toBe("one");
+  await transfer.cleanup();
+});
+
+test("snapshots stay inside their source, entry and byte bounds", async () => {
+  mkdirSync(join(ws.root, "deep", "a", "b"), { recursive: true });
+  for (let i = 0; i < 12; i++) {
+    mkdirSync(join(ws.root, "deep", `d${i}`), { recursive: true });
+    writeFileSync(join(ws.root, "deep", `d${i}`, "f.txt"), "x".repeat(1024));
+  }
+  writeFileSync(join(ws.root, "deep", "a", "b", "leaf.txt"), "leaf");
+  const shallow = await ws.transport.snapshot(ws.vmId, ws.root, {
+    paths: ["deep"],
+    maxBytes: 8 * 1024 * 1024,
+    maxEntries: 100,
+    maxDepth: 2,
+  });
+  const names = Bun.spawnSync(["tar", "-tzf", "-"], {
+    stdin: await collect(shallow.stream),
+  }).stdout.toString();
+  expect(names).not.toContain("deep/a/b/leaf.txt");
+  expect(shallow.truncated).toBe(true);
+  await shallow.cleanup();
+  const few = await ws.transport.snapshot(ws.vmId, ws.root, {
+    paths: ["deep"],
+    maxBytes: 8 * 1024 * 1024,
+    maxEntries: 4,
+    maxDepth: 8,
+  });
+  expect(
+    Bun.spawnSync(["tar", "-tzf", "-"], {
+      stdin: await collect(few.stream),
+    })
+      .stdout.toString()
+      .trim()
+      .split("\n").length,
+  ).toBeLessThanOrEqual(4);
+  await few.cleanup();
+  await expect(
+    ws.transport.snapshot(ws.vmId, ws.root, {
+      paths: ["deep"],
+      maxBytes: 2048,
+      maxEntries: 100,
+      maxDepth: 8,
+    }),
+  ).rejects.toThrow();
+  expect(ws.stagingEntries()).toEqual([]);
+});
+
+test("a snapshot of a single file and of the whole root both work", async () => {
+  writeFileSync(join(ws.root, "only.txt"), "just one");
+  writeFileSync(join(ws.root, "second.txt"), "second");
+  const one = await ws.transport.snapshot(ws.vmId, ws.root, {
+    paths: ["only.txt"],
+    maxBytes: 1024 * 1024,
+    maxEntries: 10,
+    maxDepth: 8,
+  });
+  expect(
+    Bun.spawnSync(["tar", "-tzf", "-"], { stdin: await collect(one.stream) })
+      .stdout.toString()
+      .trim(),
+  ).toBe("only.txt");
+  await one.cleanup();
+  const all = await ws.transport.snapshot(ws.vmId, ws.root, {
+    maxBytes: 1024 * 1024,
+    maxEntries: 100,
+    maxDepth: 8,
+  });
+  const names = Bun.spawnSync(["tar", "-tzf", "-"], {
+    stdin: await collect(all.stream),
+  })
+    .stdout.toString()
+    .trim()
+    .split("\n");
+  expect(names).toContain("only.txt");
+  expect(names).toContain("second.txt");
+  await all.cleanup();
+});
+
+test("diagnostics stage journal and git output as bounded private files", async () => {
+  mkdirSync(join(ws.root, "repo", ".git"), { recursive: true });
+  writeFileSync(
+    join(ws.root, "repo", ".git", "HEAD"),
+    "ref: refs/heads/main\n",
+  );
+  Bun.spawnSync([
+    "sh",
+    "-c",
+    `printf 'branch line\\n' > ${JSON.stringify(join(ws.root, "repo", "status.txt"))}`,
+  ]);
+  const results = await ws.transport.diagnostics(ws.vmId, ws.root, {
+    maxBytes: 64 * 1024,
+  });
+  expect(results.length).toBeGreaterThanOrEqual(2);
+  const journal = results.find((r) => r.path.includes("journal"));
+  expect(journal).toBeDefined();
+  const journalBytes = await collect(journal!.transfer.stream);
+  expect(journalBytes.length).toBe(journal!.transfer.size);
+  expect(sha(journalBytes)).toBe(journal!.transfer.sha256);
+  await journal!.transfer.cleanup();
+  const git = results.find((r) => r.path.includes("git"));
+  expect(git).toBeDefined();
+  await git!.transfer.cleanup();
+  const bounded = await ws.transport.diagnostics(ws.vmId, ws.root, {
+    maxBytes: 16,
+  });
+  for (const item of bounded) {
+    expect(item.transfer.size).toBeLessThanOrEqual(16);
+    await item.transfer.cleanup();
+  }
+  expect(ws.stagingEntries()).toEqual([]);
+});
+
+test("no artifact or diagnostic byte ever appears in the helper response", async () => {
+  const marker = "CANARY-BYTES-MUST-NOT-LEAK-9d2f";
+  writeFileSync(join(ws.root, "canary.txt"), marker.repeat(64));
+  let responses = "";
+  const original = ws.host.exec.bind(ws.host);
+  ws.host.exec = async (vm, command, options) => {
+    const result = await original(vm, command, options);
+    responses += `${result.stdout}${result.stderr}`;
+    return result;
+  };
+  const transfer = await ws.transport.open(ws.vmId, ws.root, "canary.txt", {
+    maxBytes: 64 * 1024,
+  });
+  expect(await collect(transfer.stream)).toEqual(
+    new TextEncoder().encode(marker.repeat(64)),
+  );
+  await transfer.cleanup();
+  const snapshot = await ws.transport.snapshot(ws.vmId, ws.root, {
+    paths: ["canary.txt"],
+    maxBytes: 1024 * 1024,
+    maxEntries: 10,
+    maxDepth: 4,
+  });
+  await collect(snapshot.stream);
+  await snapshot.cleanup();
+  const diagnostics = await ws.transport.diagnostics(ws.vmId, ws.root, {
+    maxBytes: 64 * 1024,
+  });
+  for (const item of diagnostics) await item.transfer.cleanup();
+  expect(responses.length).toBeGreaterThan(0);
+  expect(responses).not.toContain("CANARY-BYTES-MUST-NOT-LEAK");
+  expect(responses.length).toBeLessThan(4096);
+});
+
+test("diagnostics include a bounded git diff of staged and unstaged work", async () => {
+  const repo = join(ws.root, "repo");
+  mkdirSync(repo, { recursive: true });
+  Bun.spawnSync(["git", "init", "-q", repo]);
+  writeFileSync(join(repo, "tracked.txt"), "one\n");
+  Bun.spawnSync(["git", "-C", repo, "add", "tracked.txt"]);
+  Bun.spawnSync([
+    "git",
+    "-C",
+    repo,
+    "-c",
+    "user.email=a@b",
+    "-c",
+    "user.name=c",
+    "commit",
+    "-qm",
+    "first",
+  ]);
+  writeFileSync(join(repo, "tracked.txt"), "one\ntwo unstaged\n");
+  writeFileSync(join(repo, "staged.txt"), "new staged file\n");
+  Bun.spawnSync(["git", "-C", repo, "add", "staged.txt"]);
+  const results = await ws.transport.diagnostics(ws.vmId, ws.root, {
+    maxBytes: 256 * 1024,
+  });
+  const git = results.find((item) => item.path.includes("git"))!;
+  const bytes = Buffer.from(await collect(git.transfer.stream));
+  expect(bytes.toString()).toContain("+two unstaged");
+  expect(bytes.toString()).toContain("+new staged file");
+  expect(bytes.toString()).toContain("diff --git");
+  expect(git.transfer.size).toBe(bytes.length);
+  await git.transfer.cleanup();
+  for (const item of results) await item.transfer.cleanup();
+});
+
+test("a missing or symlinked git directory is reported, never followed", async () => {
+  const missing = await ws.transport.diagnostics(ws.vmId, ws.root, {
+    maxBytes: 64 * 1024,
+  });
+  const git = missing.find((item) => item.path.includes("git"))!;
+  const report = Buffer.from(await collect(git.transfer.stream)).toString();
+  // The absence itself is preserved as evidence rather than silently empty.
+  expect(report).toMatch(/git/i);
+  expect(report).toMatch(/not-applicable|missing|absent|not found/i);
+  await git.transfer.cleanup();
+  for (const item of missing) await item.transfer.cleanup();
+
+  const outside = await localWorkspace();
+  try {
+    writeFileSync("/tmp/swarmforge-outside-secret", "OUTSIDE-GIT-SECRET");
+    Bun.spawnSync(["mkdir", "-p", "-m", "700", "/tmp/swarmforge-outside-repo"]);
+    Bun.spawnSync(["git", "init", "-q", "/tmp/swarmforge-outside-repo"]);
+    symlinkSync("/tmp/swarmforge-outside-repo", join(outside.root, "repo"));
+    const results = await outside.transport.diagnostics(
+      outside.vmId,
+      outside.root,
+      {
+        maxBytes: 64 * 1024,
+      },
+    );
+    const report2 = Buffer.from(
+      await collect(
+        results.find((item) => item.path.includes("git"))!.transfer.stream,
+      ),
+    ).toString();
+    expect(report2).not.toContain("OUTSIDE-GIT-SECRET");
+    expect(report2).toMatch(
+      /missing|absent|not found|not a directory|symlink/i,
+    );
+    for (const item of results) await item.transfer.cleanup();
+  } finally {
+    await outside.cleanup();
+  }
+});
+
+test("each diagnostic gets its own staging directory", async () => {
+  const staged = new Set<string>();
+  const original = ws.host.exec.bind(ws.host);
+  ws.host.exec = async (vm, command, options) => {
+    const result = await original(vm, command, options);
+    const made = /mkdir -m 700 -- '(.*)'/.exec(command);
+    if (made) staged.add(made[1]!);
+    return result;
+  };
+  const results = await ws.transport.diagnostics(ws.vmId, ws.root, {
+    maxBytes: 64 * 1024,
+  });
+  expect(results).toHaveLength(2);
+  const directories = results.map((item) =>
+    item.path === results[0]!.path ? staged.size : staged.size,
+  );
+  expect(staged.size).toBeGreaterThanOrEqual(2);
+  expect(directories).toHaveLength(2);
+  for (const item of results) await item.transfer.cleanup();
+});
+
+test("a staged file removed before it is read fails, as a guest would", async () => {
+  writeFileSync(join(ws.root, "staged.txt"), "bytes");
+  const transfer = await ws.transport.open(ws.vmId, ws.root, "staged.txt", {
+    maxBytes: 1024,
+  });
+  // Nothing has been read yet, so deleting the staged copy must break it.
+  rmSync(ws.staging, { recursive: true, force: true });
+  await expect(collect(transfer.stream)).rejects.toThrow();
+  await transfer.cleanup();
+});
+
+test("installing the helper never loosens the guest's own directory", async () => {
+  writeFileSync(join(ws.root, "x.txt"), "x");
+  await ws.transport.open(ws.vmId, ws.root, "x.txt", { maxBytes: 1024 });
+  const helperDir = ws.host.helperPath.slice(
+    0,
+    ws.host.helperPath.lastIndexOf("/"),
+  );
+  // The guest directory is root-owned and private; installing a helper must not
+  // make it group- or world-accessible.
+  expect(statSync(helperDir).mode & 0o077).toBe(0);
+  expect(statSync(ws.host.helperPath).mode & 0o077).toBe(0);
+  expect(statSync(ws.staging).mode & 0o077).toBe(0);
+  expect(
+    ws.host.commands.some((command) => command.includes("chmod 755")),
+  ).toBe(false);
+  expect(readdirSync(ws.staging)).toHaveLength(1);
+});
+
+test("a refusal carries a code, so an absence is never a permission failure", async () => {
+  writeFileSync(join(ws.root, "present.txt"), "a real file\n");
+  mkdirSync(join(ws.root, "present-dir"), { recursive: true });
+  const cases: {
+    path: string;
+    code: ArtifactErrorCode;
+    message: RegExp;
+  }[] = [
+    { path: "absent.txt", code: "not_found", message: /no such file/i },
+    { path: "absent-dir/file", code: "not_found", message: /no such file/i },
+    // A path that exists but is a file is not an absence: the two are separate
+    // outcomes, and a caller that has to skip an optional path and fail a
+    // present one cannot tell them apart from a message alone.
+    { path: "present.txt", code: "not_directory", message: /not a directory/i },
+  ];
+  for (const item of cases) {
+    const error = await ws.transport
+      .list(ws.vmId, ws.root, item.path, {})
+      .then(() => null)
+      .catch((thrown: unknown) => thrown as Error & { code?: string });
+    expect(error).toBeTruthy();
+    expect(error?.code).toBe(item.code);
+    expect(error?.message).toMatch(item.message);
+    expect(artifactErrorCode(error)).toBe(item.code);
+  }
+  // A capture of a directory is refused with the same taxonomy, never as a
+  // transport failure and never as an absence.
+  const open = await ws.transport
+    .open(ws.vmId, ws.root, "present-dir", { maxBytes: 1024 })
+    .then(() => null)
+    .catch((thrown: unknown) => thrown as Error & { code?: string });
+  expect(open?.code).toBe("not_directory");
+  // A size bound is a limit, not an absence and not a transport failure.
+  writeFileSync(join(ws.root, "big.bin"), Buffer.alloc(4096));
+  const bounded = await ws.transport
+    .open(ws.vmId, ws.root, "big.bin", { maxBytes: 16 })
+    .then(() => null)
+    .catch((thrown: unknown) => thrown as Error & { code?: string });
+  expect(bounded?.code).toBe("limit_exceeded");
+});
+
+test("an unsafe path is refused as unsafe, not as a missing source", async () => {
+  // A symlinked component pointing outside the root is a refusal to read, which
+  // must never be reported as an absence: skipping it as optional would silently
+  // lose an artifact the caller was told was there.
+  mkdirSync(join(ws.root, "real"), { recursive: true });
+  writeFileSync(join(ws.root, "real", "file.txt"), "inside");
+  symlinkSync("/etc", join(ws.root, "escape"));
+  const error = await ws.transport
+    .open(ws.vmId, ws.root, "escape/passwd", { maxBytes: 4096 })
+    .then(() => null)
+    .catch((thrown: unknown) => thrown as Error & { code?: string });
+  expect(error).toBeTruthy();
+  expect(error?.code).toBe("unsafe_path");
+  const leaf = await ws.transport
+    .open(ws.vmId, ws.root, "escape", { maxBytes: 4096 })
+    .then(() => null)
+    .catch((thrown: unknown) => thrown as Error & { code?: string });
+  expect(leaf?.code).toBe("unsafe_path");
+});
+
+test("the whole filesystem root is refused as an artifact root", async () => {
+  await expect(
+    ws.transport.list(ws.vmId, "/", "", { maxEntries: 10 }),
+  ).rejects.toThrow(/filesystem root/i);
+  expect(() => validateRoot("/")).toThrow(/filesystem root/i);
+});
+
+test("a root whose ancestor is a symlink is refused rather than followed", async () => {
+  const outside = join(ws.base, "outside");
+  mkdirSync(outside, { recursive: true });
+  writeFileSync(join(outside, "secret.txt"), "not the workspace");
+  // The configured root itself is reached through a symlinked ancestor, which
+  // is exactly the case pinning only the leaf cannot catch.
+  const linked = join(ws.base, "linked");
+  symlinkSync(ws.base, linked);
+  const error = await ws.transport
+    .list(ws.vmId, `${linked}/workspace`, "", { maxEntries: 10 })
+    .then(() => null)
+    .catch((thrown: unknown) => thrown as Error & { code?: string });
+  expect(error).toBeTruthy();
+  expect(error?.code).toBe("unsafe_path");
+  // A symlink directly inside the workspace is refused the same way.
+  symlinkSync(outside, join(ws.root, "linked-outside"));
+  const inside = await ws.transport
+    .list(ws.vmId, ws.root, "linked-outside", { maxEntries: 10 })
+    .then(() => null)
+    .catch((thrown: unknown) => thrown as Error & { code?: string });
+  expect(inside?.code).toBe("unsafe_path");
+});
+
+test("a bounded diagnostic is kept, verified and labelled incomplete", async () => {
+  writeFileSync(join(ws.root, "huge.txt"), "x".repeat(200 * 1024));
+  const results = await ws.transport.diagnostics(ws.vmId, ws.root, {
+    maxBytes: 16,
+  });
+  expect(results.length).toBeGreaterThan(0);
+  for (const item of results) {
+    // The bytes are bounded evidence and are still verified against themselves.
+    expect(item.transfer.size).toBeLessThanOrEqual(16);
+    const bytes = await collect(item.transfer.stream);
+    expect(sha(bytes)).toBe(item.transfer.sha256);
+    // What they are not is the whole report, and that is stated on the transfer.
+    expect(item.transfer.incomplete).toBeTruthy();
+    await item.transfer.cleanup();
+  }
+});
+
+test("a workspace with no repository records that as not applicable", async () => {
+  const results = await ws.transport.diagnostics(ws.vmId, ws.root, {
+    maxBytes: 64 * 1024,
+  });
+  const git = results.find((item) => item.path.includes("git"))!;
+  expect(git).toBeDefined();
+  // No repository is a legitimate deployment, not a failure to retry for ever.
+  expect(git.notes?.join("\n")).toContain("not_applicable");
+  const bytes = await collect(git.transfer.stream);
+  expect(new TextDecoder().decode(bytes)).toContain("not-applicable");
+  expect(git.transfer.incomplete).toBeUndefined();
+  await git.transfer.cleanup();
+  await results[0]!.transfer.cleanup();
+});
+
+test("guest exec budgets never exceed what the guest API accepts", async () => {
+  // Every guest exec is clamped to the same ceiling: a configured budget above
+  // it is a configuration mistake, and sending it anyway would come back as a
+  // capture failure rather than as the mistake it is.
+  expect(guestExecTimeoutLimit).toBe(300000);
+  expect(boundedExecTimeout(900000)).toBe(guestExecTimeoutLimit);
+  expect(boundedExecTimeout(30000)).toBe(30000);
+  expect(boundedExecTimeout(Number.NaN)).toBe(30000);
+  expect(boundedExecTimeout(-1)).toBe(30000);
+  expect(boundedExecTimeout(1.5)).toBe(30000);
+  await ws.transport.ensureHelper(ws.vmId);
+  for (const command of ws.host.commands)
+    expect(command).not.toContain("900000");
+});
+
+/**
+ * Git diagnostics must stay inside the permitted root.
+ *
+ * A worker owns everything under its workspace, including `repo/.git`, so a
+ * repository that points anywhere else - through a `gitdir:` pointer file, a
+ * hostile `core.worktree`, or an alternates file - is a way to read bytes the
+ * coordinator never asked for. Each probe below plants exactly one of those and
+ * asserts the outside canary cannot reach any capture.
+ */
+const canary = "OUTSIDE-CANARY-MUST-NOT-BE-CAPTURED-7f3a9c";
+
+const outsideRepository = (root: string) => {
+  const outside = join(root, "outside", "xgit");
+  mkdirSync(outside, { recursive: true, mode: 0o700 });
+  const run = (args: string[], cwd = outside) =>
+    Bun.spawnSync(["git", ...args], {
+      cwd,
+      stdout: "ignore",
+      stderr: "ignore",
+    });
+  run(["init", "--quiet", "--initial-branch=main", "."]);
+  run(["config", "user.email", "probe@example.invalid"]);
+  run(["config", "user.name", "probe"]);
+  writeFileSync(join(outside, "public.txt"), "public content\n");
+  writeFileSync(join(outside, "private.txt"), canary);
+  run(["add", "-A"]);
+  run(["commit", "--quiet", "-m", "outside"]);
+  const head = Bun.spawnSync(["git", "rev-parse", "HEAD"], {
+    cwd: outside,
+    stdout: "pipe",
+  })
+    .stdout.toString()
+    .trim();
+  return { outside, head };
+};
+
+const gitReportOf = async (root: string) => {
+  const results = await ws.transport.diagnostics(ws.vmId, root, {
+    maxBytes: 256 * 1024,
+  });
+  const chunks: Uint8Array[] = [];
+  for (const item of results) {
+    const reader = item.transfer.stream.getReader();
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value) chunks.push(value);
+    }
+    await item.transfer.cleanup();
+  }
+  return Buffer.concat(chunks.map((chunk) => Buffer.from(chunk))).toString();
+};
+
+test("gitdiag-probe: a gitdir pointer file cannot pull a repository into the capture", async () => {
+  const { outside } = outsideRepository(ws.base);
+  const repo = join(ws.root, "repo");
+  mkdirSync(repo, { recursive: true, mode: 0o700 });
+  writeFileSync(join(repo, "inside.txt"), "inside content\n");
+  // A pointer file, not a directory: the legitimate form for a worktree whose
+  // metadata lives elsewhere, and exactly the case that used to be accepted.
+  writeFileSync(join(repo, ".git"), `gitdir: ${join(outside, ".git")}\n`);
+  const report = await gitReportOf(ws.root);
+  // Nothing from outside the permitted root, and no name that would prove the
+  // pointer was followed. A repository whose metadata is not a real directory
+  // inside the root is not described at all: the capture is disabled, not
+  // redirected, and the refusal is recorded so the reason is not a mystery.
+  expect(report).not.toContain(canary);
+  expect(report).not.toContain("private.txt");
+  expect(report).not.toContain("public.txt");
+  expect(report).toContain("not-applicable=Git metadata is not a directory");
+  expect(ws.stagingEntries()).toEqual([]);
+});
+
+test("gitdiag-probe2: a hostile core.worktree cannot expose filenames outside the root", async () => {
+  const { outside } = outsideRepository(ws.base);
+  const repo = join(ws.root, "repo");
+  mkdirSync(repo, { recursive: true, mode: 0o700 });
+  writeFileSync(join(repo, "inside.txt"), "inside content\n");
+  const gitDir = join(repo, ".git");
+  for (const directory of ["objects", "refs", "info"])
+    mkdirSync(join(gitDir, directory), { recursive: true });
+  writeFileSync(join(gitDir, "HEAD"), "ref: refs/heads/main\n");
+  // A real directory .git whose own config aims the work tree somewhere else.
+  writeFileSync(
+    join(gitDir, "config"),
+    `[core]\n\trepositoryformatversion = 0\n\tbare = false\n\tworktree = ${outside}\n`,
+  );
+  const report = await gitReportOf(ws.root);
+  expect(report).not.toContain(canary);
+  expect(report).not.toContain("private.txt");
+  expect(ws.stagingEntries()).toEqual([]);
+});
+
+test("gitdiag-probe3: an alternates file cannot pull outside object content into the capture", async () => {
+  const { outside, head } = outsideRepository(ws.base);
+  const repo = join(ws.root, "repo");
+  mkdirSync(repo, { recursive: true, mode: 0o700 });
+  const gitDir = join(repo, ".git");
+  for (const directory of ["objects/info", "objects", "refs/heads"])
+    mkdirSync(join(gitDir, directory), { recursive: true });
+  writeFileSync(join(gitDir, "HEAD"), "ref: refs/heads/main\n");
+  writeFileSync(
+    join(gitDir, "config"),
+    "[core]\n\trepositoryformatversion = 0\n\tbare = false\n",
+  );
+  // The work tree holds one of the two committed files; the other exists only in
+  // the outside object store, so a diff has to read it through the alternates to
+  // describe what was removed.
+  writeFileSync(join(repo, "public.txt"), "public content\n");
+  writeFileSync(join(gitDir, "refs", "heads", "main"), `${head}\n`);
+  writeFileSync(
+    join(gitDir, "objects", "info", "alternates"),
+    `${join(outside, ".git", "objects")}\n`,
+  );
+  const report = await gitReportOf(ws.root);
+  expect(report).not.toContain(canary);
+  expect(report).not.toContain("private.txt");
+  expect(ws.stagingEntries()).toEqual([]);
+});
+
+test("a verifiable repository is still described, and its reasons are kept private", async () => {
+  // The fix must not simply switch Git diagnostics off: a real repository inside
+  // the workspace is exactly what a salvage wants, so it is described normally.
+  const repo = join(ws.root, "repo");
+  mkdirSync(repo, { recursive: true, mode: 0o700 });
+  const run = (args: string[]) =>
+    Bun.spawnSync(["git", ...args], {
+      cwd: repo,
+      stdout: "ignore",
+      stderr: "ignore",
+    });
+  run(["init", "--quiet", "--initial-branch=main", "."]);
+  run(["config", "user.email", "probe@example.invalid"]);
+  run(["config", "user.name", "probe"]);
+  writeFileSync(join(repo, "tracked.txt"), "first version\n");
+  run(["add", "-A"]);
+  run(["commit", "--quiet", "-m", "first"]);
+  writeFileSync(join(repo, "tracked.txt"), "second version\n");
+  const results = await ws.transport.diagnostics(ws.vmId, ws.root, {
+    maxBytes: 256 * 1024,
+  });
+  const git = results.find((item) => item.path.includes("git"))!;
+  const bytes = Buffer.concat(
+    await (async () => {
+      const reader = git.transfer.stream.getReader();
+      const chunks: Buffer[] = [];
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (value) chunks.push(Buffer.from(value));
+      }
+      return chunks;
+    })(),
+  ).toString();
+  expect(git.transfer.incomplete).toBeUndefined();
+  // The status, the log and a real diff of the committed change.
+  expect(bytes).toContain("tracked.txt");
+  expect(bytes).toContain("-first version");
+  expect(bytes).toContain("+second version");
+  expect(bytes).toMatch(/first$/m);
+  // A reason is recorded for every source that ran, and a failure's own stderr is
+  // kept in the private staged file rather than in the metadata response.
+  expect(bytes).toContain("git-status exit=0");
+  expect(git.notes?.some((note) => note.includes("git-diff exit=0"))).toBe(
+    true,
+  );
+  await git.transfer.cleanup();
+  for (const item of results) await item.transfer.cleanup();
+  expect(ws.stagingEntries()).toEqual([]);
+});
+
+test("a repository whose metadata is a symlink is not described", async () => {
+  const outside = join(ws.base, "outside-repo");
+  mkdirSync(join(outside, ".git"), { recursive: true });
+  const repo = join(ws.root, "repo");
+  mkdirSync(repo, { recursive: true, mode: 0o700 });
+  symlinkSync(join(outside, ".git"), join(repo, ".git"));
+  const report = await gitReportOf(ws.root);
+  expect(report).toContain("not-applicable=Git metadata is a symlink");
+  expect(report).not.toContain(canary);
+  expect(ws.stagingEntries()).toEqual([]);
+});
+
+test("an alternates entry that stays inside the root is still allowed", async () => {
+  const repo = join(ws.root, "repo");
+  mkdirSync(repo, { recursive: true, mode: 0o700 });
+  const run = (args: string[]) =>
+    Bun.spawnSync(["git", ...args], {
+      cwd: repo,
+      stdout: "ignore",
+      stderr: "ignore",
+    });
+  run(["init", "--quiet", "--initial-branch=main", "."]);
+  run(["config", "user.email", "probe@example.invalid"]);
+  run(["config", "user.name", "probe"]);
+  writeFileSync(join(repo, "tracked.txt"), "content\n");
+  run(["add", "-A"]);
+  run(["commit", "--quiet", "-m", "inside"]);
+  writeFileSync(join(repo, "tracked.txt"), "changed content\n");
+  // A second object store inside the workspace is legitimate; only one outside
+  // the permitted root is a way out.
+  const shared = join(ws.root, "shared-objects");
+  mkdirSync(shared, { recursive: true, mode: 0o700 });
+  writeFileSync(
+    join(repo, ".git", "objects", "info", "alternates"),
+    // Git resolves a relative entry against the object directory, so three
+    // levels up from `<root>/repo/.git/objects` is the workspace root.
+    "../../../shared-objects\n",
+  );
+  const report = await gitReportOf(ws.root);
+  // The repository is described normally: the alternates entry is inside the
+  // root, so the status, the log and the diff of a real change are all captured.
+  expect(report).toContain("tracked.txt");
+  expect(report).toContain("-content");
+  expect(report).toContain("+changed content");
+  expect(report).not.toContain("not-applicable");
+  expect(ws.stagingEntries()).toEqual([]);
+});
+
+test("gitdiag-probe4: a commondir outside the root disables the git capture", async () => {
+  const outside = join(ws.base, "outside-meta");
+  mkdirSync(join(outside, "objects"), { recursive: true });
+  mkdirSync(join(outside, "refs"), { recursive: true });
+  const repo = join(ws.root, "repo");
+  mkdirSync(repo, { recursive: true, mode: 0o700 });
+  writeFileSync(join(repo, "inside.txt"), "inside\n");
+  mkdirSync(join(repo, ".git", "objects"), { recursive: true });
+  mkdirSync(join(repo, ".git", "refs"), { recursive: true });
+  writeFileSync(join(repo, ".git", "HEAD"), "ref: refs/heads/main\n");
+  writeFileSync(join(repo, ".git", "config"), "[core]\n\tbare = false\n");
+  // A linked worktree names its metadata elsewhere; Git follows commondir.
+  writeFileSync(join(repo, ".git", "commondir"), `${outside}\n`);
+  const report = await gitReportOf(ws.root);
+  expect(report).toContain("not-applicable=");
+  expect(report).toMatch(/commondir/);
+  expect(report).not.toContain(canary);
+  expect(ws.stagingEntries()).toEqual([]);
+});
+
+test("gitdiag-probe5: a symlink anywhere inside the metadata disables the capture", async () => {
+  const repo = join(ws.root, "repo");
+  mkdirSync(repo, { recursive: true, mode: 0o700 });
+  const run = (args: string[]) =>
+    Bun.spawnSync(["git", ...args], {
+      cwd: repo,
+      stdout: "ignore",
+      stderr: "ignore",
+    });
+  run(["init", "--quiet", "--initial-branch=main", "."]);
+  run(["config", "user.email", "probe@example.invalid"]);
+  run(["config", "user.name", "probe"]);
+  writeFileSync(join(repo, "tracked.txt"), "content\n");
+  run(["add", "-A"]);
+  run(["commit", "--quiet", "-m", "inside"]);
+  // A descendant of the metadata - not the metadata directory itself - pointing
+  // out of the workspace. Git would read through it.
+  const outside = join(ws.base, "outside-meta-refs");
+  mkdirSync(outside, { recursive: true });
+  const packed = join(repo, ".git", "refs", "heads");
+  rmSync(packed, { recursive: true, force: true });
+  mkdirSync(join(repo, ".git", "refs"), { recursive: true });
+  symlinkSync(outside, packed);
+  const report = await gitReportOf(ws.root);
+  expect(report).toMatch(/not-applicable=Git metadata contains a symlink/);
+  expect(report).not.toContain(canary);
+  expect(ws.stagingEntries()).toEqual([]);
+});
+
+test("gitdiag-probe6: an alternates chain that leaves the root through a second store is refused", async () => {
+  // The first store is inside the root, so a shallow check passes; the escape is
+  // one level deeper in the chain.
+  const repo = join(ws.root, "repo");
+  mkdirSync(repo, { recursive: true, mode: 0o700 });
+  const run = (args: string[]) =>
+    Bun.spawnSync(["git", ...args], {
+      cwd: repo,
+      stdout: "ignore",
+      stderr: "ignore",
+    });
+  run(["init", "--quiet", "--initial-branch=main", "."]);
+  run(["config", "user.email", "probe@example.invalid"]);
+  run(["config", "user.name", "probe"]);
+  writeFileSync(join(repo, "tracked.txt"), "content\n");
+  run(["add", "-A"]);
+  run(["commit", "--quiet", "-m", "inside"]);
+  const first = join(ws.root, "store-one");
+  mkdirSync(join(first, "info"), { recursive: true });
+  const second = join(ws.base, "store-two");
+  mkdirSync(join(second, "info"), { recursive: true });
+  writeFileSync(join(first, "info", "alternates"), `${second}\n`);
+  writeFileSync(
+    join(repo, ".git", "objects", "info", "alternates"),
+    "../../../store-one\n",
+  );
+  const report = await gitReportOf(ws.root);
+  expect(report).toMatch(/not-applicable=alternates points outside/);
+  expect(report).not.toContain(canary);
+  expect(ws.stagingEntries()).toEqual([]);
+});
+
+test("gitdiag-probe7: metadata replaced after a capture is refused, not followed", async () => {
+  // What is proven here is the boundary itself: once the metadata has changed,
+  // the next capture verifies what is actually there and refuses the ones it
+  // cannot vouch for. The helper also re-verifies after its commands, which
+  // narrows the window in which a change can happen; that is a mitigation, not a
+  // proof, and nothing here claims otherwise.
+  const repo = join(ws.root, "repo");
+  mkdirSync(repo, { recursive: true, mode: 0o700 });
+  const run = (args: string[]) =>
+    Bun.spawnSync(["git", ...args], {
+      cwd: repo,
+      stdout: "ignore",
+      stderr: "ignore",
+    });
+  run(["init", "--quiet", "--initial-branch=main", "."]);
+  run(["config", "user.email", "probe@example.invalid"]);
+  run(["config", "user.name", "probe"]);
+  writeFileSync(join(repo, "tracked.txt"), "content\n");
+  run(["add", "-A"]);
+  run(["commit", "--quiet", "-m", "inside"]);
+  const first = await gitReportOf(ws.root);
+  // A real repository inside the workspace is described, and the commit shows up.
+  expect(first).toContain("inside");
+  expect(first).not.toContain("not-applicable");
+  // The metadata is replaced with something that points out of the workspace.
+  const outside = join(ws.base, "swapped-into");
+  mkdirSync(outside, { recursive: true });
+  const packed = join(repo, ".git", "refs", "heads");
+  rmSync(packed, { recursive: true, force: true });
+  symlinkSync(outside, packed);
+  const second = await gitReportOf(ws.root);
+  expect(second).toMatch(/not-applicable=Git metadata contains a symlink/);
+  expect(second).not.toContain(canary);
+  expect(ws.stagingEntries()).toEqual([]);
+});
+
+/**
+ * The helper is run here as a subprocess under a descriptor limit, because that
+ * is the only honest way to show what it does with descriptors: the review found
+ * a walk that held one per directory, which only shows up as a failure once the
+ * limit is low enough and the tree deep enough.
+ */
+const runHelperUnderLimit = async (input: {
+  request: Record<string, unknown>;
+  staging: string;
+  limit: number;
+}): Promise<{ stdout: string; stderr: string; code: number }> => {
+  const helper = join(ws.base, "helper-under-limit.py");
+  writeFileSync(helper, artifactHelperSource(), { mode: 0o700 });
+  const quoted = shellQuote(JSON.stringify(input.request));
+  const proc = Bun.spawn(
+    [
+      "/bin/sh",
+      "-c",
+      `ulimit -n ${input.limit}; exec python3 -I -B ${shellQuote(helper)} ${quoted}`,
+    ],
+    { stdout: "pipe", stderr: "pipe" },
+  );
+  const [stdout, stderr, code] = await Promise.all([
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+    proc.exited,
+  ]);
+  return { stdout, stderr, code: code ?? 0 };
+};
+
+test("the metadata walk releases its descriptors under a low descriptor limit", async () => {
+  const repo = join(ws.root, "repo");
+  mkdirSync(repo, { recursive: true, mode: 0o700 });
+  const run = (args: string[]) =>
+    Bun.spawnSync(["git", ...args], {
+      cwd: repo,
+      stdout: "ignore",
+      stderr: "ignore",
+    });
+  run(["init", "--quiet", "--initial-branch=main", "."]);
+  run(["config", "user.email", "probe@example.invalid"]);
+  run(["config", "user.name", "probe"]);
+  writeFileSync(join(repo, "tracked.txt"), "content\n");
+  run(["add", "-A"]);
+  run(["commit", "--quiet", "-m", "inside"]);
+  // Three hundred metadata directories under one parent: wide rather than deep,
+  // so the walk stays inside its depth bound and any descriptor it failed to
+  // release accumulates instead of being released by returning up the tree.
+  for (let index = 0; index < 300; index++) {
+    const branch = join(repo, ".git", "refs", `d${index}`);
+    mkdirSync(branch, { recursive: true });
+    writeFileSync(join(branch, "keep"), "x");
+  }
+  mkdirSync(ws.staging, { recursive: true, mode: 0o700 });
+  const result = await runHelperUnderLimit({
+    staging: ws.staging,
+    limit: 96,
+    request: {
+      op: "capture",
+      root: ws.root,
+      staging: ws.staging,
+      name: "bounded-fds",
+      max_bytes: 65536,
+      timeout_ms: 20000,
+      sources: [
+        {
+          label: "git-status",
+          cwd: "repo",
+          git: true,
+          git_args: ["status", "--porcelain=v1", "-b"],
+        },
+      ],
+    },
+  });
+  const payload = JSON.parse(result.stdout.trim().split("\n").at(-1) ?? "{}");
+  // The capture completed and the repository was described: descriptors were
+  // released as the walk descended rather than one per level.
+  expect(payload.ok).toBe(true);
+  expect(payload.complete).toBe(true);
+  expect(payload.sources).toHaveLength(1);
+  expect(payload.sources[0].skipped).toBeUndefined();
+  expect(payload.sources[0].incomplete).toBeUndefined();
+  const staged = readFileSync(join(ws.staging, "bounded-fds"), "utf8");
+  expect(staged).toContain("git-status exit=0");
+});
+
+test("a descriptor the helper cannot get is reported incomplete, never skipped", async () => {
+  const repo = join(ws.root, "repo");
+  mkdirSync(repo, { recursive: true, mode: 0o700 });
+  const run = (args: string[]) =>
+    Bun.spawnSync(["git", ...args], {
+      cwd: repo,
+      stdout: "ignore",
+      stderr: "ignore",
+    });
+  run(["init", "--quiet", "--initial-branch=main", "."]);
+  run(["config", "user.email", "probe@example.invalid"]);
+  run(["config", "user.name", "probe"]);
+  writeFileSync(join(repo, "tracked.txt"), "content\n");
+  run(["add", "-A"]);
+  run(["commit", "--quiet", "-m", "inside"]);
+  mkdirSync(ws.staging, { recursive: true, mode: 0o700 });
+  // A limit this low cannot be met while walking the metadata: that is a
+  // statement about this process, not about the repository, so it must not be
+  // recorded as a repository that is not applicable - and it must not be
+  // recorded as a complete report either. Fourteen is enough to walk a small
+  // repository, so this proves the difference rather than the limit.
+  const result = await runHelperUnderLimit({
+    staging: ws.staging,
+    limit: 12,
+    request: {
+      op: "capture",
+      root: ws.root,
+      staging: ws.staging,
+      name: "starved",
+      max_bytes: 65536,
+      timeout_ms: 20000,
+      sources: [
+        {
+          label: "git-status",
+          cwd: "repo",
+          git: true,
+          git_args: ["status", "--porcelain=v1", "-b"],
+        },
+      ],
+    },
+  });
+  const payload = JSON.parse(result.stdout.trim().split("\n").at(-1) ?? "{}");
+  expect(payload.ok).toBe(true);
+  expect(payload.complete).toBe(false);
+  expect(payload.sources_incomplete).toBeGreaterThan(0);
+  const source = payload.sources[0];
+  expect(source.skipped).toBeUndefined();
+  expect(source.incomplete).toBe("metadata-unreadable");
+  const staged = readFileSync(join(ws.staging, "starved"), "utf8");
+  expect(staged).toContain("incomplete=");
+  expect(staged).not.toContain("not-applicable=");
+});
