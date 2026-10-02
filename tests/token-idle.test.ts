@@ -179,6 +179,7 @@ test("a follow-up dispatch restarts the clock", async () => {
   await h.coordinator.tick();
   expect(h.store.get(w.worker_id).state).toBe("completed");
   aged(h, w.worker_id, 20 * idle);
+  await h.coordinator.finalize(w.worker_id);
   h.coordinator.message(w.worker_id, "next");
   const queued = Date.now();
   await h.coordinator.tick();

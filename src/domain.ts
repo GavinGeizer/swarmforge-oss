@@ -1,4 +1,10 @@
 import { z } from "zod";
+import {
+  hasControlCharacter,
+  maxArtifactPathBytes,
+  maxArtifactPathComponents,
+  type WorkerArtifactTransport,
+} from "./artifact-types";
 export const states = [
   "queued",
   "provisioning",
@@ -26,6 +32,78 @@ export const idSchema = z
   .min(1)
   .max(128)
   .regex(/^[a-zA-Z0-9_.:-]+$/);
+// Artifact preservation is separate from the task outcome, so it carries its own durable
+// states: a retained worker can be preserved, still collecting, exhausted, or explicitly
+// abandoned by a forced destruction.
+export const finalizationStates = [
+  "pending",
+  "collecting",
+  "preserved",
+  "failed",
+  "abandoned",
+] as const;
+export type FinalizationState = (typeof finalizationStates)[number];
+export const finalizationSettled = new Set<FinalizationState>([
+  "preserved",
+  "failed",
+  "abandoned",
+]);
+export interface WorkerFinalization {
+  state: FinalizationState;
+  run_id: string | null;
+  attempts: number;
+  error: string | null;
+  next_retry_at: number | null;
+  started_at: number | null;
+  completed_at: number | null;
+}
+export interface ArtifactDeclaration {
+  path: string;
+  required: boolean;
+  directory: boolean;
+}
+export const artifactDepth = maxArtifactPathComponents;
+// Workspace-relative artifact paths only, checked with the same rules the data plane applies
+// when it opens a path: no traversal, no absolute paths, no backslashes, no C0, DEL or C1
+// control characters. The only wildcard accepted is the trailing "/**" directory marker.
+export function artifactPathProblem(raw: string): string | null {
+  if (Buffer.byteLength(raw) > maxArtifactPathBytes)
+    return `Artifact path exceeds ${maxArtifactPathBytes} bytes`;
+  if (raw.startsWith("/")) return "Artifact path must be workspace-relative";
+  if (raw.includes("\\")) return "Artifact path must not contain backslashes";
+  const directory = raw.endsWith("/**");
+  const path = directory ? raw.slice(0, -3) : raw;
+  const parts = path.split("/");
+  if (!path || parts.some((part) => !part || part === "." || part === ".."))
+    return "Artifact path must not contain empty or relative components";
+  if (parts.length > maxArtifactPathComponents)
+    return `Artifact path exceeds ${maxArtifactPathComponents} components`;
+  if (path.startsWith("~")) return "Artifact path must be workspace-relative";
+  if (hasControlCharacter(path))
+    return "Artifact path must not contain control characters";
+  if (parts.some((part) => /[*?[\]{}]/.test(part)))
+    return "Artifact path wildcards are not allowed";
+  return null;
+}
+export const artifactPathSchema = z
+  .string()
+  .min(1)
+  .max(maxArtifactPathBytes)
+  .superRefine((value, ctx) => {
+    const problem = artifactPathProblem(value);
+    if (problem) ctx.addIssue({ code: "custom", message: problem });
+  });
+export const artifactDeclarationSchema = z
+  .object({ path: artifactPathSchema, required: z.boolean().default(false) })
+  .transform(({ path, required }) => ({
+    path: path.endsWith("/**") ? path.slice(0, -3) : path,
+    required,
+    directory: path.endsWith("/**"),
+  }));
+export const artifactDeclarationsSchema = z
+  .array(artifactDeclarationSchema)
+  .max(100)
+  .default([]);
 export const spawnSchema = z.object({
   team_id: idSchema.default("default"),
   task_id: idSchema,
@@ -33,8 +111,17 @@ export const spawnSchema = z.object({
   prompt: z.string().min(1).max(32000),
   timeout_seconds: z.number().int().min(1).max(604800).optional(),
   request_id: idSchema.optional(),
+  artifacts: artifactDeclarationsSchema,
+  // Full workspace snapshots stay opt-in: explicitly requested, or configured for failures.
+  snapshot_on_failure: z.boolean().default(false),
 });
 export type Spawn = z.infer<typeof spawnSchema>;
+// Preservation declarations are optional on any creation request, including the internal ones
+// that never collect anything.
+export type SpawnRequest = Omit<Spawn, "artifacts" | "snapshot_on_failure"> & {
+  artifacts?: ArtifactDeclaration[];
+  snapshot_on_failure?: boolean;
+};
 export const resultSchema = z
   .object({
     worker_id: z.string().max(128).optional(),
@@ -101,6 +188,9 @@ export interface Worker {
   error: string | null;
   intent: "pause" | "resume" | "cancel" | "destroy" | null;
   force_destroy: boolean;
+  artifacts: ArtifactDeclaration[];
+  snapshot_on_failure: boolean;
+  finalization?: WorkerFinalization;
 }
 export interface Dispatch {
   run_id: string;
@@ -113,9 +203,15 @@ export interface Dispatch {
   result: WorkerResult | null;
 }
 export type EventType =
-  | `worker.${WorkerState | "requested" | "resumed"}`
+  | `worker.${WorkerState | "requested" | "resumed" | "control_superseded"}`
   | "result.received"
-  | "artifact.created";
+  | "artifact.created"
+  // One attempted event per collection attempt, persisted before any transfer starts, plus
+  // exactly one settled outcome per collection. Cumulative counters are rebuilt from these.
+  | "finalization.attempted"
+  | "finalization.preserved"
+  | "finalization.failed"
+  | "finalization.abandoned";
 export interface WorkerEvent {
   id: number;
   worker_id: string;
@@ -197,6 +293,9 @@ export interface WorkerProvider {
     id: string,
     path: string,
   ): Promise<{ size: number; isFile: boolean; isSymlink: boolean }>;
+  // Raw artifact bytes come from the provider transport, never from exec output or a
+  // stat-then-read race. A provider without it fails clearly instead of degrading unsafely.
+  artifactTransport?: WorkerArtifactTransport;
 }
 export interface AgentMessage {
   id: string;
