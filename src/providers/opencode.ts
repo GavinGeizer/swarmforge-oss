@@ -1,6 +1,8 @@
 import {
   createOpencodeClient,
+  type Message,
   type Config as OpenCodeConfig,
+  type Part,
 } from "@opencode-ai/sdk/v2";
 import { type Config, gitTree } from "../config";
 import {
@@ -51,6 +53,16 @@ Return the requested structured result with worker_id=${w.worker_id}, task_id=${
 Respond with exactly one JSON object and no markdown. It must match this JSON Schema: ${JSON.stringify(resultSchema.toJSONSchema())}
 The team lead's task follows.`;
 }
+// The authoritative identity of this dispatch, stated in the user text so a long-lived session
+// cannot answer with the run id of an earlier dispatch. It carries only identifiers the worker
+// already has; no credential, endpoint or password is disclosed.
+export function dispatchIdentity(w: Worker, d: Dispatch) {
+  return `${d.message}
+
+SwarmForge dispatch (authoritative): worker_id=${w.worker_id} task_id=${w.task_id} run_id=${d.run_id}.
+This dispatch is the newest one for this session and supersedes every run id, task and worker id reported earlier in this conversation, including in the system prompt. Report only run_id=${d.run_id} in your structured result.`;
+}
+
 export class OpenCodeAgent implements CodingAgent {
   constructor(
     readonly config: Config,
@@ -99,35 +111,30 @@ export class OpenCodeAgent implements CodingAgent {
         modelID: this.config.SWARMFORGE_MODEL_NAME,
       },
       system: bootstrap(this.config, w, d),
-      parts: [{ type: "text", text: d.message }],
+      // A follow-up dispatch reuses the session and the system prompt of the first one, so the
+      // newest run id is restated in the user text of every dispatch: it is the only part of a
+      // prompt the server appends, and the worker's only fresh statement of who it is now. The
+      // task message is preserved verbatim ahead of it.
+      parts: [{ type: "text", text: dispatchIdentity(w, d) }],
     });
   }
   async inspect(w: Worker): Promise<AgentSnapshot> {
     if (!w.opencode_session_id) throw new Error("OpenCode session missing");
     const client = this.client(w);
-    const [status, messages] = await Promise.all([
+    // /session/status and the message window are settled independently. A history fault used
+    // to reject this whole Promise.all, which froze the reported status, the usage rows and
+    // the completion signal for a turn the server was still running.
+    const [status, history] = await Promise.allSettled([
       client.session.status(),
-      client.session.messages({ sessionID: w.opencode_session_id, limit: 100 }),
+      this.messageWindow(w),
     ]);
-    if (!messages.data) throw new Error("Missing OpenCode messages");
-    const all = [...messages.data];
-    let page = messages.data;
-    const cursors = new Set<string>();
-    while (page.length === 100) {
-      const before = page.map((m) => m.info.id).sort()[0];
-      if (!before || cursors.has(before))
-        throw new Error("OpenCode message pagination did not advance");
-      cursors.add(before);
-      const older = await client.session.messages({
-        sessionID: w.opencode_session_id,
-        limit: 100,
-        before,
-      });
-      if (!older.data) throw new Error("Missing OpenCode message page");
-      page = older.data;
-      all.unshift(...page);
-    }
-    const mapped = all.map(({ info, parts }) => {
+    // A status this call could not read is never guessed: it stays a retryable failure.
+    if (status.status === "rejected") throw status.reason;
+    // Only a rejected window that is not a degraded read reaches this point, and those are
+    // retryable faults the coordinator must see.
+    if (history.status === "rejected") throw history.reason;
+    const window = history.value;
+    const mapped = window.map(({ info, parts }) => {
       const text = parts
         .filter((part) => part.type === "text")
         .map((part) => part.text)
@@ -163,15 +170,63 @@ export class OpenCodeAgent implements CodingAgent {
       (m) => m.role === "assistant" && !m.completed,
     );
     return {
-      status: sessionStatus(status.data?.[w.opencode_session_id]?.type),
+      status: sessionStatus(status.value.data?.[w.opencode_session_id]?.type),
       messages: mapped,
       inference_active: inference_active ? 1 : 0,
     };
+  }
+  // The newest page of a session, and only that page. OpenCode 1.18.31 accepts `limit` and
+  // nothing else on this route: there is no before, offset or cursor, `before` is rejected
+  // with HTTP 400 and an omitted limit returns the whole history unbounded. Walking older
+  // pages is therefore impossible, and inventing a cursor is worse than being bounded.
+  private async messageWindow(
+    w: Worker,
+  ): Promise<{ info: Message; parts: Part[] }[]> {
+    const client = this.client(w);
+    try {
+      return await newestPage(client, w, MESSAGE_WINDOW);
+    } catch (error) {
+      // 400 means this server rejected the query, not that the session is gone, so the one
+      // supported knob is retried once at a smaller bound: a fixed ladder, never a loop.
+      if (httpStatus(error) !== 400) throw error;
+      try {
+        return await newestPage(client, w, MESSAGE_WINDOW_FALLBACK);
+      } catch (retry) {
+        if (httpStatus(retry) !== 400) throw retry;
+        // Neither bound is accepted, so the history is degraded rather than failed: the
+        // reported status is still authoritative and keeps flowing.
+        return [];
+      }
+    }
   }
   async abort(w: Worker) {
     if (w.opencode_session_id)
       await this.client(w).session.abort({ sessionID: w.opencode_session_id });
   }
+}
+
+// One bounded page, newest first, exactly as the server returns it. A full page means older
+// history exists and is unreachable through the supported route; it is never claimed as read.
+const MESSAGE_WINDOW = 100;
+const MESSAGE_WINDOW_FALLBACK = 20;
+
+async function newestPage(
+  client: ReturnType<OpenCodeAgent["client"]>,
+  w: Worker,
+  limit: number,
+): Promise<{ info: Message; parts: Part[] }[]> {
+  const page = await client.session.messages({
+    sessionID: w.opencode_session_id as string,
+    limit,
+  });
+  if (!page.data) throw new Error("Missing OpenCode messages");
+  return page.data;
+}
+
+// With throwOnError the SDK raises an Error whose cause carries the HTTP status.
+function httpStatus(error: unknown): number | undefined {
+  const status = (error as { cause?: { status?: number } })?.cause?.status;
+  return typeof status === "number" ? status : undefined;
 }
 
 // /session/status is polled for the whole OpenCode server and lists only sessions with
