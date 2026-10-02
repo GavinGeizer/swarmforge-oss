@@ -40,6 +40,11 @@ preserved after the transferred length and SHA-256 both match what the helper re
 Repeating the same worker, run, path and content is idempotent, so a retry or a restart does
 not create duplicates.
 
+Every attempt and outcome is also appended to a durable artifact event log, which is what the
+cumulative counters in [OBSERVABILITY.md](OBSERVABILITY.md) are built from: a `_total` only grows,
+while the stored-copy gauges describe the current state, because a recapture supersedes the copy
+it replaces.
+
 Failure reasons are recorded as short operator-facing text: a missing worker VM, a refused
 path, a size, entry or depth limit, a checksum mismatch, a provider or transport error, or a
 cancelled caller. Artifact contents, storage locations and credentials never appear in an

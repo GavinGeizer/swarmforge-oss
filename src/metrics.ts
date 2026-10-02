@@ -2,14 +2,9 @@ import { Counter, Gauge, Histogram, Registry } from "prom-client";
 import type { Coordinator } from "./coordinator";
 
 // Artifact kinds are recorded by the capture path, so the label set is fixed here: an
-// unexpected kind becomes "other" instead of creating unbounded metric cardinality.
-const artifactKinds = new Set([
-  "file",
-  "directory",
-  "snapshot",
-  "diagnostics",
-  "log",
-]);
+// unexpected kind becomes "other" instead of creating unbounded metric cardinality. The names
+// are the ones the capture and lifecycle layers actually write.
+const artifactKinds = new Set(["file", "declared", "snapshot", "diagnostic"]);
 const finalizationStates = [
   "pending",
   "collecting",
@@ -30,6 +25,8 @@ const finalizationStates = [
 // produces an event. Any other event under the prefix counts as "other".
 const finalizationEvents: Record<string, string> = {
   attempted: "attempted",
+  // Superseded by "attempted"; still counted so an older database keeps its attempt history.
+  collecting: "attempted",
   preserved: "preserved",
   failed: "failed",
   abandoned: "abandoned",
@@ -41,14 +38,15 @@ const finalizationOutcomes = [
   "abandoned",
   "other",
 ] as const;
-const artifactPageSize = 100;
-// Safety bound only: one million records at one hundred per page. A scan normally runs until the
-// repository reports its end, and reaching this bound reports an incomplete scan rather than a
-// truncated total, so the bound bounds scrape time rather than correctness.
-const artifactPageGuard = 10000;
-// Timestamps streamed for the collection-duration histogram. Counters come from a grouped
-// query and are exact for any repository size; only this histogram is observation bounded.
-const artifactDurationBound = 200000;
+// The cumulative counters come from one grouped query over the durable artifact event table, so
+// they are exact at any size. Only the collection-duration histogram has to walk rows, and it
+// streams them with a budget; reaching the budget reports an incomplete histogram rather than
+// silently truncating it.
+const artifactDurationBound = 50000;
+// Durable artifact event names, written by the data plane's artifact repository.
+const artifactAttemptedEvent = "artifact.attempted";
+const artifactPreservedEvent = "artifact.preserved";
+const artifactFailedEvent = "artifact.failed";
 export class Metrics {
   constructor(readonly c: Coordinator) {}
   async render() {
@@ -120,21 +118,39 @@ export class Metrics {
       buckets: [1, 10, 60, 300, 900, 3600, 14400],
       registers: [registry],
     });
+    const attempts = new Counter({
+      name: "swarmforge_artifacts_attempts_total",
+      help: "Artifact capture attempts started, from the durable artifact event log",
+      labelNames: ["kind"],
+      registers: [registry],
+    });
     const preserved = new Counter({
       name: "swarmforge_artifacts_preserved_total",
-      help: "Artifacts captured from workers and verified in coordinator storage",
+      help: "Artifact captures that stored and verified bytes, cumulative",
       labelNames: ["kind"],
       registers: [registry],
     });
     const bytes = new Counter({
       name: "swarmforge_artifacts_bytes_total",
-      help: "Verified artifact bytes stored by the coordinator",
+      help: "Verified artifact bytes written by the coordinator, cumulative",
       labelNames: ["kind"],
       registers: [registry],
     });
     const captureFailures = new Counter({
       name: "swarmforge_artifacts_failed_total",
-      help: "Artifact captures that failed",
+      help: "Artifact capture attempts that failed, cumulative",
+      labelNames: ["kind"],
+      registers: [registry],
+    });
+    const stored = new Gauge({
+      name: "swarmforge_artifacts_stored",
+      help: "Currently published artifact copies, excluding superseded ones",
+      labelNames: ["kind"],
+      registers: [registry],
+    });
+    const storedBytes = new Gauge({
+      name: "swarmforge_artifacts_stored_bytes",
+      help: "Bytes of the currently published artifact copies",
       labelNames: ["kind"],
       registers: [registry],
     });
@@ -146,7 +162,7 @@ export class Metrics {
     });
     const scanComplete = new Gauge({
       name: "swarmforge_artifacts_scan_complete",
-      help: "1 when every persisted artifact record was aggregated, 0 when the scan was cut short",
+      help: "1 when the collection-duration histogram covered every completed capture; the cumulative counters are exact regardless",
       registers: [registry],
     });
     const collection = new Histogram({
@@ -225,9 +241,12 @@ export class Metrics {
       }
     }
     await this.artifacts(
+      attempts,
       preserved,
       bytes,
       captureFailures,
+      stored,
+      storedBytes,
       inFlight,
       scanComplete,
       collection,
@@ -270,125 +289,101 @@ export class Metrics {
     for (const outcome of finalizationOutcomes)
       salvage.inc({ outcome }, counts.get(outcome) ?? 0);
   }
-  // Artifact records are aggregated straight out of the persisted repository, so a repository
-  // of any size is summarised by one grouped query instead of paging through every record.
-  // The collection-duration histogram still needs one timestamp pair per preserved record, so
-  // it streams those and reports an incomplete scan if it ever reaches its bound. If the
-  // repository cannot be read at all, the service's own paged listing is used instead, and a
-  // failure there is reported as an incomplete scan rather than as a silent partial total.
+  // Cumulative artifact totals come from the durable artifact event table, not from the record
+  // table: every attempt is its own record and a recapture supersedes the copy it replaces, so
+  // summing records would inflate a byte total while a later cleanup of superseded bytes lowers it
+  // again. Events are append-only, so a counter derived from them only ever grows.
   private async artifacts(
+    attempts: Counter<"kind">,
     preserved: Counter<"kind">,
     bytes: Counter<"kind">,
     failed: Counter<"kind">,
+    stored: Gauge<"kind">,
+    storedBytes: Gauge<"kind">,
     inFlight: Gauge<"kind">,
     scanComplete: Gauge,
     collection: Histogram,
   ) {
     const kind = (value: string) =>
       artifactKinds.has(value) ? value : "other";
-    let grouped: {
-      kind: string;
-      state: string;
-      n: number;
-      bytes: number;
-    }[] = [];
+    // One grouped query per outcome: exact at any repository size, no paging, no truncation.
     try {
-      grouped = this.c.store.db
+      for (const row of this.c.store.db
         .query(
-          "SELECT kind, state, count(*) n, coalesce(sum(size),0) bytes FROM artifacts GROUP BY kind, state",
+          `SELECT artifact_kind kind, sum(kind=?) attempts, sum(kind=?) preserved,
+             coalesce(sum(CASE WHEN kind=? THEN size ELSE 0 END),0) bytes,
+             sum(kind=?) failed
+           FROM artifact_events GROUP BY artifact_kind`,
+        )
+        .all(
+          artifactAttemptedEvent,
+          artifactPreservedEvent,
+          artifactPreservedEvent,
+          artifactFailedEvent,
+        ) as {
+        kind: string;
+        attempts: number;
+        preserved: number;
+        bytes: number;
+        failed: number;
+      }[]) {
+        const label = { kind: kind(row.kind) };
+        attempts.inc(label, row.attempts);
+        preserved.inc(label, row.preserved);
+        bytes.inc(label, Math.max(0, row.bytes));
+        failed.inc(label, row.failed);
+      }
+    } catch {
+      // A database without the event table has no history to report; the gauges below still do.
+    }
+    // Current state is a gauge, not a total: exactly one published copy per source exists, and a
+    // capture still running is its own state.
+    try {
+      for (const row of this.c.store.db
+        .query(
+          `SELECT kind, sum(state='preserved' AND superseded_by IS NULL) stored,
+             coalesce(sum(CASE WHEN state='preserved' AND superseded_by IS NULL THEN size ELSE 0 END),0) bytes,
+             sum(state='preserving') in_flight
+           FROM artifacts GROUP BY kind`,
         )
         .all() as {
         kind: string;
-        state: string;
-        n: number;
+        stored: number;
         bytes: number;
-      }[];
+        in_flight: number;
+      }[]) {
+        const label = { kind: kind(row.kind) };
+        stored.set(label, row.stored);
+        storedBytes.set(label, Math.max(0, row.bytes));
+        inFlight.set(label, row.in_flight);
+      }
     } catch {
-      grouped = [];
+      // Older databases without superseded_by keep working; the gauges stay empty.
     }
-    if (!grouped.length)
-      return this.artifactPages(
-        preserved,
-        bytes,
-        failed,
-        inFlight,
-        scanComplete,
-        collection,
-        kind,
-      );
-    for (const row of grouped) {
-      const label = { kind: kind(row.kind) };
-      if (row.state === "preserved") {
-        preserved.inc(label, row.n);
-        bytes.inc(label, Math.max(0, row.bytes));
-      } else if (row.state === "failed") failed.inc(label, row.n);
-      else inFlight.inc(label, row.n);
-    }
-    let durations: { created_at: number; retrieved_at: number | null }[] = [];
+    // Each completed capture is its own record, so its duration is historical even once the copy
+    // is superseded. The rows are streamed with a budget rather than materialised, and hitting it
+    // is reported instead of silently truncating the histogram.
+    let seen = 0;
+    let truncated = false;
     try {
-      durations = this.c.store.db
+      for (const row of this.c.store.db
         .query(
-          "SELECT created_at, retrieved_at FROM artifacts WHERE state='preserved' LIMIT ?",
+          "SELECT created_at, retrieved_at FROM artifacts WHERE state='preserved' AND retrieved_at IS NOT NULL",
         )
-        .all(artifactDurationBound) as {
+        .iterate() as IterableIterator<{
         created_at: number;
-        retrieved_at: number | null;
-      }[];
+        retrieved_at: number;
+      }>) {
+        if (++seen > artifactDurationBound) {
+          truncated = true;
+          break;
+        }
+        if (row.retrieved_at >= row.created_at)
+          collection.observe((row.retrieved_at - row.created_at) / 1000);
+      }
     } catch {
-      scanComplete.set(0);
-      return;
+      truncated = true;
     }
-    for (const row of durations)
-      if (row.retrieved_at !== null && row.retrieved_at >= row.created_at)
-        collection.observe((row.retrieved_at - row.created_at) / 1000);
-    scanComplete.set(durations.length >= artifactDurationBound ? 0 : 1);
-  }
-  // Fallback for a repository the grouped query cannot summarise: the service's own paged
-  // listing, aggregated as records stream past so nothing is retained, until it reports its
-  // end. A failure or a cursor that stops advancing is reported as an incomplete scan.
-  private async artifactPages(
-    preserved: Counter<"kind">,
-    bytes: Counter<"kind">,
-    failed: Counter<"kind">,
-    inFlight: Gauge<"kind">,
-    scanComplete: Gauge,
-    collection: Histogram,
-    kind: (value: string) => string,
-  ) {
-    let offset = 0;
-    for (let page = 0; page <= artifactPageGuard; page++) {
-      let listed: Awaited<ReturnType<Coordinator["artifacts"]["list"]>>;
-      try {
-        listed = await this.c.artifacts.list({
-          offset,
-          limit: artifactPageSize,
-        });
-      } catch {
-        scanComplete.set(0);
-        return;
-      }
-      for (const record of listed.artifacts) {
-        const label = { kind: kind(record.kind) };
-        if (record.state === "preserved") {
-          preserved.inc(label);
-          bytes.inc(label, Math.max(0, record.size));
-          if (record.retrieved_at && record.retrieved_at >= record.created_at)
-            collection.observe(
-              (record.retrieved_at - record.created_at) / 1000,
-            );
-        } else if (record.state === "failed") failed.inc(label);
-        else inFlight.inc(label);
-      }
-      if (listed.next_offset === null) {
-        scanComplete.set(1);
-        return;
-      }
-      if (listed.next_offset <= offset) {
-        scanComplete.set(0);
-        return;
-      }
-      offset = listed.next_offset;
-    }
-    scanComplete.set(0);
+    scanComplete.set(truncated ? 0 : 1);
   }
 }
