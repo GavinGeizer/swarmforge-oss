@@ -5,6 +5,17 @@ the coordinator copies it into private storage, so artifact preservation is a fi
 lifecycle stage: an artifact that was never preserved dies with the VM, and a task result
 survives destruction but its reports, logs and profiles do not.
 
+> **Integration status on this branch: the manager surface only.** `src/mcp.ts`, `src/http.ts`,
+> `src/metrics.ts` and the tests below exist here, but the capture data plane (`src/artifacts.ts`,
+> `src/artifact-store.ts`, the guest helper) and the finalization lifecycle (`src/finalization.ts`)
+> are **not merged into this branch**. `Coordinator.artifacts`, `Worker.finalization`, the
+> `SWARMFORGE_ARTIFACT_*` / `SWARMFORGE_FINALIZATION_*` settings and the `artifacts` /
+> `snapshot_on_failure` keys on `spawnSchema` therefore do not exist yet, `bun run check` does not
+> pass, and no artifact call in this document has been executed end to end. This page is the
+> reference for the intended contract, not a description of running software. See
+> [ARTIFACT-QUICKSTART.md](ARTIFACT-QUICKSTART.md) for the operator runbook and the honest
+> verification steps, and [README.md](../README.md) for what the branch does run today.
+
 ```text
 worker workspace file
    │  (1) trusted guest helper: descriptor-relative O_NOFOLLOW open, bounded regular file
@@ -43,14 +54,20 @@ not create duplicates.
 Every attempt is its own record, so a **recapture that changes content** publishes a new record
 and marks the previous one superseded. Exactly one record per source is the published copy;
 superseded records are history. `list_artifacts` lists published copies only, `get_artifact_metadata`
-and `read_artifact` still resolve a superseded record by identifier while its bytes exist, and
-the cumulative metrics in [OBSERVABILITY.md](OBSERVABILITY.md) count every attempt and every
-verified copy because they are rebuilt from the append-only artifact event log.
+and `read_artifact` still resolve a superseded record by identifier while its bytes exist. The
+cumulative metrics in [OBSERVABILITY.md](OBSERVABILITY.md) count every attempt and every
+verified copy, because they are rebuilt from the durable artifact event log.
 
 Every attempt and outcome is also appended to a durable artifact event log, which is what the
-cumulative counters in [OBSERVABILITY.md](OBSERVABILITY.md) are built from: a `_total` only grows,
+cumulative metrics in [OBSERVABILITY.md](OBSERVABILITY.md) are built from: a `_total` only grows,
 while the stored-copy gauges describe the current state, because a recapture supersedes the copy
-it replaces.
+it replaces. That growth is bounded in one place: an artifact keeps at most **20 terminal
+events** (`artifact.preserved` and `artifact.failed` combined; `maxArtifactEvents = 20`), so
+`swarmforge_artifacts_preserved_total`, `swarmforge_artifacts_bytes_total` and
+`swarmforge_artifacts_failed_total` stop counting for a single path that is recaptured more than
+20 times. `swarmforge_artifacts_attempts_total` is unaffected, because every `artifact.attempted`
+is persisted whatever the terminal-event count. See
+[OBSERVABILITY.md](OBSERVABILITY.md#one-exception-these-counters-are-bounded-not-exact-at-any-repository-size).
 
 Failure reasons are recorded as short operator-facing text: a missing worker VM, a refused
 path, a size, entry or depth limit, a checksum mismatch, a provider or transport error, or a

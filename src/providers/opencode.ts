@@ -175,10 +175,17 @@ export class OpenCodeAgent implements CodingAgent {
       inference_active: inference_active ? 1 : 0,
     };
   }
-  // The newest page of a session, and only that page. OpenCode 1.18.31 accepts `limit` and
-  // nothing else on this route: there is no before, offset or cursor, `before` is rejected
-  // with HTTP 400 and an omitted limit returns the whole history unbounded. Walking older
-  // pages is therefore impossible, and inventing a cursor is worse than being bounded.
+  // The newest page of a session, and only that page.
+  //
+  // Two different facts about `before`, which must not be confused. The SDK's generated
+  // contract for this version declares it: `SessionMessagesData.query` in
+  // @opencode-ai/sdk/v2 types `before?: string` alongside `limit`, so the type system invites
+  // a walking pager. The live 1.18.31 server does not accept it. The route has no before,
+  // offset or cursor, a `before` value is rejected with HTTP 400, and an omitted limit
+  // returns the whole history unbounded. The declaration is not evidence of a capability the
+  // server offers, so this adapter does not send it. Walking older pages is impossible here,
+  // and inventing a cursor is worse than being bounded: a full page means older history
+  // exists and is unreachable, so usage for unseen messages cannot be backfilled later.
   private async messageWindow(
     w: Worker,
   ): Promise<{ info: Message; parts: Part[] }[]> {
@@ -205,9 +212,14 @@ export class OpenCodeAgent implements CodingAgent {
   }
 }
 
-// One bounded page, newest first, exactly as the server returns it. A full page means older
-// history exists and is unreachable through the supported route; it is never claimed as read.
+// One bounded page. The 1.18.31 response is ascending chronological order, oldest first and
+// newest last, which is the order the coordinator already assumes: it selects the newest
+// assistant reply with `at(-1)`. The page is returned exactly as received and never reordered,
+// so this array's last element is the newest message the server told us about.
 const MESSAGE_WINDOW = 100;
+// The one fallback bound. A 400 means this server rejected the requested window, not that the
+// session is gone, so a smaller supported limit is tried once. This is a fixed ladder, never a
+// loop, and it never reaches for an unsupported key.
 const MESSAGE_WINDOW_FALLBACK = 20;
 
 async function newestPage(

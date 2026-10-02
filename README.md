@@ -6,7 +6,7 @@ SwarmForge owns worker coordination. Freestyle owns VMs, OpenCode owns coding se
 
 ## Run
 
-Use Linux with Bun 1.3 or newer. Install dependencies with `bun install --frozen-lockfile`, copy `.env.example` to `.env`, and fill the six required infrastructure values described in [ENVIRONMENT.md](docs/ENVIRONMENT.md).
+Use Linux. Verified with the official **Bun 1.4.2** release and `bun install --frozen-lockfile`; `engines` still allows `>=1.3.0`. Copy `.env.example` to `.env` and fill the six required infrastructure values described in [ENVIRONMENT.md](docs/ENVIRONMENT.md).
 
 ```sh
 bun run dev
@@ -20,6 +20,45 @@ Run `bun run status` to see the worker overview. In a terminal it refreshes live
 
 The supplied snapshot must already contain `opencode` (compatible with SDK 1.18.31), Python 3, Git, Bash, systemd, and the tools needed by workers. `opencode` must be on the service's PATH. The workspace must be writable. Git access/mounts and repository credentials are externally prepared. The endpoint must support OpenAI-compatible chat completions and tool calls. No real cloud credentials are included.
 
+### Quickstart for one user
+
+There is no installer, account or preflight step, and no second configuration file. Artifacts reuse the
+`.env` you already have; the only variable the repository differs on is the repo itself.
+
+```sh
+bun install --frozen-lockfile
+cp .env.example .env      # then fill the six values in ENVIRONMENT.md
+bun run dev               # or `bun start` for the production entry point
+```
+
+Hand one task over and let a worker work in your repository:
+
+```json
+{"name":"spawn_worker","arguments":{"team_id":"default","task_id":"auth-code","role":"coder","prompt":"Implement authentication. Test and persist changes in the supplied Git tree.","request_id":"auth-code-attempt-1"}}
+```
+
+Then read it back:
+
+```sh
+bun run status                     # or set SWARMFORGE_URL / SWARMFORGE_API_TOKEN for a remote one
+bun run status --json
+```
+
+To get a worker's **non-source output as files** — reports, logs, findings — instead of prose, add
+`SWARMFORGE_ARTIFACT_DIR` (absolute, private; defaults to `artifacts` beside the database) to the same
+`.env`, and read [ARTIFACT-QUICKSTART.md](docs/ARTIFACT-QUICKSTART.md) for the runbook and
+[ARTIFACTS.md](docs/ARTIFACTS.md) for the contract. Start from
+[`examples/artifact-task.json`](examples/artifact-task.json), which declares output **outside** the
+repository so "commit nothing and push nothing" leaves no untracked dirt.
+
+> **Artifact preservation is not integrated on this branch.** Its manager surface (`src/mcp.ts`,
+> `src/http.ts`, `src/metrics.ts`, the docs and the smoke script) is merged, but the capture data
+> plane and the finalization lifecycle are not: `src/artifacts.ts`, `src/artifact-store.ts`,
+> `src/finalization.ts` and `tests/local-artifact-provider.ts` are absent, so no artifact call
+> executes, a spawn that sends `artifacts` has those keys silently stripped, `bun run check` reports
+> 71 type errors, and `tests/artifact-*.test.ts` cannot load. Everything in the two artifact
+> documents is the intended contract, not current behaviour.
+
 ## Usage
 
 ```json
@@ -32,12 +71,12 @@ For source handoff without MCP artifact downloads, set `SWARMFORGE_GIT_PUSH_MODE
 
 All 24 tools are documented in [MCP-API.md](docs/MCP-API.md). Artifact retrieval returns resource links to chunks of at most 32 KiB, not entire files in tool responses.
 
-Worker output is durable. Artifact paths a task declares, plus `.swarmforge/artifacts` and `.swarmforge/logs`, are copied into private coordinator storage with a verified checksum before a worker can be destroyed, without any help from the model. Leads inspect and retrieve them with `list_artifacts`, `get_artifact_metadata`, `read_artifact`, `list_worker_files`, `snapshot_worker`, `preserve_artifact` and `retry_worker_finalization`, and fetch faithful raw bytes through the authenticated `GET /artifacts/<artifact_id>/download` route, which is attachment-only, non-sniffable, uncached and range bounded. Inline reads stay capped at 32 KiB, are credential screened, strip terminal escapes so a coloured log reads as text, and never return binary payloads. See [ARTIFACTS.md](docs/ARTIFACTS.md).
+Artifact retrieval, once integrated, is designed so a worker VM is not the only copy of a worker's non-source output: artifact paths a task declares, plus `.swarmforge/artifacts` and `.swarmforge/logs`, are copied into private coordinator storage with a verified checksum before a worker can be destroyed, without any help from the model. Leads inspect and retrieve them with `list_artifacts`, `get_artifact_metadata`, `read_artifact`, `list_worker_files`, `snapshot_worker`, `preserve_artifact` and `retry_worker_finalization`, and fetch faithful raw bytes through the authenticated `GET /artifacts/<artifact_id>/download` route, which is attachment-only, non-sniffable, uncached and range bounded. Inline reads stay capped at 32 KiB, are credential screened, strip terminal escapes so a coloured log reads as text, and never return binary payloads. See the status note above, [ARTIFACT-QUICKSTART.md](docs/ARTIFACT-QUICKSTART.md) and [ARTIFACTS.md](docs/ARTIFACTS.md).
 
 ## Verification and operations
 
-Tests use real SQLite and MCP transports with injected Freestyle/OpenCode doubles; Git safety tests execute real Git commands against disposable repositories, and artifact tests drive a real temporary guest filesystem through the artifact transport with real byte streams and checksums. The optional `SWARMFORGE_RUN_SMOKE=true bun run smoke` creates one billable VM using the configured infrastructure. On success it destroys that smoke VM; on failure it retains evidence and prints identifiers. `bun scripts/artifact-salvage-smoke.ts` is a local end-to-end salvage check: it captures declared artifact paths with the production guest helper running as a subprocess over the real byte-streaming transport while OpenCode is dead, destroys the workspace normally and re-verifies the stored bytes and checksum over the authenticated download. It only reports success after seeing helper commands executed, empty guest staging and a matching checksum after destruction. Adding `--freestyle <vm-id>` runs the same read-and-verify pass against one retained Freestyle VM without a worker model: it snapshots the live database read-only, writes only into a private temporary root, streams and hashes each download in bounded chunks and never destroys the VM. Ordinary tests do not create VMs.
+Tests use real SQLite and MCP transports with injected Freestyle/OpenCode doubles; Git safety tests execute real Git commands against disposable repositories. The optional `SWARMFORGE_RUN_SMOKE=true bun run smoke` creates one billable VM using the configured infrastructure. On success it destroys that smoke VM; on failure it retains evidence and prints identifiers. Ordinary tests do not create VMs. The artifact tests and `bun scripts/artifact-salvage-smoke.ts` are **present but cannot run on this branch**, because `tests/local-artifact-provider.ts` and the coordinator artifact surface arrive with the data-plane and lifecycle branches; the salvage smoke script is the intended end-to-end check once they do.
 
 Read [ARCHITECTURE.md](docs/ARCHITECTURE.md), [WORKER-PROTOCOL.md](docs/WORKER-PROTOCOL.md), [ARTIFACTS.md](docs/ARTIFACTS.md), [OBSERVABILITY.md](docs/OBSERVABILITY.md), and the verified API decisions in [RESEARCH.md](docs/RESEARCH.md).
 
-Limitations: no distributed scheduler or HA replicas; Git checks cannot prove remote durability; artifact storage is local to the coordinator process and its backup is an operator responsibility; inference-active counts are estimates from OpenCode; snapshot compatibility and real endpoint behavior require the opt-in smoke test. Deploy TLS and network access policy externally when exposing the MCP server, the artifact download or metrics beyond localhost.
+Limitations: no distributed scheduler or HA replicas; Git checks cannot prove remote durability; artifact preservation is not integrated on this branch, and where it lands its storage is local to the coordinator process with backup an operator responsibility; OpenCode message history is a single bounded page (newest 100, one retry at 20, then status-only), so usage for older messages is never recovered; inference-active counts are estimates from OpenCode; snapshot compatibility and real endpoint behavior require the opt-in smoke test. Deploy TLS and network access policy externally when exposing the MCP server, the artifact download or metrics beyond localhost.

@@ -76,7 +76,9 @@ function opencode(remote: {
       )
         return Response.json({ message: "bad request" }, { status: 400 });
       const limit = Number(url.searchParams.get("limit") ?? "0");
-      // Newest first, then sliced: the shape the server actually returns.
+      // The newest window, kept in the order the server returns it: ascending
+      // chronological, oldest first, newest last. `messages` is built that way, so
+      // slicing the tail returns the newest entries without reordering them.
       const all = remote.messages;
       return Response.json(all.slice(Math.max(0, all.length - limit)));
     }
@@ -123,6 +125,14 @@ test("a session with more than 100 messages reports the newest window and never 
   expect(keys).toEqual(["directory", "limit"]);
   expect(Number(pages[0]?.search.get("limit"))).toBe(100);
   expect(snapshot.messages).toHaveLength(100);
+  // The one ordering assertion in this file. OpenCode 1.18.31 answers with the window in
+  // ascending chronological order, oldest first, so the mapped array has to come back exactly
+  // as received and its last element is the newest message. That is the order the coordinator
+  // relies on when it selects the newest reply with `at(-1)`, so an adapter that reversed or
+  // re-sorted the page would settle a turn from the wrong assistant message.
+  expect(snapshot.messages.map((m) => m.id)).toEqual(
+    messages.slice(-100).map((m) => m.info.id),
+  );
   // The current dispatch's turn survives the truncation, and lexicographic order is never
   // used to decide what is old.
   expect(snapshot.messages.some((m) => m.id === "msg-task")).toBe(true);

@@ -116,17 +116,26 @@ class SmokeFailure extends Error {}
 // Configured credentials and per-worker OpenCode passwords both count, and the whole payload is
 // scrubbed recursively: no reported field is trusted to be free of a secret.
 const known: string[] = [];
-const passwordSources: (() => { server_password: string }[])[] = [];
 function report(error: unknown) {
   return safeMessage(error, ...secrets());
 }
 export function rememberSecrets(...values: (string | undefined)[]) {
   known.push(...values.filter((value): value is string => Boolean(value)));
 }
+// Worker passwords live in SQLite, so they are snapshotted into `known` while the store is still
+// open and are then read from memory by every later report.
+//
+// This must not stay a live `store.all()` callback. The failure report is produced by the
+// top-level catch, which runs after the per-run `finally` has already closed the store, so a
+// live source would throw "database is closed" from inside the redactor and replace the real
+// failure with a database error — the one message an operator actually needs would be lost.
+// Snapshotting keeps redaction exact and makes the report path unable to reach the database.
+export function rememberWorkerPasswords(store: Store) {
+  rememberSecrets(...store.all().map((w) => w.server_password));
+}
 function secrets(): string[] {
   return [
     ...known,
-    ...passwordSources.flatMap((all) => all().map((w) => w.server_password)),
     ...Object.entries(process.env)
       .filter(([key]) => /TOKEN|KEY|SECRET|PASSWORD/.test(key))
       .map(([, value]) => value ?? ""),
@@ -250,7 +259,6 @@ async function localSmoke(opts: Options) {
       "capture fixture exposes no artifact transport; salvage cannot be proven",
     );
   const store = new Store(dbPath);
-  passwordSources.push(() => store.all());
   const agent = new DeadOpenCode();
   const coordinator = new Coordinator(config, store, provider, agent);
   const findings = `${JSON.stringify(
@@ -490,6 +498,9 @@ async function localSmoke(opts: Options) {
     server = undefined;
   } finally {
     await server?.close().catch(() => {});
+    // Snapshot the worker passwords before the store goes away, so the failure report the
+    // top-level catch prints afterwards can still scrub them without touching SQLite.
+    rememberWorkerPasswords(store);
     store.close();
     await guest.cleanup().catch(() => {});
     if (opts.keep) note("kept", { root });
@@ -541,7 +552,6 @@ async function freestyleSmoke(opts: Options) {
     SWARMFORGE_ARTIFACT_DIR: join(root, "artifacts"),
   };
   const store = new Store(dbPath);
-  passwordSources.push(() => store.all());
   const provider: WorkerProvider = new FreestyleProvider(config);
   const coordinator = new Coordinator(
     config,
@@ -624,6 +634,9 @@ async function freestyleSmoke(opts: Options) {
       note: "retained VM left running; destruction is an explicit operator action",
     });
   } finally {
+    // Snapshot the worker passwords before the store goes away, so the failure report the
+    // top-level catch prints afterwards can still scrub them without touching SQLite.
+    rememberWorkerPasswords(store);
     store.close();
     if (opts.keep) note("kept", { root });
     else rmSync(root, { recursive: true, force: true });
