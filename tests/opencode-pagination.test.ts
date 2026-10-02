@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import type { Worker } from "../src/domain";
 import { OpenCodeAgent } from "../src/providers/opencode";
 import { Store } from "../src/store";
-import { config } from "./helpers";
+import { config, harness, runToRunning, task } from "./helpers";
 
 const tokens = {
   input: 1,
@@ -237,4 +237,146 @@ test("a status this call cannot read is never guessed", async () => {
   }) as typeof fetch);
   expect(failing.inspect(worker())).rejects.toThrow("status unavailable");
   expect((await agent.inspect(worker())).status).toBe("busy");
+});
+
+// A follow-up dispatch reuses the session and the system prompt of the first one, which is
+// why a finished worker kept reporting its bootstrap run id. The newest identity is restated
+// in the user text of every dispatch, and the coordinator's existing strict match on the
+// dispatch run id is what enforces it.
+function captureSubmit() {
+  const bodies: string[] = [];
+  const agent = new OpenCodeAgent(
+    { ...config, SWARMFORGE_SERVER_PASSWORD: "pw" } as never,
+    (async (input: RequestInfo | URL) => {
+      const request = input as Request;
+      const url = new URL(request.url);
+      if (url.pathname.endsWith("/prompt_async")) {
+        bodies.push(await request.text());
+        return Response.json({});
+      }
+      return Response.json(session);
+    }) as typeof fetch,
+  );
+  return { agent, bodies };
+}
+function dispatched(run: string, message: string) {
+  return {
+    message_id: `msg-${run}`,
+    run_id: run,
+    message,
+  } as never;
+}
+
+test("a follow-up dispatch carries the current run identity in its user text", async () => {
+  const { agent, bodies } = captureSubmit();
+  const w = worker();
+  await agent.submit(w, dispatched("run-1", "start the task"));
+  await agent.submit(w, dispatched("run-2", "continue the task"));
+  expect(bodies).toHaveLength(2);
+  const second = JSON.parse(bodies[1] as string) as {
+    parts: { text: string }[];
+    system: string;
+    messageID: string;
+  };
+  // The task message itself is preserved, ahead of the identity.
+  expect(second.parts[0]?.text).toStartWith("continue the task");
+  expect(second.parts[0]?.text).toContain("run_id=run-2");
+  expect(second.parts[0]?.text).toContain("supersedes every run id");
+  expect(second.parts[0]?.text).not.toContain("run-1");
+  expect(second.messageID).toBe("msg-run-2");
+  // Each dispatch also sends a system prompt naming the current run, but the earlier run id
+  // survives in the conversation itself and in the file the worker already wrote, which is why
+  // the user text has to state the supersede rule.
+  expect(second.system).toContain("run_id=run-2");
+  expect(second.system).not.toContain("run-1");
+  expect(bodies[1]).not.toContain("pw");
+});
+
+test("the dispatched identity never discloses a credential", async () => {
+  const { agent, bodies } = captureSubmit();
+  const w = worker();
+  await agent.submit(w, dispatched("run-3", "do the work"));
+  const sent = bodies[0] as string;
+  expect(sent).not.toContain(w.server_password);
+  expect(sent).not.toContain("Authorization");
+  expect(sent).not.toContain(w.endpoint);
+});
+
+test("a result file carrying an earlier run id cannot complete the current dispatch", async () => {
+  // The coordinator's existing strict match is the enforcement half of the identity fix: the
+  // dispatched run id is authoritative, and a stale artifact stays unusable. No prior file is
+  // cleared or overwritten here; artifact preservation is not this adapter's business.
+  const h = harness();
+  const id = h.coordinator.spawn(task).worker_id;
+  await runToRunning(h, id);
+  const first = h.store.dispatch(id)!;
+  h.agent.snapshots.set(id, {
+    status: "idle",
+    inference_active: 0,
+    messages: [
+      {
+        id: first.message_id,
+        role: "user",
+        completed: true,
+        input: 0,
+        output: 0,
+        reasoning: 0,
+        cache_read: 0,
+        cache_write: 0,
+      },
+      {
+        id: "msg-1",
+        parent_id: first.message_id,
+        role: "assistant",
+        completed: true,
+        result: { status: "completed", summary: "first turn done" },
+        input: 1,
+        output: 1,
+        reasoning: 0,
+        cache_read: 0,
+        cache_write: 0,
+        model: "qwen",
+      },
+    ],
+  });
+  await h.coordinator.tick();
+  expect(h.store.get(id).state).toBe("completed");
+  // A follow-up dispatch on the same worker: the previous run's result.json is still there.
+  h.coordinator.message(id, "next");
+  for (let i = 0; i < 8; i++) {
+    await h.coordinator.tick();
+    if (h.store.get(id).state === "running") break;
+  }
+  const second = h.store.dispatch(id)!;
+  expect(second.run_id).not.toBe(first.run_id);
+  await h.provider.writeFile(
+    h.store.get(id).vm_id!,
+    "/workspace/.swarmforge/result.json",
+    JSON.stringify({
+      worker_id: id,
+      run_id: first.run_id,
+      status: "completed",
+      summary: "stale bootstrap run",
+    }),
+  );
+  h.agent.snapshots.set(id, {
+    status: "idle",
+    inference_active: 0,
+    messages: [
+      {
+        id: second.message_id,
+        role: "user",
+        completed: true,
+        input: 0,
+        output: 0,
+        reasoning: 0,
+        cache_read: 0,
+        cache_write: 0,
+      },
+    ],
+  });
+  await h.coordinator.tick();
+  expect(h.store.get(id).state).not.toBe("completed");
+  expect(h.store.result(id)?.summary).not.toBe("stale bootstrap run");
+  h.store.close();
 });

@@ -49,10 +49,20 @@ export function bootstrap(c: Config, w: Worker, d: Dispatch) {
   return `Worker ${w.worker_id}, task ${w.task_id}, role ${w.role}. Run ID: ${d.run_id}.
 Your starting workspace is ${c.SWARMFORGE_WORKSPACE}. ${source}
 Run relevant tests and report failures honestly. ${persistence} Report git.workspace if you work elsewhere, branch/commit/dirty/persisted when known. Never report credentials.
-Return the requested structured result with worker_id=${w.worker_id}, task_id=${w.task_id}, run_id=${d.run_id}. Also atomically write the same JSON to ${c.SWARMFORGE_WORKSPACE}/.swarmforge/result.json before your final response. Put non-source artifacts under .swarmforge/artifacts and task logs under .swarmforge/logs. Preserve failures and warnings; don't claim tests you didn't run.
+Return the requested structured result with worker_id=${w.worker_id}, task_id=${w.task_id}, run_id=${d.run_id}. Also atomically write the same JSON to ${c.SWARMFORGE_WORKSPACE}/.swarmforge/result.json before your final response. Put non-source artifacts under .swarmforge/artifacts and task logs under .swarmforge/logs, always relative to ${c.SWARMFORGE_WORKSPACE}. Artifact paths a task declares are workspace relative, and SwarmForge copies those files into private coordinator storage itself before the VM can be destroyed, so capture does not depend on you copying, summarizing or encoding anything. Preserve failures and warnings; don't claim tests you didn't run.
 Respond with exactly one JSON object and no markdown. It must match this JSON Schema: ${JSON.stringify(resultSchema.toJSONSchema())}
 The team lead's task follows.`;
 }
+// The authoritative identity of this dispatch, stated in the user text so a long-lived session
+// cannot answer with the run id of an earlier dispatch. It carries only identifiers the worker
+// already has; no credential, endpoint or password is disclosed.
+export function dispatchIdentity(w: Worker, d: Dispatch) {
+  return `${d.message}
+
+SwarmForge dispatch (authoritative): worker_id=${w.worker_id} task_id=${w.task_id} run_id=${d.run_id}.
+This dispatch is the newest one for this session and supersedes every run id, task and worker id reported earlier in this conversation, including in the system prompt. Report only run_id=${d.run_id} in your structured result.`;
+}
+
 export class OpenCodeAgent implements CodingAgent {
   constructor(
     readonly config: Config,
@@ -101,7 +111,11 @@ export class OpenCodeAgent implements CodingAgent {
         modelID: this.config.SWARMFORGE_MODEL_NAME,
       },
       system: bootstrap(this.config, w, d),
-      parts: [{ type: "text", text: d.message }],
+      // A follow-up dispatch reuses the session and the system prompt of the first one, so the
+      // newest run id is restated in the user text of every dispatch: it is the only part of a
+      // prompt the server appends, and the worker's only fresh statement of who it is now. The
+      // task message is preserved verbatim ahead of it.
+      parts: [{ type: "text", text: dispatchIdentity(w, d) }],
     });
   }
   async inspect(w: Worker): Promise<AgentSnapshot> {
