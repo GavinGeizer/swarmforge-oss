@@ -3,11 +3,12 @@
 ```text
 Trusted team leads → MCP /mcp → Coordinator → WorkerProvider → Freestyle VM
                                 │                            OpenCode → external model
-                                └→ SQLite                    external Git tree
-Metrics /metrics ← persisted usage and worker states
+                                ├→ SQLite                    external Git tree
+                                └→ private artifact storage ← secure guest helper
+Metrics /metrics ← persisted usage, worker states, artifact records and finalization
 ```
 
-`config.ts` validates deployment input. `store.ts` owns atomic SQLite mutations. `coordinator.ts` owns the durable queue, per-worker serialization, external operation deadlines and lifecycle reconciliation. `providers/freestyle.ts` uses the current VM SDK; `providers/opencode.ts` uses the generated v2 OpenCode client. `mcp.ts` exposes coherent operations; `files.ts` bounds file retrieval. No worker reasoning or infrastructure provisioning beyond VMs and their provider-owned route is implemented.
+`config.ts` validates deployment input. `store.ts` owns atomic SQLite mutations. `coordinator.ts` owns the durable queue, per-worker serialization, external operation deadlines and lifecycle reconciliation. `providers/freestyle.ts` uses the current VM SDK; `providers/opencode.ts` uses the generated v2 OpenCode client. `mcp.ts` exposes coherent operations; `files.ts` bounds live file retrieval; `artifacts.ts` preserves and stores worker output. No worker reasoning or infrastructure provisioning beyond VMs and their provider-owned route is implemented.
 
 ## Lifecycle
 
@@ -29,8 +30,12 @@ Transient provider/startup failures retry within deadlines. Timeouts stop the Op
 
 No automatic destruction occurs on completion or failure. Normal destruction stops OpenCode and checks Git status, untracked files and local commits absent from remote refs in the configured workspace and reported working directory. `.swarmforge` output is excluded. Unverifiable or local-only work blocks cleanup. `force=true` explicitly bypasses this protection.
 
-Remote refs are a conservative hint, not proof that every branch was durably pushed. Files outside declared workspaces and unusual external mounts require operator care. Source durability belongs to the external Git tree. Non-source artifacts are available only while their VM is retained; collect them before deletion.
+Non-source artifacts survive destruction because they are copied into private coordinator storage before it happens. Preservation is a separate durable stage from the task outcome: it runs after completion, abnormal failure, cancellation and before normal destruction, and it must settle successfully before a worker without `force` can be destroyed. A failed or abandoned stage reports `recovery_required` and keeps the VM; `force=true` records the stage as abandoned before deleting the guest. Remote refs are a conservative hint, not proof that every branch was durably pushed. Files outside declared workspaces and unusual external mounts require operator care. Source durability belongs to the external Git tree.
+
+## Artifact capture
+
+A small trusted guest helper opens workspace paths descriptor-relatively with `O_NOFOLLOW` and copies bounded regular files into private staging while computing SHA-256, or produces a bounded regular-file-only `tar.gz` snapshot. The helper returns metadata only; file bytes travel over the existing binary filesystem transport, never through command output or base64 reconstruction, and no model participates. The coordinator records every artifact durably, verifies length and checksum before a record is visible as preserved, and keeps repeated captures of the same worker, run, path and content idempotent. Model-facing reads stay bounded and credential screened, with terminal escapes removed so log files read as text; raw bytes are an explicit authenticated HTTP operation whose advertised range always matches the bytes delivered. Capture responses are budgeted by serialized bytes and always report their total and truncation, so a large collection is never lost to a response ceiling. [ARTIFACTS.md](ARTIFACTS.md) documents states, limits, roots, security and the end-to-end flow.
 
 ## Deployment boundary
 
-One Linux process owns a database; no shared-database multi-host deployment. Freestyle slugs and ownership metadata must not be reassigned by other operators. The provider creates a TLS route tied to the VM, protected by an independent OpenCode password; no provider management credential enters worker configuration. Trusted leads share bearer access; teams are labels, not security tenants. External TLS, storage backup, inference capacity and metrics storage stay outside SwarmForge.
+One Linux process owns a database; no shared-database multi-host deployment. Freestyle slugs and ownership metadata must not be reassigned by other operators. The provider creates a TLS route tied to the VM, protected by an independent OpenCode password; no provider management credential enters worker configuration. Trusted leads share bearer access; teams are labels, not security tenants. External TLS, storage backup, inference capacity and metrics storage stay outside SwarmForge. Artifact storage is private to the coordinator process and shares its bearer access; its backup and retention are operator responsibilities.
