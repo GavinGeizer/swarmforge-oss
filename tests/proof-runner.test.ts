@@ -258,6 +258,10 @@ describe("MEDIUM: the private database never inherits the live one", () => {
       SWARMFORGE_MODEL_BASE_URL: "http://127.0.0.1:0",
       SWARMFORGE_MODEL_NAME: "test-placeholder",
       SWARMFORGE_MODEL_API_KEY: "test-placeholder",
+      // Mandatory with no default, so it is pinned here rather than inherited:
+      // `none:` names a prepared tree and is never cloned, so the fixture does
+      // not depend on the host exporting a Swarmforge-only variable.
+      SWARMFORGE_GIT_TREE: "none:test",
       SWARMFORGE_DB_PATH: join(root, "proof.sqlite"),
       SWARMFORGE_ARTIFACT_DIR: join(root, "artifacts"),
     };
@@ -282,6 +286,9 @@ describe("MEDIUM: the private database never inherits the live one", () => {
       SWARMFORGE_MODEL_BASE_URL: "http://127.0.0.1:0",
       SWARMFORGE_MODEL_NAME: "test-placeholder",
       SWARMFORGE_MODEL_API_KEY: "test-placeholder",
+      // Pinned for the same reason as above: mandatory, no default, and never
+      // present on a clean host.
+      SWARMFORGE_GIT_TREE: "none:test",
       // A host that already points at the live database and artifacts.
       SWARMFORGE_DB_PATH: "/var/lib/swarmforge/live.sqlite",
       SWARMFORGE_ARTIFACT_DIR: "/var/lib/swarmforge/live-artifacts",
