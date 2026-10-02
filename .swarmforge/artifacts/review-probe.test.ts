@@ -17,15 +17,16 @@ import { join } from "node:path";
 import {
   LocalArtifactStorage,
   type ArtifactStorage,
-} from "/tmp/opencode/review-data/src/artifact-store";
-import { ArtifactService } from "/tmp/opencode/review-data/src/artifacts";
-import { screeningWindow } from "/tmp/opencode/review-data/src/artifact-types";
-import { WorkerFiles } from "/tmp/opencode/review-data/src/files";
+} from "__SRC__/src/artifact-store";
+import { ArtifactService } from "__SRC__/src/artifacts";
+import { screeningWindow } from "__SRC__/src/artifact-types";
+import { WorkerFiles } from "__SRC__/src/files";
 import {
   localHarness,
   type LocalHarness,
-} from "/tmp/opencode/review-data/tests/local-artifact-provider";
+} from "__SRC__/tests/local-artifact-provider"`;
 
+// The worktree under test, so the same probes can be run against two heads.
 const sha = (bytes: Uint8Array) =>
   createHash("sha256").update(bytes).digest("hex");
 const collect = async (stream: ReadableStream<Uint8Array>) => {
@@ -407,73 +408,95 @@ test("probe: refusals leave no preserving row behind", async () => {
     expect(states.every((state) => state === "failed")).toBe(true);
   });
 });
-// 10. NULL run_id normalization in Repository.preserved: confirmed against the
-// shipped repository and end to end, with the same flow that works for a
-// non-null run_id as the control.
-test("probe: preserved() binds a NULL run_id where the index compares ''", async () => {
+// 10. NULL run_id normalization: after the fix a recapture with no run id must
+// publish, supersede the previous copy and keep both sets of bytes readable.
+test("probe: a recapture with no run id publishes and supersedes", async () => {
   await withHarness({}, async (h, worker) => {
     const { ArtifactRepository } = await import(
-      "/tmp/opencode/review-data/src/artifact-store"
+      "__SRC__/src/artifact-store"
     );
     const repository = new ArtifactRepository(h.store.db as never);
     const hash = (body: string) => sha(new TextEncoder().encode(body));
-    // Control: a non-null run_id publishes a replacement cleanly.
-    const control = repository.begin({
+    // Direct repository level: publication with a NULL run id, twice.
+    const seed = repository.begin({
       worker_id: worker,
       task_id: "task",
-      run_id: "run-1",
-      original_path: "control.txt",
-      filename: "control.txt",
+      run_id: null,
+      original_path: "direct.txt",
+      filename: "direct.txt",
       kind: "file",
     });
     repository.preserved({
-      artifact_id: control.artifact_id,
-      storage_key: `x/${control.artifact_id}`,
+      artifact_id: seed.artifact_id,
+      storage_key: `x/${seed.artifact_id}`,
       size: 1,
       sha256: hash("a"),
     });
-    const next = repository.beginAttempt({
-      record: repository.get(control.artifact_id),
+    const attempt = repository.beginAttempt({
+      record: repository.get(seed.artifact_id),
       size: 1,
       sha256: hash("b"),
     });
-    const settled = repository.preserved({
-      artifact_id: next.artifact_id,
-      storage_key: `x/${next.artifact_id}`,
+    const published = repository.preserved({
+      artifact_id: attempt.artifact_id,
+      storage_key: `x/${attempt.artifact_id}`,
       size: 1,
       sha256: hash("b"),
     });
-    expect(settled.state).toBe("preserved");
-    expect(repository.get(control.artifact_id).superseded_by).toBe(
-      next.artifact_id,
+    expect(published.state).toBe("preserved");
+    expect(repository.get(seed.artifact_id).superseded_by).toBe(
+      attempt.artifact_id,
     );
 
-    // The reported case: run_id NULL. The first publication succeeds, the
-    // second one cannot demote the first because NULL never equals ''.
+    // Service level, the shape the API exercises: no options at all.
     const path = write(h, "nullrun.txt", "first");
     const first = await h.artifacts.preserve(worker, path);
     expect(first.run_id).toBeNull();
     write(h, "nullrun.txt", "second-and-longer");
-    const reported = await h.artifacts.preserve(worker, path).then(
-      () => null,
-      (error) => error,
-    );
-    expect(reported).toBeInstanceOf(Error);
-    expect(String((reported as Error).message)).toMatch(/UNIQUE|constraint/i);
-    // Both records survive and remain readable: the failure is loud, not a
-    // silent loss, but the second capture can never be published.
-    expect(h.artifacts.metadata(first.artifact_id).state).toBe("preserved");
-    const failedRows = h.artifacts
-      .list({ worker_id: worker })
-      .artifacts.filter((r) => r.original_path === path);
+    const second = await h.artifacts.preserve(worker, path);
+    expect(second.state).toBe("preserved");
+    expect(second.artifact_id).not.toBe(first.artifact_id);
+    const old = h.artifacts.metadata(first.artifact_id);
+    expect(old.state).toBe("preserved");
+    expect(old.superseded_by).toBe(second.artifact_id);
     expect(
-      failedRows.filter((r) => r.state === "preserved").length,
-    ).toBe(1);
-    expect(
-      Buffer.from(
-        await h.artifacts.read(first.artifact_id, 0, first.size),
-      ).toString(),
+      Buffer.from(await h.artifacts.read(first.artifact_id, 0, first.size))
+        .toString(),
     ).toBe("first");
+    expect(
+      Buffer.from(await h.artifacts.read(second.artifact_id, 0, second.size))
+        .toString(),
+    ).toBe("second-and-longer");
+    expect(
+      h.artifacts
+        .list({ worker_id: worker })
+        .artifacts.filter((r) => r.original_path === path),
+    ).toHaveLength(1);
+    // A failure after publication still puts the good copy back in charge.
+    const put = h.artifacts.storage.put.bind(h.artifacts.storage);
+    write(h, "nullrun.txt", "third-cannot-be-stored");
+    h.artifacts.storage.put = async () => {
+      throw new Error("probe: storage unavailable");
+    };
+    try {
+      await expect(h.artifacts.preserve(worker, path)).rejects.toThrow(
+        /storage unavailable/,
+      );
+    } finally {
+      h.artifacts.storage.put = put;
+    }
+    const after = h.artifacts.metadata(second.artifact_id);
+    expect(after.state).toBe("preserved");
+    expect(after.superseded_by ?? null).toBeNull();
+    expect(
+      Buffer.from(await h.artifacts.read(second.artifact_id, 0, second.size))
+        .toString(),
+    ).toBe("second-and-longer");
+    expect(
+      (h.store.db.query("PRAGMA integrity_check").get() as Record<string, string>)
+        .integrity_check,
+    ).toBe("ok");
+    expect(repository.pending()).toEqual([]);
   });
 });
 

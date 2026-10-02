@@ -2,35 +2,38 @@
 
 - Reviewer: `w-9b0f79a2-3e68-4f3a-abf5-92c3a42dee6b` (`final-review-data-security`)
 - Current run: `2d905e0a-18be-4382-a034-e4956a4a1d5a` (no other bootstrap run id is present under `/workspace/.swarmforge`)
-- Reviewed head: `4449fcbbf2888ed17d5b5c763a76fbf589bba1c7`
+- Reviewed head (first pass): `4449fcbbf2888ed17d5b5c763a76fbf589bba1c7`
+- Reviewed head (re-review): `0b398ff2a0ab14de88c202dcf2686763744cf4c2` — the data owner's fix for F0, delta re-reviewed in
+  full below
 - Reviewed branch: `swarmforge/artifact-salvage-20261001/harden-data-plane/w-c6875611-3237-4c55-aa4b-8e5c047e6efb`
-- Base: `5672ead2a526e07fea9ed11e58b3725e42013527` (verified ancestor of the head, `git merge-base --is-ancestor`)
+  (fast-forwarded `4449fcb -> 0b398ff`)
+- Base: `5672ead2a526e07fea9ed11e58b3725e42013527` (verified ancestor of both heads)
 - Owned scope reviewed: `src/artifact-types.ts`, `src/artifact-store.ts`, `src/artifacts.ts`,
   `src/providers/artifact-helper.py`, `src/providers/artifact-helper.ts`,
   `src/providers/artifact-transport.ts`, `src/providers/freestyle.ts`, `src/files.ts`
   and the owned tests. Production code was **not** modified.
 - Actual deps used: lifecycle `0e8c1eb800605d89361612eb4beaf0cfff7f3620`, API `bed317aa79e670d3b89d33d626bfc0faeeaf057c`
-  (recorded for provenance only; neither branch was checked out in this workspace, so all statements below are about the
-  reviewed head's own code and behaviour).
-- Verdict: **CHANGES_REQUESTED** — the lead-assigned NULL-run publication blocker (F0, confirmed and pinned to one
-  line), plus one real (non-security) defect that loses Git diagnostics silently (F1) and two availability
-  limitations. No security escape was found; every security-relevant review point below is closed or demonstrably
-  fail-closed.
-- Follow-up run note: lead reported the combined suite as 389 pass / 2 skip / 3 fail, one of which is this NULL-run
-  blocker reproduced by a new API test (API head `bed317aa`, test line ~536) and two of which are proof tests with a
-  missing GitTree fixture. I did not re-research that case; probe 10 below confirms and pins it to a single bind.
+  (provenance only; neither branch was checked out here, so the lead's combined-suite numbers are taken as reported).
+  The life/cache head `ab56` was **not** reviewed: per-claim cache correction is the life owner's assignment and
+  outside this scope.
+- Verdict on `0b398ff`: **CHANGES_REQUESTED** — now for exactly one item. F0 is closed and verified; F1 (the helper
+  descriptor leak that silently empties Git diagnostics while reporting `complete: true`) is untouched and still open.
+  No security escape has been found at any point.
 
 ## 1. Environment and commands actually run
 
-Read-only worktree of the reviewed head: `git worktree add /tmp/opencode/review-data 4449fcb`.
+Read-only worktrees: `git worktree add /tmp/opencode/review-data 4449fcb` and
+`git worktree add /tmp/opencode/review-new 0b398ff`.
+
+First pass, head `4449fcb`:
 
 ```
 /tmp/opencode/bun-linux-x64/bun install --frozen-lockfile     # bun 1.4.2, lockfile untouched
 bun test tests/artifact-store.test.ts tests/artifact-transport.test.ts \
           tests/artifacts.test.ts tests/finalization-nested.test.ts tests/worker-files.test.ts
   -> 118 pass, 1 skip, 0 fail, 860 expect() calls, 26.83s          (owner's own suite, bun 1.4.2)
-bun test /tmp/opencode/probes/review-probe.test.ts
-  -> 12 pass, 0 fail, 71 expect() calls                             (my independent probes, see 3)
+bun test /tmp/opencode/probes/probe-review-data.test.ts
+  -> 12 tests authored; probe 10 red (UNIQUE constraint) on 4449fcb, as intended
 bun x tsc --noEmit            -> exit 0
 bun x biome check src tests scripts -> "Checked 49 files ... No fixes applied."
 git status --porcelain        -> empty (clean after the test run; see finding F6)
@@ -38,9 +41,52 @@ git ls-files | grep -c 'pyc\|__pycache__' -> 0
 python3 probe scripts (real helper, real git)                     -> see 4 and 5
 ```
 
+Re-review, head `0b398ff`:
+
+```
+git diff --stat 4449fcb 0b398ff   ->  src/artifact-store.ts | 7 +-   tests/artifacts.test.ts | 206 +++
+bun install --frozen-lockfile && bun test <the five owned test files>
+  -> 122 pass, 1 skip, 0 fail, 890 expect() calls, 25.14s          (118 -> 122: the four new regressions)
+bun test /tmp/opencode/probes/probe-review-new.test.ts
+  -> 12 pass, 0 fail, 79 expect() calls                             (green on the fix, red on 4449fcb)
+bun x tsc --noEmit            -> exit 0
+bun x biome check src tests scripts -> "Checked 49 files ... No fixes applied."
+git status --porcelain        -> empty after the test run
+python3 fdleak2.py against src/providers/artifact-helper.py at 0b398ff
+  -> "fds leaked by one _walk_metadata call: 402"; EMFILE at RLIMIT_NOFILE=200  (F1 unchanged)
+```
+
 Bun 1.4.2 was fetched from the official release because the sandbox image ships bun 1.3.14, which cannot parse this
-repository's `bun.lock` (`Unknown lockfile version`). No lockfile change was made. The owner's suite was run once, not
-repeatedly; the rest of the full suite is the lead's call.
+repository's `bun.lock` (`Unknown lockfile version`). No lockfile change was made. The owner's suite was run once per
+head, not repeatedly; the rest of the full suite (and the lead's own `0b`/`ab`/`de982` combination) is the lead's call
+and was not run here.
+
+## 1a. Delta re-review: `4449fcb -> 0b398ff` (`0b398ff "Compare a null run id the same way everywhere"`)
+
+Claim checked: 7 production lines (the NULL-run normalization) plus 206 lines of four controlled real-service
+regressions, no other production change. **Confirmed exactly.**
+
+- `src/artifact-store.ts`: one bind changed, `source.run_id` -> `source.run_id ?? ""` at the `.run(...)` of the demotion
+  `UPDATE` in `preserved()` (`:912`), plus a five-line comment naming the reason. Nothing else in the file, and
+  `git diff 4449fcb 0b398ff -- src docs .gitignore package.json bun.lock` shows that file as the only production
+  change in the whole delta.
+- Consistency re-audit at `0b398ff`: every comparison against `ifnull(run_id,'')` now binds the same normalization —
+  `preserved()` `:912` (`source.run_id ?? ""`), `insert()` `:828` (`input.run_id ?? ""`), `restoreSuperseded()` `:978`
+  (`failed.run_id ?? ""`), `find()` `:1111` (`filter.run_id ?? ""`) — matching the index predicate at `:744`. No
+  remaining site compares the column against an unnormalized argument, and no new asymmetry is introduced: `NULL` and
+  `""` were already the same source for the attempts counter, for `find()` and for the index before this change.
+- Behaviour, not just text: probe 10 was rewritten to assert the *fixed* behaviour and is **red on `4449fcb`
+  (UNIQUE constraint on `artifacts_source`) and green on `0b398ff`** — a recapture with no run id now publishes,
+  supersedes the previous row, keeps both sets of bytes readable under their own ids, restores the previous copy as
+  current when a later recapture fails, leaves `PRAGMA integrity_check` = `ok` and leaves no `preserving` row.
+- The four new owner tests are controlled and real, not mocks: they drive the real `localHarness` and the real helper
+  transport, force the concurrent interleaving deterministically by gating the first staged stream (`artifacts.test.ts`
+  "two concurrent recaptures with no run id ..."), and inject a single labelled fault for the failure case by making
+  `storage.put` throw. No stub replaces production behaviour under test.
+- Security impact of the delta: none. It is metadata bookkeeping; byte fidelity, key derivation, id readability and
+  screening are untouched. If anything it increases durability: previously a NULL-run source could never publish a
+  replacement at all.
+- Out of scope, untouched, not reviewed by me: the life/cache head `ab56` (per-claim cache correction, life owner).
 
 ## 2. Closure of the six previous findings
 
@@ -53,14 +99,15 @@ repeatedly; the rest of the full suite is the lead's call.
 | An injected `ArtifactStorage` foreign backend | **Closed** | `ArtifactService` takes the backend as a constructor argument (`src/artifacts.ts:179-188`). Probe 8 drives a fully in-memory object backend through `preserve` → `list`/`read`/`safeRead`/`download` → `stat`; the service's own local storage directory stays empty apart from the harness's own unused `.incoming`. |
 | Generated guest-helper bytecode not tracked | **Closed** | `.gitignore` gained `__pycache__/` and `*.pyc`; `git ls-files` finds no tracked bytecode, and `git status --porcelain` in the worktree was empty after running the helper-backed tests. |
 
-## 3. My independent probes (`/tmp/opencode/probes/review-probe.test.ts`, 12/12 pass)
+## 3. My independent probes (`/tmp/opencode/probes/`, template `review-probe.test.ts`; rendered per worktree)
 
 1. superseded bytes/id readability; 2. failed recapture restores the previous copy; 3. four concurrent attempts plus
 SQLite integrity and a duplicate-current-row query; 4. long-secret screening on the storage *and* live paths plus the
 too-wide-secret refusal; 5. screening before truncation on a durable record error; 6. planted `.incoming` symlink and
 FIFO refused without touching anything outside; 7. real directory-fsync failure is fatal, `EINVAL` tolerated, nothing
 left in `.incoming`; 8. injected foreign storage backend; 9. refusals leave no `preserving` row and every record
-terminal; 10. NULL `run_id` publication failure with a non-null control (see F0); 11. the configured concurrency limit
+terminal; 10. NULL `run_id`: at `4449fcb` red (UNIQUE violation, with a non-null control proving the query shape), at `0b398ff`
+green (publish, supersede, keep both byte sets readable, restore on failure, integrity ok, nothing pending); 11. the configured concurrency limit
 is enforced; 12. the transfer timeout aborts promptly and leaves nothing claimable. All captures go through the real
 production helper (`src/providers/artifact-helper.py`) executed as a subprocess by
 `tests/local-artifact-provider.ts`; nothing is a re-implementation.
@@ -104,7 +151,9 @@ every capture that carried outside bytes.
 
 ## 5. Findings
 
-### F0 — CHANGES REQUESTED (lead-assigned, confirmed by me, not re-researched): a NULL `run_id` breaks publication
+### F0 — CLOSED at `0b398ff` (lead-assigned; I confirmed and pinned it, owner fixed it)
+
+Status of the finding as of `4449fcb`:
 
 `Repository.preserved()` compares the source's run with `ifnull(run_id,'')=?` but binds `source.run_id` unchanged:
 
@@ -216,9 +265,20 @@ real Freestyle SDK here, so this is recorded as a documented assumption rather t
 
 ## 7. Verdict
 
-**CHANGES_REQUESTED** on head `4449fcbbf2888ed17d5b5c763a76fbf589bba1c7`: F0 (the lead-assigned NULL-run publication
-blocker, pinned to `src/artifact-store.ts:906`) and F1 (close the descriptor passed to `os.scandir` in
-`_walk_metadata`, and stop reporting an environment failure as "not inside the permitted root" with `complete: true`).
-F2 should be documented by the docs owner; F5 is a stated assumption; F3/F4 are optional. No security escape was found
-and none of the six previous findings is still open. Re-review after F0 and F1 are fixed is limited to the repository
-bind, the helper metadata walk, and the incomplete labelling; the rest of this review stands.
+**CHANGES_REQUESTED** on head `0b398ff2a0ab14de88c202dcf2686763744cf4c2`, with exactly one blocking item:
+
+- **F0 is closed.** The delta is the single bind I asked for plus four real-service regressions, and the behaviour is
+  verified green on `0b398ff` / red on `4449fcb`.
+- **F1 remains open.** `src/providers/artifact-helper.py` is byte-identical to `4449fcb`
+  (`git diff 4449fcb 0b398ff -- src/providers/artifact-helper.py` is empty), and the leak reproduces against this
+  head's shipped helper: 402 descriptors leaked for a 400-directory metadata walk, `OSError EMFILE` at
+  `RLIMIT_NOFILE=200`. Closing it needs two lines: close the descriptor passed to `os.scandir` in `_walk_metadata`, and
+  stop letting an `EMFILE`/`ENOMEM`/`EACCES`/`EINTR`/`EBADF` from the walk be reported as "not inside the permitted
+  root" with `complete: true` — an environment failure must reach `stats["incomplete"]` so the artifact is labelled
+  incomplete. I keep this blocking because it breaks the invariant the code itself states ("a capture that is not the
+  whole report says so"): a repository large enough to trip it is silently saved as a *complete* Git report that
+  contains no Git information.
+- F2 should be documented by the docs owner; F5 is a stated assumption; F3/F4 are optional.
+
+No security escape was found at any point in this review, and none of the six previous findings is still open.
+Re-review after F1 is fixed is limited to `_walk_metadata` and the incomplete labelling; the rest stands.
