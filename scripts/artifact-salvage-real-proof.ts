@@ -724,7 +724,10 @@ export function assertProviderTarget(vm: VmInfo | null): VmInfo {
  * migrated or written. `COPYFILE_EXCL` turns a name collision into a refusal
  * instead of a silent overwrite of a previous run's copy.
  */
-export function privateOwnerCopy(snapshotPath: string, destPath: string): string {
+export function privateOwnerCopy(
+  snapshotPath: string,
+  destPath: string,
+): string {
   if (!existsSync(snapshotPath))
     throw new ProofFailure(`provenance snapshot not found: ${snapshotPath}`);
   try {
@@ -1189,11 +1192,7 @@ async function main(opts: Options) {
       // Re-read the copy through the same read-only reader and require it to be
       // the very record the gate approved. A stale, truncated or doctored copy
       // refuses here instead of being repaired.
-      const copiedProvenance = readProvenance(
-        ownerDb,
-        PROOF_WORKER,
-        PROOF_VM,
-      );
+      const copiedProvenance = readProvenance(ownerDb, PROOF_WORKER, PROOF_VM);
       assertOwnerCopyUnchanged(copiedProvenance, provenance);
       evidence.event("owner_copy_verified", {
         path: basename(ownerDb),
@@ -1320,9 +1319,7 @@ async function main(opts: Options) {
     try {
       store.db.exec("PRAGMA wal_checkpoint(TRUNCATE);");
     } catch (error) {
-      ioFailures.push(
-        `wal_checkpoint: ${bounded(redact, error)}`,
-      );
+      ioFailures.push(`wal_checkpoint: ${bounded(redact, error)}`);
     }
     if (existsSync(dbPath)) {
       try {

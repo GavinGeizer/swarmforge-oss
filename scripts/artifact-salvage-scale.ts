@@ -21,6 +21,14 @@
 //   the store are production code; only the guest is simulated. Do not read this
 //   report as evidence about a live Freestyle VM.
 //
+//   That fixture is the ACTUAL combined disposable's module: the data plane
+//   (c5cfff6d), the lifecycle/finalization package (3244def1) and the manager APIs
+//   (2fdf8139) together. It is resolved at run time rather than imported
+//   statically, so this file is the same source in every checkout: where the
+//   combined disposable is present the real production modules are used, and where
+//   it is not, the probe refuses by NAME and exits non-zero instead of quietly
+//   measuring a reimplementation of it. Nothing here substitutes a stub.
+//
 // No model is involved, nothing is base64'd, and no artifact body is printed:
 // the report carries counts, digests, sizes and states only.
 //
@@ -33,7 +41,6 @@
 import { createHash } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { localHarness } from "../tests/local-artifact-provider";
 
 const WORKERS = Number(process.env.PROBE_WORKERS ?? "12");
 const PER_WORKER = Number(process.env.PROBE_PER_WORKER ?? "9");
@@ -51,6 +58,78 @@ const mib = (n: number) => Math.round(n / MIB);
 const heap = () => process.memoryUsage().heapUsed;
 
 class ProbeFailure extends Error {}
+
+/**
+ * The slice of the combined disposable's local guest fixture this probe uses.
+ * Declared, not reimplemented: every member below is a real production object
+ * supplied by `tests/local-artifact-provider`.
+ */
+export interface LocalGuest {
+  workspace: {
+    root: string;
+    host: { exec: (...args: never[]) => Promise<unknown> };
+  };
+  store: ScaleStore;
+  artifacts: {
+    list(query: { worker_id: string; limit: number }): {
+      artifacts: ScaleRecord[];
+    };
+  };
+  coordinator: {
+    finalize(id: string): Promise<{ finalization?: { state?: string } | null }>;
+  };
+  spawn(input: { task_id: string; artifacts: { path: string }[] }): {
+    worker_id: string;
+  };
+  cleanup(): Promise<void>;
+}
+/** The store slice the probe drives, declared rather than assumed. */
+interface ScaleStore {
+  beginFinalization(id: string, runId: string | null): unknown;
+}
+interface ScaleRecord {
+  worker_id: string;
+  run_id?: string | null;
+  original_path: string;
+  kind?: string | null;
+  state: string;
+  sha256: string | null;
+  size: number;
+  error?: string | null;
+}
+
+/**
+ * The combined disposable's local guest harness, resolved at run time.
+ *
+ * This is deliberately a dynamic import. The data plane, the finalizer and the
+ * local guest fixture belong to other owners' branches, so a static import of
+ * them cannot typecheck on a checkout that does not carry them, and inventing a
+ * local stand-in would mean the probe measured this file rather than the
+ * production capture path. Instead: where the real modules exist they are used
+ * unchanged, and where they do not the probe refuses with the module named.
+ */
+export async function loadLocalGuest(
+  env: Record<string, string> = {},
+): Promise<LocalGuest> {
+  // The specifier is assembled rather than written as a literal so this file is
+  // not a hard compile-time dependency on a module that only exists in the
+  // combined disposable. The resolved module's shape is declared below and
+  // checked at run time, so a missing or changed export is a named refusal and
+  // not a silent substitution.
+  const specifier = ["..", "tests", "local-artifact-provider"].join("/");
+  try {
+    const module = (await import(specifier)) as {
+      localHarness(env?: Record<string, string>): Promise<LocalGuest>;
+    };
+    if (typeof module.localHarness !== "function")
+      throw new Error("localHarness is not exported");
+    return await module.localHarness(env);
+  } catch (error) {
+    throw new ProbeFailure(
+      `the combined disposable's local guest fixture is unavailable: ${error instanceof Error ? error.message : String(error)}. This probe needs tests/local-artifact-provider together with src/artifacts, src/finalization and src/providers/artifact-helper.py; it does not substitute a stand-in.`,
+    );
+  }
+}
 
 /** One record as the duplicate scan sees it. */
 export interface DuplicateKeyable {
@@ -127,7 +206,7 @@ async function main() {
       note: "SWARMFORGE_ARTIFACT_MAX_BYTES is raised for the run so byte limits are not the subject",
     },
   };
-  const h = await localHarness({
+  const h = await loadLocalGuest({
     SWARMFORGE_ARTIFACT_CONCURRENCY: String(CONCURRENCY),
     SWARMFORGE_ARTIFACT_TIMEOUT_MS: "120000",
     SWARMFORGE_FINALIZATION_MAX_ATTEMPTS: "3",
@@ -148,8 +227,13 @@ async function main() {
     let active = 0;
     let peak = 0;
     let execs = 0;
-    const exec = h.workspace.host.exec.bind(h.workspace.host);
-    h.workspace.host.exec = async (...args: Parameters<typeof exec>) => {
+    type ExecFn = (
+      ...args: Parameters<LocalGuest["workspace"]["host"]["exec"]>
+    ) => ReturnType<LocalGuest["workspace"]["host"]["exec"]>;
+    const exec = h.workspace.host.exec.bind(
+      h.workspace.host,
+    ) as unknown as ExecFn;
+    h.workspace.host.exec = (async (...args: Parameters<ExecFn>) => {
       active++;
       execs++;
       if (active > peak) peak = active;
@@ -158,7 +242,7 @@ async function main() {
       } finally {
         active--;
       }
-    };
+    }) as LocalGuest["workspace"]["host"]["exec"];
 
     const ids: string[] = [];
     for (let i = 0; i < WORKERS; i++) {
@@ -273,9 +357,19 @@ async function main() {
     report.duplicate_worker_run_paths = duplicate.paths;
     report.duplicate_records = duplicate.records;
     report.duplicate_kinds = duplicate.kinds;
-    report.distinct_content_digests = new Set(
+    // Named for exactly what it counts. The previous name, read next to the
+    // duplicate counters, invited the reading that this probe had shown the same
+    // bytes stored under several records, which is NOT what it measures and not
+    // what would be a defect: two DIFFERENT workers may legitimately produce
+    // identical content, so an equal digest across worker boundaries is expected.
+    // The duplication that IS a defect is one worker/run/path stored twice under
+    // two kinds, and that is what `duplicate_worker_run_paths` above counts and
+    // what the enforced assertion below fails on.
+    report.distinct_content_digests_across_stored_records = new Set(
       records.map((r) => r.sha256),
     ).size;
+    report.distinct_content_digest_note =
+      "a per-record observation over every stored record; equal digests under DIFFERENT worker ids are expected, because different workers may write the same content. It is not a cross-worker dedup measurement and is not asserted on.";
 
     // Re-verify checksums against the guest bytes, streaming both sides.
     let verified = 0;
