@@ -8,6 +8,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
+import { gunzipSync } from "node:zlib";
 import { artifactErrorCode, screeningWindow } from "../src/artifact-types";
 import { WorkerFiles } from "../src/files";
 import { redactorFor } from "../src/security";
@@ -1310,3 +1311,192 @@ test("a hundred real captures stay inside the entry, listing and event bounds", 
     await many.cleanup();
   }
 }, 120000);
+
+test("a collected directory keeps its nested outputs, bounded and explicitly failed when cut", async () => {
+  const bounded = await localHarness({
+    SWARMFORGE_ARTIFACT_MAX_ENTRIES: "64",
+    SWARMFORGE_ARTIFACT_MAX_DEPTH: "8",
+    SWARMFORGE_ARTIFACT_MAX_BYTES: "1048576",
+  });
+  try {
+    const created = bounded.spawn();
+    await bounded.provider.createWorker(created);
+    const results = join(bounded.workspace.root, "results");
+    const nested = [
+      "deep/findings.json",
+      "other/nested/deeper/report.txt",
+      "top-level.txt",
+    ];
+    for (const path of nested) {
+      const target = join(results, path);
+      mkdirSync(join(target, ".."), { recursive: true, mode: 0o700 });
+      writeFileSync(target, `contents of ${path}\n`);
+    }
+    // A symlink and a FIFO inside the tree are refused, not archived.
+    symlinkSync("/etc/passwd", join(results, "escape"));
+    Bun.spawnSync(["mkfifo", join(results, "pipe")]);
+    const records = await bounded.artifacts.collectDirectory(
+      created.worker_id,
+      "results",
+      { runId: "run-1" },
+    );
+    // Nothing useful is dropped: the top-level file and a bounded archive per
+    // nested directory, each of which carries the files beneath it.
+    expect(records.map((record) => record.original_path).sort()).toEqual([
+      "results/top-level.txt",
+      "snapshot:results/deep",
+      "snapshot:results/other",
+    ]);
+    const archives = records.filter((record) => record.kind === "snapshot");
+    expect(archives).toHaveLength(2);
+    const members = new Map<string, string>();
+    for (const archive of archives) {
+      expect(archive.state).toBe("preserved");
+      expect(archive.size).toBeGreaterThan(0);
+      expect(archive.size).toBeLessThanOrEqual(1_048_576);
+      // A complete archive: the bytes hash to what the capture reported.
+      const bytes = await bounded.artifacts.download(archive.artifact_id);
+      const chunks: Uint8Array[] = [];
+      for await (const chunk of bytes as unknown as AsyncIterable<Uint8Array>)
+        chunks.push(chunk);
+      const joined = new Uint8Array(
+        chunks.reduce((total, chunk) => total + chunk.length, 0),
+      );
+      let at = 0;
+      for (const chunk of chunks) {
+        joined.set(chunk, at);
+        at += chunk.length;
+      }
+      expect(createHash("sha256").update(joined).digest("hex")).toBe(
+        archive.sha256 ?? "",
+      );
+      // It is a real gzip archive, and the nested files are named inside it: a
+      // reader can find the deep file and the deeper tree without the capture
+      // having flattened anything, and nothing refused is in there.
+      // Member names keep the workspace-relative path: the directory itself and
+      // everything under it are named, so nothing had to be flattened.
+      const unpacked = gunzipSync(joined).toString("latin1");
+      const wanted = archive.original_path.replace("snapshot:", "");
+      expect(unpacked).toContain(wanted);
+      expect(unpacked).toContain("contents of ");
+      // Nothing that was refused is inside: a symlink and a FIFO are never
+      // archived, whatever their names look like.
+      expect(unpacked).not.toContain("escape");
+      expect(unpacked).not.toContain("pipe");
+      members.set(wanted, unpacked);
+    }
+    // The deep file is inside the archive for its own directory, so a reader can
+    // still get its exact bytes.
+    // The two nested outputs are named exactly, at the depths they were written:
+    // a two-level-deep findings file and a three-level-deep report.
+    expect(members.get("results/deep")).toContain("results/deep/findings.json");
+    expect(members.get("results/other")).toContain(
+      "results/other/nested/deeper/report.txt",
+    );
+    // The records themselves stay bounded and complete: no truncation, no
+    // partial archive, and nothing that claims to be more than it captured.
+    for (const record of records) {
+      expect(record.incomplete).toBeNull();
+      expect(record.state).toBe("preserved");
+    }
+    const deeper = records.find(
+      (record) => record.original_path === "snapshot:results/other",
+    )!;
+    expect(deeper.size).toBeGreaterThan(0);
+  } finally {
+    await bounded.cleanup();
+  }
+});
+
+test("a directory past the entry bound fails explicitly instead of collecting part of it", async () => {
+  const tiny = await localHarness({ SWARMFORGE_ARTIFACT_MAX_ENTRIES: "4" });
+  try {
+    const created = tiny.spawn();
+    await tiny.provider.createWorker(created);
+    const results = join(tiny.workspace.root, "results");
+    mkdirSync(results, { recursive: true, mode: 0o700 });
+    for (let index = 0; index < 12; index++)
+      writeFileSync(join(results, `file-${index}.txt`), `body ${index}`);
+    await expect(
+      tiny.artifacts.collectDirectory(created.worker_id, "results"),
+    ).rejects.toThrow(/reached the entry limit/);
+    // Nothing is claimed as collected, and no object is left behind.
+    expect(
+      tiny.artifacts.list({ worker_id: created.worker_id }).artifacts,
+    ).toEqual([]);
+    expect(storedFilesOf(tiny.storageDir)).toEqual([]);
+  } finally {
+    await tiny.cleanup();
+  }
+});
+
+test("a nested output survives the guest being destroyed", async () => {
+  const results = join(h.workspace.root, ".swarmforge", "artifacts", "deep");
+  mkdirSync(join(results, "deeper"), { recursive: true, mode: 0o700 });
+  writeFileSync(join(results, "findings.json"), '{"verdict":"salvage"}\n');
+  writeFileSync(join(results, "deeper", "detail.txt"), "deep detail\n");
+  const records = await h.artifacts.collectDirectory(
+    worker,
+    ".swarmforge/artifacts",
+    { runId: "run-1" },
+  );
+  const archive = records.find((record) => record.kind === "snapshot")!;
+  expect(archive.original_path).toBe("snapshot:.swarmforge/artifacts/deep");
+  expect(archive.state).toBe("preserved");
+  const before = await collect(await h.artifacts.download(archive.artifact_id));
+  // The guest is gone; the bytes, the record and the hash are not.
+  await h.provider.destroyWorker(vm);
+  const after = await h.artifacts.download(archive.artifact_id);
+  const chunks: Uint8Array[] = [];
+  for await (const chunk of after as unknown as AsyncIterable<Uint8Array>)
+    chunks.push(chunk);
+  const joined = new Uint8Array(
+    chunks.reduce((total, chunk) => total + chunk.length, 0),
+  );
+  let at = 0;
+  for (const chunk of chunks) {
+    joined.set(chunk, at);
+    at += chunk.length;
+  }
+  expect(joined.length).toBe(before.length);
+  expect(createHash("sha256").update(joined).digest("hex")).toBe(
+    archive.sha256 ?? "",
+  );
+  expect(h.artifacts.metadata(archive.artifact_id).state).toBe("preserved");
+});
+
+test("a path that is both declared and inside a default directory is one artifact", async () => {
+  // The lifecycle asks for declared output with the request word `declared`
+  // while a default directory collection reaches the same file as a plain file.
+  // Both are the same bytes, so they are the same artifact rather than two
+  // records and two stored objects.
+  write("findings.json", '{"verdict":"one"}');
+  const declared = await h.artifacts.preserve(
+    worker,
+    ".swarmforge/artifacts/findings.json",
+    { runId: "run-1", kind: "declared" },
+  );
+  expect(declared.kind).toBe("file");
+  const collected = await h.artifacts.collectDirectory(
+    worker,
+    ".swarmforge/artifacts",
+    { runId: "run-1" },
+  );
+  const listed = h.artifacts
+    .list({ worker_id: worker, run_id: "run-1" } as never)
+    .artifacts.filter((record) => record.original_path.includes("findings"));
+  expect(listed).toHaveLength(1);
+  expect(
+    collected.find((record) => record.original_path.endsWith("findings.json")),
+  ).toMatchObject({
+    artifact_id: declared.artifact_id,
+    storage_key: declared.storage_key,
+    kind: "file",
+  });
+  expect(storedFilesOf(h.storageDir)).toHaveLength(1);
+  expect(h.artifacts.counters({ worker_id: worker })).toEqual({
+    attempts: 1,
+    preserved: 1,
+    failed: 0,
+  });
+});

@@ -133,6 +133,26 @@ export interface PreserveInput {
 }
 
 /**
+ * Request words that name how a source was asked for, not what it is.
+ *
+ * A worker's declared output and the same file reached through a default
+ * collection are one file, so they must be one artifact: with two kinds the
+ * repository would hold two records and two stored objects for the same bytes.
+ * Mapping the request vocabulary onto the stored kind is what keeps a path
+ * captured twice a single artifact. An unrecognised kind is left alone, so a
+ * caller that uses its own label still sees it back.
+ */
+const artifactKindAliases: Record<string, string> = { declared: "file" };
+
+/** The stored kind for one requested kind, bounded and never empty. */
+function captureKind(requested: string | undefined): string {
+  const kind = requested ?? "file";
+  if (!kind || kind.length > 64)
+    throw new ArtifactPathError("Artifact kind must be 1-64 characters");
+  return artifactKindAliases[kind] ?? kind;
+}
+
+/**
  * Preserves worker output into durable storage.
  *
  * Bytes leave a guest only as raw binary: the guest helper opens each path
@@ -342,7 +362,7 @@ export class ArtifactService {
     options: PreserveInput = {},
   ): Promise<ArtifactRecord> {
     const requested = validateRelativePath(path);
-    const kind = options.kind ?? "file";
+    const kind = captureKind(options.kind);
     const runId = options.runId ?? null;
     const worker = this.guest(workerId);
     const existing = this.repository.find({
@@ -384,18 +404,19 @@ export class ArtifactService {
     );
     const runId = options.runId ?? null;
     const original = `snapshot:${paths.length === 1 ? paths[0]! : paths.join(",")}`;
+    const kind = captureKind("snapshot");
     const existing = this.repository.find({
       worker_id: worker.worker_id,
       run_id: runId,
       original_path: original,
-      kind: "snapshot",
+      kind,
     });
     const record = this.record(worker, {
       existing,
       runId,
       original_path: original,
       filename: `${safeFilename(paths[0]?.split("/").at(-1) ?? "workspace", "workspace")}-snapshot.tar.gz`,
-      kind: "snapshot",
+      kind,
     });
     return this.attempt(
       record,
@@ -448,14 +469,14 @@ export class ArtifactService {
               worker_id: worker.worker_id,
               run_id: runId,
               original_path: item.path,
-              kind: "diagnostic",
+              kind: captureKind("diagnostic"),
             });
             const record = this.record(worker, {
               existing,
               runId,
               original_path: item.path,
               filename: safeFilename(item.path.split("/").at(-1)),
-              kind: "diagnostic",
+              kind: captureKind("diagnostic"),
             });
             started.push(record);
             try {
