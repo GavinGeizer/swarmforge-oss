@@ -1,0 +1,39 @@
+{
+  "worker_id": "w-9b0f79a2-3e68-4f3a-abf5-92c3a42dee6b",
+  "task_id": "final-review-data-security",
+  "run_id": "2d905e0a-18be-4382-a034-e4956a4a1d5a",
+  "status": "completed",
+  "summary": "CHANGES_REQUESTED on 4449fcbbf2888ed17d5b5c763a76fbf589bba1c7. Lead-assigned NULL-run blocker confirmed and pinned to one bind (Repository.preserved, src/artifact-store.ts:906 passes source.run_id where the SQL compares ifnull(run_id,'')=?; every sibling query normalizes with ?? ''), reproduced end to end with a non-null control. Also still open: F1, artifact-helper.py _walk_metadata leaks the descriptor passed to os.scandir (1 fd/dir; EMFILE at low limits) and an EMFILE is then reported as 'not inside the permitted root' with complete:true, silently emptying Git diagnostics. Second security pass added nothing new: concurrency bound and transfer timeout both verified by probe, no new exposure found in the remaining data-plane surface. All six previous findings remain closed. No security escape found.",
+  "details": "Read-only worktree of the reviewed head (/tmp/opencode/review-data). Owner owned suite run once under bun 1.4.2 with --frozen-lockfile: 118 pass/1 skip/0 fail. My independent probes now 12/12 pass (9 from the first pass plus NULL-run, concurrency, timeout), all captures through the real production helper. tsc --noEmit exit 0, biome clean 49 files, git status clean, no tracked bytecode. F0 (lead-assigned, not re-researched): Repository.preserved() at src/artifact-store.ts:901-911 demotes other current rows with 'ifnull(run_id,'')  = ?' but binds source.run_id unchanged at :906, so a NULL run id never matches, no row is marked superseded_by and publishing the replacement violates the partial unique index artifacts_source (:743). Sibling queries all normalize - insert() :823 uses input.run_id ?? '', restoreSuperseded() :967 uses failed.run_id ?? '', find() :1099 uses filter.run_id ?? '' - so the fix is a single ?? '' at :906. Probe 10: with runId 'run-1' a replacement supersedes cleanly; with no runId (the shape preserve(workerId, path) produces, which is the API path in the lead's new test) the first capture is preserved and readable and the second throws a UNIQUE/constraint error, so the failure is loud but no second capture of such a source can ever be published and every retried finalization fails. F1 (mine, unchanged): artifact-helper.py:1033 os.scandir(open_at(parts)) duplicates and leaks the passed descriptor (402 fds for 400 metadata dirs; EMFILE at RLIMIT 200), the blanket 'except HelperError' in _walk_metadata turns that into 'Git metadata directory is not inside the permitted root', and op_capture records a GitRefusal as skipped without setting stats['incomplete'], so complete stays true and no incomplete label reaches artifact-transport.ts:446. Real-helper proof: RLIMIT 4096 captures the commit with complete:true; RLIMIT 300 returns ok:true complete:true skipped=not_applicable with no git bytes. Git metadata gate: five controls behave (positive control captured; symlinked .git, outside alternates, outside commondir and an in-metadata symlink all refused and recorded); the author's residual TOCTOU was attacked with 40 real-helper runs under a tight alternates flipper - 39 refused, 1 accepted, 0 accepted captures carrying outside bytes - and the alternates+replace-ref mechanism that would carry outside object content is real but is not a general read primitive, so no change requested. F2 (limitation): linked worktrees, submodules and shared object-store symlinks yield no Git report; docs owner should state the plain-.git requirement. F5 (stated assumption, no change): the helper install is safe because init() creates /opt/swarmforge root-owned 0700; a test -L refusal beside the existing test -x would close it cheaply. F6 probes: SWARMFORGE_ARTIFACT_CONCURRENCY=1 gave peak in-flight of exactly 1 across five concurrent real captures with no staging residue; SWARMFORGE_ARTIFACT_TIMEOUT_MS=1 refused in well under a second leaving no preserving row. No production code modified; report, probes and python gate probes committed on my review branch under .swarmforge/artifacts/.",
+  "files_changed": [
+    ".swarmforge/artifacts/final-data-review.md",
+    ".swarmforge/artifacts/review-probe.test.ts"
+  ],
+  "tests": {
+    "ran": true,
+    "passed": true,
+    "command": "cd /tmp/opencode/review-data && bun install --frozen-lockfile (bun 1.4.2) && bun test tests/artifact-store.test.ts tests/artifact-transport.test.ts tests/artifacts.test.ts tests/finalization-nested.test.ts tests/worker-files.test.ts (118 pass/1 skip/0 fail) && bun test /tmp/opencode/probes/review-probe.test.ts (12 pass/0 fail) && bun x tsc --noEmit && bun x biome check src tests scripts && python3 /tmp/opencode/probes/fdleak2.py /tmp/opencode/gitprobe/drive.py /tmp/opencode/gitprobe/race3.py /tmp/opencode/gitprobe/emfile2.py",
+    "summary": "Owner owned suite: 118 pass, 1 skip, 0 fail (bun 1.4.2, frozen lockfile). My probes: 12 pass, 0 fail, including the NULL-run reproduction with a non-null control, the concurrency bound and the transfer timeout. tsc and biome clean. Python probes against the shipped helper: git gate 5/5 as expected, 40-run TOCTOU attack 39 refused / 1 accepted / 0 accepted-with-outside-bytes, 402 fds leaked per 400-directory metadata walk and EMFILE at RLIMIT 200. Probe 10 asserts the expected failure, so it passing means the F0 bug reproduces exactly as reported."
+  },
+  "git": {
+    "tree": "master",
+    "workspace": "/workspace/repo",
+    "branch": "swarmforge/artifact-salvage-20261001/final-review-data-security/w-9b0f79a2-3e68-4f3a-abf5-92c3a42dee6b",
+    "commit": "7b10c5fe7b3c9bba7cfdff1f7a8e21ddf9fb3261",
+    "base_commit": "5672ead2a526e07fea9ed11e58b3725e42013527",
+    "dirty": false,
+    "persisted": false
+  },
+  "warnings": [
+    "Bun 1.4.2 was fetched from the official release because the image ships bun 1.3.14, which cannot parse this repo's bun.lock; no lockfile change was made and every bun command used 1.4.2.",
+    "lifecycle 0e8c1eb and API bed317aa were recorded for provenance only; neither branch was checked out here, so the lead's 389/2/3 combined result is taken as reported and not re-measured by me.",
+    "The two other combined-suite failures the lead cites are proof tests with a missing GitTree fixture; outside my ownership and not investigated.",
+    "Full suite beyond the owned files was deliberately not run (lead owns it).",
+    "Probe 5 reaches ArtifactService.fail() directly and probe 11 wraps transport.open, both to inject faults into the unit under test rather than to stand in for a capture.",
+    "The TOCTOU race probes used a root PATH shim on this host to widen the window; a real guest worker cannot install a shim, so those runs bound the mechanism rather than a realistic attacker capability.",
+    "F5 could not be verified against the real Freestyle SDK here; it is recorded as a stated assumption about /opt/swarmforge ownership.",
+    "Commits contain only .swarmforge/artifacts/ files; no production code was modified."
+  ],
+  "needs_followup": true,
+  "followup_reason": "Verdict stays CHANGES_REQUESTED until the data owner supplies the fixed exact SHA, which must close F0 (bind source.run_id ?? '' at src/artifact-store.ts:906) and F1 (close the descriptor passed to os.scandir in _walk_metadata, and treat EMFILE/ENOMEM/EACCES/EINTR/EBADF as an incomplete condition rather than 'not inside the permitted root' with complete:true). F2 needs a docs note (Git diagnostics require a plain .git directory with objects and refs inside the workspace). Re-review of the new head is scoped to that repository bind, the helper metadata walk and the incomplete labelling; the rest of this review stands and no other security issue was found."
+}
