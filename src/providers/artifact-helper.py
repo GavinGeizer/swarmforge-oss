@@ -948,6 +948,53 @@ class GitRefusal(Exception):
     """A repository this helper will not describe, and why."""
 
 
+class GitResource(Exception):
+    """The check could not be completed: descriptors, memory, permissions, a
+    signal or a bad handle.
+
+    This is deliberately not a GitRefusal. A refusal is a statement about the
+    repository - it points somewhere the root does not allow - and it is reported
+    as not applicable. A resource error says nothing about the repository: it says
+    this process could not look, so the capture is incomplete and must be reported
+    as such rather than quietly skipped.
+    """
+
+
+# Errno values that mean "this process could not do it", never "that path is not
+# allowed".
+RESOURCE_ERRNOS = (
+    errno.EMFILE,
+    errno.ENFILE,
+    errno.ENOMEM,
+    errno.EACCES,
+    errno.EPERM,
+    errno.EINTR,
+    errno.EBADF,
+    errno.ENOTTY,
+)
+
+
+def metadata_refusal(error, what="Git metadata is not inside the permitted root"):
+    """Turn a failed open into a refusal or a resource error, never a guess.
+
+    A refusal is a statement about the repository. An errno that means this
+    process could not look - descriptors, memory, permissions, a signal, a bad
+    handle - is not, and must not be reported as one.
+    """
+    if getattr(error, "code", CODE_TRANSPORT) == CODE_TRANSPORT:
+        raise GitResource("%s: %s" % (what, str(error) or "unusable"))
+    raise GitRefusal(what)
+
+
+def resource_or_refusal(error):
+    """Classify one OSError: could not look, versus must not look."""
+    if error.errno in RESOURCE_ERRNOS:
+        raise GitResource("Git metadata could not be examined: %s" % errno_name(error))
+    raise GitRefusal(
+        "Git metadata is not inside the permitted root (%s)" % errno_name(error)
+    )
+
+
 def _read_bounded_fd(fd, limit):
     """Read at most `limit` bytes from a pinned descriptor."""
     out = b""
@@ -1018,31 +1065,45 @@ def _walk_metadata(parts, depth=0):
     all of them. Anything that is not a plain file or directory - a symlink, a
     FIFO, a device, a socket - refuses the repository, and so does a tree that
     does not fit the budget, because an unverified repository is not described.
+
+    Descriptors are owned explicitly and released on every path, including an
+    error: one descriptor is held per level and released on every path, including
+    an error. A walk that leaked one descriptor per directory would run out of them
+    on a repository with a few hundred directories, and would report that as a
+    statement about the repository, which it is not.
     """
     if depth > METADATA_MAX_DEPTH:
         raise GitRefusal("Git metadata is deeper than its bound")
-    seen = 0
     try:
         fd = open_at(parts)
-    except HelperError:
-        raise GitRefusal("Git metadata directory is not inside the permitted root")
-    os.close(fd)
-    # os.scandir yields one entry at a time, so a directory with a million entries
-    # costs one unit of budget rather than a million strings.
+    except HelperError as error:
+        metadata_refusal(error)
+    # The descriptor stays open for the whole iteration - closing it first breaks
+    # the iterator - and is closed here exactly once, on every path, after the
+    # iterator has been closed. os.scandir may or may not duplicate what it is
+    # handed, and it offers no way to ask, so this owns one descriptor per level
+    # itself rather than guessing who owns it. That is what keeps a walk of a few
+    # hundred directories from running out of them.
+    entries = None
     try:
-        handle = os.scandir(open_at(parts))
-    except OSError:
-        raise GitRefusal("Git metadata directory is not inside the permitted root")
-    try:
-        with handle as entries:
+        # One entry at a time, so a directory with a million entries costs one unit
+        # of budget rather than a million strings.
+        try:
+            entries = os.scandir(fd)
+        except OSError as error:
+            resource_or_refusal(error)
+            raise
+        seen = 0
+        with entries:
             for entry in entries:
                 seen += 1
                 if seen > METADATA_MAX_ENTRIES:
                     raise GitRefusal("Git metadata exceeds its entry bound")
                 try:
                     info = entry.stat(follow_symlinks=False)
-                except OSError:
-                    raise GitRefusal("Git metadata changed while it was read")
+                except OSError as error:
+                    resource_or_refusal(error)
+                    raise
                 if statmod.S_ISLNK(info.st_mode):
                     raise GitRefusal("Git metadata contains a symlink")
                 if statmod.S_ISDIR(info.st_mode):
@@ -1050,23 +1111,42 @@ def _walk_metadata(parts, depth=0):
                     continue
                 if not statmod.S_ISREG(info.st_mode):
                     raise GitRefusal("Git metadata contains a special file")
+    except OSError as error:
+        # The directory iterator itself failing part way through is a read error,
+        # not a statement about the tree.
+        resource_or_refusal(error)
+        raise
     finally:
+        if entries is not None:
+            try:
+                entries.close()
+            except OSError:
+                pass
         try:
-            handle.close()
+            os.close(fd)
         except OSError:
             pass
 
 
 def _read_pinned(parent_fd, name, bound):
+    """One bounded, descriptor-relative read. The handle is always released."""
     try:
         info = os.lstat(name, dir_fd=parent_fd)
-    except OSError:
+    except OSError as error:
+        if error.errno in RESOURCE_ERRNOS:
+            resource_or_refusal(error)
         return None
     if not statmod.S_ISREG(info.st_mode):
         raise GitRefusal("Git object alternates is not a regular file")
     if info.st_size > bound:
         raise GitRefusal("Git object alternates is larger than its bound")
-    handle = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=parent_fd)
+    try:
+        handle = os.open(
+            name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=parent_fd
+        )
+    except OSError as error:
+        resource_or_refusal(error)
+        raise
     try:
         return _read_bounded_fd(handle, bound)
     finally:
@@ -1091,7 +1171,9 @@ def _check_alternates(root, root_parts, objects_parts, depth=0, seen=None):
         raise GitRefusal("Git object alternates chain names too many stores")
     try:
         info_fd = open_at(objects_parts + ["info"])
-    except HelperError:
+    except HelperError as error:
+        if getattr(error, "code", CODE_TRANSPORT) == CODE_TRANSPORT:
+            raise GitResource("Git object alternates could not be read")
         return
     try:
         for name in ("alternates", "http-alternates"):
@@ -1130,8 +1212,9 @@ def _commondir_parts(root_parts, git_parts):
     """
     try:
         fd = open_at(root_parts + git_parts)
-    except HelperError:
-        raise GitRefusal("Git metadata directory is not accessible")
+    except HelperError as error:
+        metadata_refusal(error, "Git metadata directory is not accessible")
+    # Released below in every path, including a refusal raised while reading.
     try:
         body = _read_pinned(fd, "commondir", 4096)
     finally:
@@ -1168,13 +1251,13 @@ def git_repository(root, relative):
     root_parts = clean_absolute(root)
     try:
         work_tree_fd = open_dir_at(root, base)
-    except HelperError:
-        raise GitRefusal("no such directory in the workspace")
+    except HelperError as error:
+        metadata_refusal(error, "no such directory in the workspace")
     os.close(work_tree_fd)
     try:
         parent = open_dir_at(root, base)
-    except HelperError:
-        raise GitRefusal("no such directory in the workspace")
+    except HelperError as error:
+        metadata_refusal(error, "no such directory in the workspace")
     try:
         try:
             info = os.lstat(".git", dir_fd=parent)
@@ -1196,11 +1279,14 @@ def git_repository(root, relative):
     for name in ("objects", "refs"):
         try:
             fd = open_at(root_parts + git_parts + [name])
-        except HelperError:
+        except HelperError as error:
             # A metadata directory without an object store or a ref store is not
             # a repository this capture can describe. Disabling the Git sources is
-            # the answer; failing the whole diagnostic would not be.
-            raise GitRefusal("Git metadata is missing its %s directory" % name)
+            # the answer; failing the whole diagnostic would not be. An errno that
+            # means this process could not look is neither.
+            metadata_refusal(
+                error, "Git metadata is missing its %s directory" % name
+            )
         os.close(fd)
     shared = _commondir_parts(root_parts, git_parts)
     # The whole metadata tree, in both the repository's own directory and a shared
@@ -1419,6 +1505,28 @@ def op_capture(request):
                     # disabled rather than run against something unverified.
                     try:
                         git_dir, work_tree = git_repository(root, source["cwd"])
+                    except GitResource as problem:
+                        # This process could not examine the metadata. That says
+                        # nothing about the repository, so the Git part of this
+                        # capture is recorded as incomplete - never as skipped and
+                        # never as a complete report - and the capture stops here
+                        # rather than publishing a report with a hole in it.
+                        stats["incomplete"] += 1
+                        annotate(
+                            out_fd,
+                            digest,
+                            stats,
+                            label,
+                            "%s incomplete=%s" % (label, problem),
+                            max_bytes,
+                        )
+                        reported.append(
+                            {
+                                "label": label,
+                                "incomplete": "metadata-unreadable",
+                            }
+                        )
+                        break
                     except GitRefusal as refusal:
                         annotate(
                             out_fd,

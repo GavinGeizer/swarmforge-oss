@@ -5,6 +5,7 @@ import {
   existsSync,
   mkdirSync,
   readdirSync,
+  readFileSync,
   rmSync,
   statSync,
   symlinkSync,
@@ -12,7 +13,11 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { type ArtifactErrorCode, validateRoot } from "../src/artifact-types";
-import { artifactErrorCode } from "../src/providers/artifact-transport";
+import { artifactHelperSource } from "../src/providers/artifact-helper";
+import {
+  artifactErrorCode,
+  shellQuote,
+} from "../src/providers/artifact-transport";
 import {
   boundedExecTimeout,
   guestExecTimeoutLimit,
@@ -1130,4 +1135,143 @@ test("gitdiag-probe7: metadata replaced after a capture is refused, not followed
   expect(second).toMatch(/not-applicable=Git metadata contains a symlink/);
   expect(second).not.toContain(canary);
   expect(ws.stagingEntries()).toEqual([]);
+});
+
+/**
+ * The helper is run here as a subprocess under a descriptor limit, because that
+ * is the only honest way to show what it does with descriptors: the review found
+ * a walk that held one per directory, which only shows up as a failure once the
+ * limit is low enough and the tree deep enough.
+ */
+const runHelperUnderLimit = async (input: {
+  request: Record<string, unknown>;
+  staging: string;
+  limit: number;
+}): Promise<{ stdout: string; stderr: string; code: number }> => {
+  const helper = join(ws.base, "helper-under-limit.py");
+  writeFileSync(helper, artifactHelperSource(), { mode: 0o700 });
+  const quoted = shellQuote(JSON.stringify(input.request));
+  const proc = Bun.spawn(
+    [
+      "/bin/sh",
+      "-c",
+      `ulimit -n ${input.limit}; exec python3 -I -B ${shellQuote(helper)} ${quoted}`,
+    ],
+    { stdout: "pipe", stderr: "pipe" },
+  );
+  const [stdout, stderr, code] = await Promise.all([
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+    proc.exited,
+  ]);
+  return { stdout, stderr, code: code ?? 0 };
+};
+
+test("the metadata walk releases its descriptors under a low descriptor limit", async () => {
+  const repo = join(ws.root, "repo");
+  mkdirSync(repo, { recursive: true, mode: 0o700 });
+  const run = (args: string[]) =>
+    Bun.spawnSync(["git", ...args], {
+      cwd: repo,
+      stdout: "ignore",
+      stderr: "ignore",
+    });
+  run(["init", "--quiet", "--initial-branch=main", "."]);
+  run(["config", "user.email", "probe@example.invalid"]);
+  run(["config", "user.name", "probe"]);
+  writeFileSync(join(repo, "tracked.txt"), "content\n");
+  run(["add", "-A"]);
+  run(["commit", "--quiet", "-m", "inside"]);
+  // Three hundred metadata directories under one parent: wide rather than deep,
+  // so the walk stays inside its depth bound and any descriptor it failed to
+  // release accumulates instead of being released by returning up the tree.
+  for (let index = 0; index < 300; index++) {
+    const branch = join(repo, ".git", "refs", `d${index}`);
+    mkdirSync(branch, { recursive: true });
+    writeFileSync(join(branch, "keep"), "x");
+  }
+  mkdirSync(ws.staging, { recursive: true, mode: 0o700 });
+  const result = await runHelperUnderLimit({
+    staging: ws.staging,
+    limit: 96,
+    request: {
+      op: "capture",
+      root: ws.root,
+      staging: ws.staging,
+      name: "bounded-fds",
+      max_bytes: 65536,
+      timeout_ms: 20000,
+      sources: [
+        {
+          label: "git-status",
+          cwd: "repo",
+          git: true,
+          git_args: ["status", "--porcelain=v1", "-b"],
+        },
+      ],
+    },
+  });
+  const payload = JSON.parse(result.stdout.trim().split("\n").at(-1) ?? "{}");
+  // The capture completed and the repository was described: descriptors were
+  // released as the walk descended rather than one per level.
+  expect(payload.ok).toBe(true);
+  expect(payload.complete).toBe(true);
+  expect(payload.sources).toHaveLength(1);
+  expect(payload.sources[0].skipped).toBeUndefined();
+  expect(payload.sources[0].incomplete).toBeUndefined();
+  const staged = readFileSync(join(ws.staging, "bounded-fds"), "utf8");
+  expect(staged).toContain("git-status exit=0");
+});
+
+test("a descriptor the helper cannot get is reported incomplete, never skipped", async () => {
+  const repo = join(ws.root, "repo");
+  mkdirSync(repo, { recursive: true, mode: 0o700 });
+  const run = (args: string[]) =>
+    Bun.spawnSync(["git", ...args], {
+      cwd: repo,
+      stdout: "ignore",
+      stderr: "ignore",
+    });
+  run(["init", "--quiet", "--initial-branch=main", "."]);
+  run(["config", "user.email", "probe@example.invalid"]);
+  run(["config", "user.name", "probe"]);
+  writeFileSync(join(repo, "tracked.txt"), "content\n");
+  run(["add", "-A"]);
+  run(["commit", "--quiet", "-m", "inside"]);
+  mkdirSync(ws.staging, { recursive: true, mode: 0o700 });
+  // A limit this low cannot be met while walking the metadata: that is a
+  // statement about this process, not about the repository, so it must not be
+  // recorded as a repository that is not applicable - and it must not be
+  // recorded as a complete report either. Fourteen is enough to walk a small
+  // repository, so this proves the difference rather than the limit.
+  const result = await runHelperUnderLimit({
+    staging: ws.staging,
+    limit: 12,
+    request: {
+      op: "capture",
+      root: ws.root,
+      staging: ws.staging,
+      name: "starved",
+      max_bytes: 65536,
+      timeout_ms: 20000,
+      sources: [
+        {
+          label: "git-status",
+          cwd: "repo",
+          git: true,
+          git_args: ["status", "--porcelain=v1", "-b"],
+        },
+      ],
+    },
+  });
+  const payload = JSON.parse(result.stdout.trim().split("\n").at(-1) ?? "{}");
+  expect(payload.ok).toBe(true);
+  expect(payload.complete).toBe(false);
+  expect(payload.sources_incomplete).toBeGreaterThan(0);
+  const source = payload.sources[0];
+  expect(source.skipped).toBeUndefined();
+  expect(source.incomplete).toBe("metadata-unreadable");
+  const staged = readFileSync(join(ws.staging, "starved"), "utf8");
+  expect(staged).toContain("incomplete=");
+  expect(staged).not.toContain("not-applicable=");
 });
