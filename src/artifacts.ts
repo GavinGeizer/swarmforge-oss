@@ -170,14 +170,22 @@ export class ArtifactService {
   private active = 0;
   private waiting: (() => void)[] = [];
 
+  /**
+   * `storage` is an injection point for a future object backend. The interface
+   * has always been the whole contract, and an object store should not have to be
+   * reached by editing this constructor: a caller that supplies one gets exactly
+   * the same behaviour, and the coordinator needs no change to use it.
+   */
   constructor(
     readonly config: Config,
     readonly store: Store,
     readonly provider: WorkerProvider,
+    storage?: ArtifactStorage,
   ) {
     this.limits = artifactLimits(config);
     this.root();
-    this.storage = new LocalArtifactStorage(artifactStorageDir(config));
+    this.storage =
+      storage ?? new LocalArtifactStorage(artifactStorageDir(config));
     this.repository = new ArtifactRepository(store.db);
     this.redactor = redactorFor({ config, store } as unknown as Coordinator);
     // A crash can leave a half-written temporary object; drop them once at

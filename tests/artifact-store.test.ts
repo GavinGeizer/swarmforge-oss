@@ -540,3 +540,73 @@ test("an object is durable before its record can claim it", async () => {
     sha256: sha(bytes),
   });
 });
+
+test("a planted symlink where the incoming directory belongs is refused", async () => {
+  // stat follows a link, so the previous check could only ever report what the
+  // link pointed at: the constructor chmod-ed it and every later write landed
+  // outside the storage root.
+  const root = join(base, "artifacts-other");
+  mkdirSync(root, { recursive: true, mode: 0o700 });
+  const outside = join(base, "outside");
+  mkdirSync(outside, { recursive: true });
+  symlinkSync(outside, join(root, ".incoming"));
+  expect(() => new LocalArtifactStorage(root)).toThrow(/must not be a symlink/);
+  // Nothing was created through it.
+  expect(readdirSync(outside)).toEqual([]);
+  // A link planted inside an existing incoming directory is refused too, rather
+  // than being swept, read or removed through.
+  const clean = join(base, "clean");
+  new LocalArtifactStorage(clean);
+  const victim = join(base, "victim.txt");
+  writeFileSync(victim, "not ours");
+  symlinkSync(victim, join(clean, ".incoming", "planted"));
+  expect(() => new LocalArtifactStorage(clean)).toThrow(
+    /must not contain a symlink/,
+  );
+  expect(readFileSync(victim, "utf8")).toBe("not ours");
+});
+
+test("a special file in the incoming directory is refused", () => {
+  const clean = join(base, "special");
+  new LocalArtifactStorage(clean);
+  Bun.spawnSync(["mkfifo", join(clean, ".incoming", "pipe")]);
+  expect(() => new LocalArtifactStorage(clean)).toThrow(/special file/);
+});
+
+test("a directory that cannot be made durable fails the put instead of hiding it", async () => {
+  // The bytes are verified and the destination directory is then synced. A real
+  // failure there must reach the caller, because the caller is about to record
+  // the artifact as stored; the durability step is the seam that proves it.
+  const bytes = new Uint8Array(512).fill(3);
+  const failing = new LocalArtifactStorage(join(base, "failing"), {
+    sync() {
+      throw Object.assign(new Error("I/O error"), { code: "EIO" });
+    },
+  });
+  await expect(
+    failing.put({
+      key: "w-1/never-published",
+      stream: stream(bytes),
+      size: bytes.length,
+      sha256: sha(bytes),
+    }),
+  ).rejects.toThrow(/could not be made durable \(EIO\)/);
+  // Nothing was published and the temporary copy is gone, so no caller can go on
+  // to record an artifact the medium never committed.
+  expect(failing.pathFor("w-1/never-published", true)).toBeNull();
+  expect(readdirSync(join(base, "failing", ".incoming"))).toEqual([]);
+  // An error that means the platform cannot sync a directory at all is the only
+  // tolerated one, and then the put completes normally.
+  const unsupported = new LocalArtifactStorage(join(base, "unsupported"), {
+    sync() {
+      throw Object.assign(new Error("not supported"), { code: "EINVAL" });
+    },
+  });
+  await unsupported.put({
+    key: "w-1/published",
+    stream: stream(bytes),
+    size: bytes.length,
+    sha256: sha(bytes),
+  });
+  expect((await unsupported.stat("w-1/published"))?.sha256).toBe(sha(bytes));
+});

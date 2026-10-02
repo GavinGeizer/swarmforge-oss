@@ -84,19 +84,77 @@ const streamChunk = 64 * 1024;
 export class LocalArtifactStorage implements ArtifactStorage {
   readonly root: string;
   readonly incomingDir: string;
-  constructor(root: string) {
+  /**
+   * How a directory is made durable. The default is an fsync of the directory
+   * itself; it is a constructor option only so a test can drive the failure this
+   * step exists to prevent, which is otherwise very hard to produce on demand.
+   */
+  private readonly sync: (path: string) => void;
+  constructor(root: string, options: { sync?: (path: string) => void } = {}) {
+    this.sync = options.sync ?? fsyncDirectory;
     if (typeof root !== "string" || !root.startsWith("/") || root === "/")
       throw new Error("Artifact storage root must be an absolute path");
     // Resolving the root once pins a symlinked configuration path, so later
     // components are always resolved against a real private directory.
     mkdirSync(root, { recursive: true, mode: directories });
     this.root = realpathSync(root);
+    requireRealDirectory(this.root, "Artifact storage root");
     this.incomingDir = join(this.root, ".incoming");
+    // The temporary directory is created only after the root itself has been
+    // checked, and it is checked with lstat rather than stat: stat follows a
+    // symlink, so a planted `.incoming` link would be reported as the directory
+    // it points at and then chmod-ed and written through to somewhere outside
+    // the storage root.
     mkdirSync(this.incomingDir, { recursive: true, mode: directories });
-    for (const directory of [this.root, this.incomingDir]) {
-      if (statSync(directory).isSymbolicLink())
-        throw new Error("Artifact storage root must not be a symlink");
-      chmodSync(directory, directories);
+    requireRealDirectory(this.incomingDir, "Artifact incoming directory");
+    // Anything already inside the temporary directory has to be a plain file we
+    // own: a link or a device planted there is never swept, read or removed.
+    this.assertIncomingIsSafe();
+    chmodSync(this.root, directories);
+    chmodSync(this.incomingDir, directories);
+  }
+  /** Refuses anything in `.incoming` that is not a regular file or a directory. */
+  private assertIncomingIsSafe() {
+    let entries: string[] = [];
+    try {
+      entries = readdirSync(this.incomingDir);
+    } catch {
+      return;
+    }
+    for (const entry of entries.slice(0, 4096)) {
+      const info = lstatSync(join(this.incomingDir, entry), {
+        throwIfNoEntry: false,
+      });
+      if (info && info.isSymbolicLink())
+        throw new Error(
+          "Artifact incoming directory must not contain a symlink",
+        );
+      if (info && !info.isFile() && !info.isDirectory())
+        throw new Error(
+          "Artifact incoming directory must not contain a special file",
+        );
+    }
+  }
+  /**
+   * Makes a directory durable, and refuses to pretend it did.
+   *
+   * A failure here is a real failure: the caller is about to record an artifact
+   * as stored, and swallowing an EIO would let that record claim a durability the
+   * medium does not have, so the put fails instead. Only an error that means the
+   * platform cannot fsync a directory at all is tolerated, and it is listed
+   * explicitly rather than caught with a blanket.
+   */
+  private syncDirectory(path: string) {
+    try {
+      this.sync(path);
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException)?.code;
+      if (code && directorySyncUnsupported.has(code)) return;
+      throw new Error(
+        `Artifact directory could not be made durable (${
+          code ?? "unknown error"
+        })`,
+      );
     }
   }
   /** Absolute path of a key, or null when the object is absent. */
@@ -222,11 +280,11 @@ export class LocalArtifactStorage implements ArtifactStorage {
       fsyncSync(handle);
       closeSync(handle);
       handle = undefined;
-      fsyncDirectory(dirname(final));
+      this.syncDirectory(dirname(final));
       // One directory tree, so the rename is the atomic step that publishes the
       // object: no reader ever sees a partial artifact under its final key.
       renameSync(temporary, final);
-      fsyncDirectory(dirname(final));
+      this.syncDirectory(dirname(final));
     } catch (error) {
       cleanup();
       throw error;
@@ -480,21 +538,38 @@ function objectStream(
   );
 }
 
+/**
+ * A real directory, checked with lstat.
+ *
+ * `statSync` follows a symlink, so it can only ever report what a link points at;
+ * the check that matters here has to be the one that refuses a link.
+ */
+function requireRealDirectory(path: string, what: string) {
+  const info = lstatSync(path, { throwIfNoEntry: false });
+  if (!info) throw new Error(`${what} does not exist`);
+  if (info.isSymbolicLink()) throw new Error(`${what} must not be a symlink`);
+  if (!info.isDirectory()) throw new Error(`${what} is not a directory`);
+}
+
+/** Errors that mean "this platform cannot fsync a directory", and nothing else. */
+const directorySyncUnsupported = new Set([
+  "EINVAL",
+  "ENOTSUP",
+  "EOPNOTSUPP",
+  "EPERM",
+  "EBADF",
+  "ENOSYS",
+]);
+
 /** Directory entries are durable only once the directory itself is synced. */
 function fsyncDirectory(path: string) {
-  let handle: number | undefined;
+  const handle = openSync(path, fsConstants.O_RDONLY);
   try {
-    handle = openSync(path, fsConstants.O_RDONLY);
     fsyncSync(handle);
-  } catch {
-    // A directory that cannot be synced is a platform limitation, not a reason
-    // to withhold bytes that are already verified and published.
   } finally {
-    if (handle !== undefined) {
-      try {
-        closeSync(handle);
-      } catch {}
-    }
+    try {
+      closeSync(handle);
+    } catch {}
   }
 }
 

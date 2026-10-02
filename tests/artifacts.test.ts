@@ -9,7 +9,12 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { gunzipSync } from "node:zlib";
+import {
+  type ArtifactStorage,
+  LocalArtifactStorage,
+} from "../src/artifact-store";
 import { artifactErrorCode, screeningWindow } from "../src/artifact-types";
+import { ArtifactService } from "../src/artifacts";
 import { WorkerFiles } from "../src/files";
 import { redactorFor } from "../src/security";
 import { type LocalHarness, localHarness } from "./local-artifact-provider";
@@ -1749,4 +1754,111 @@ test("an attempt interrupted by a restart leaves the previous copy current and r
       .list({ worker_id: worker })
       .artifacts.filter((record) => record.state === "preserved"),
   ).toHaveLength(1);
+});
+
+test("an injected storage backend is used instead of a local directory", async () => {
+  // The interface is the contract, so a backend that is not a local directory is
+  // a supported caller rather than a change this service would have to make.
+  const written: { key: string; size: number; sha256: string }[] = [];
+  const objects = new Map<string, Uint8Array>();
+  const foreign = {
+    async put(input: {
+      key: string;
+      stream: ReadableStream<Uint8Array>;
+      size: number;
+      sha256: string;
+    }) {
+      const reader = input.stream.getReader();
+      const chunks: Uint8Array[] = [];
+      let total = 0;
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (value) {
+          chunks.push(value);
+          total += value.length;
+        }
+      }
+      if (total !== input.size) throw new Error("backend size mismatch");
+      const bytes = new Uint8Array(total);
+      let at = 0;
+      for (const chunk of chunks) {
+        bytes.set(chunk, at);
+        at += chunk.length;
+      }
+      if (createHash("sha256").update(bytes).digest("hex") !== input.sha256)
+        throw new Error("backend hash mismatch");
+      objects.set(input.key, bytes);
+      written.push({ key: input.key, size: input.size, sha256: input.sha256 });
+    },
+    async open(key: string) {
+      const bytes = objects.get(key);
+      if (!bytes) throw new Error("not stored");
+      return new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(bytes);
+          controller.close();
+        },
+      });
+    },
+    async read(key: string, offset: number, length: number) {
+      const bytes = objects.get(key);
+      if (!bytes) throw new Error("not stored");
+      return bytes.slice(offset, offset + length);
+    },
+    async stat(key: string) {
+      const bytes = objects.get(key);
+      if (!bytes) return null;
+      return {
+        size: bytes.length,
+        sha256: createHash("sha256").update(bytes).digest("hex"),
+      };
+    },
+    async remove(key: string) {
+      objects.delete(key);
+    },
+    async sweepStale() {
+      return 0;
+    },
+  } satisfies ArtifactStorage;
+  const harness = await localHarness();
+  try {
+    const created = harness.spawn();
+    await harness.provider.createWorker(created);
+    writeFileSync(
+      join(harness.workspace.root, ".swarmforge", "remote.txt"),
+      "stored elsewhere\n",
+    );
+    // The service is built exactly as the coordinator builds it, with the backend
+    // supplied; nothing else changes and no local artifact directory is touched.
+    const service = new ArtifactService(
+      harness.config,
+      harness.store,
+      harness.provider,
+      foreign,
+    );
+    const record = await service.preserve(
+      created.worker_id,
+      ".swarmforge/remote.txt",
+    );
+    expect(record.state).toBe("preserved");
+    expect(written).toHaveLength(1);
+    expect(written[0]!.size).toBe("stored elsewhere\n".length);
+    expect(
+      Buffer.from(
+        await service.read(record.artifact_id, 0, record.size),
+      ).toString(),
+    ).toBe("stored elsewhere\n");
+    expect(
+      Buffer.from(
+        await collect(await service.download(record.artifact_id)),
+      ).toString(),
+    ).toBe("stored elsewhere\n");
+    // The coordinator's own service still uses local storage: the injection is
+    // per service, not global.
+    expect(harness.artifacts.storage).toBeInstanceOf(LocalArtifactStorage);
+    expect(storedFilesOf(harness.storageDir)).toEqual([]);
+  } finally {
+    await harness.cleanup();
+  }
 });
