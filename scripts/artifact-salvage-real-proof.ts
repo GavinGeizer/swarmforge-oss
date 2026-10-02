@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+
 // Real coordinator-host proof runner for durable artifact retrieval and worker salvage.
 //
 // This is the only file this worker owns. It changes no production code and no
@@ -8,8 +9,8 @@
 //
 //   1. OpenCode is stopped through the provider, so nothing depends on the
 //      worker's cooperation.
-//   2. A non-sensitive fixture is written into the retained VM through the
-//      Freestyle native SDK filesystem transport (raw bytes, never exec output,
+//   2. A non-sensitive findings document is written into the retained VM through
+//      the Freestyle native SDK filesystem transport (raw bytes, never exec output,
 //      never base64, never printed).
 //   3. A malformed handoff is simulated as a CodingAgent completion. No LLM is
 //      called; the agent double returns an idle session carrying a completed but
@@ -18,21 +19,24 @@
 //      and the coordinator's own tick/finalize performs the capture.
 //   5. The preserved SHA-256 is verified against the bytes the runner generated,
 //      and the bytes are re-read through the raw private path.
-//   6. ONLY with --destroy-proven-fixture, and only for the fixed known VM, the
+//   6. The existing Git durability gate runs against the real workspace, and the
+//      original owner's handoff provenance is read from a read-only snapshot.
+//   7. ONLY with --destroy-proven-fixture, --execute AND a provenance snapshot, the
 //      coordinator's normal (non-force) destroy control runs. That path enforces
 //      the existing Git durability checks, so a dirty or unpushed primary source
 //      refuses and the VM is retained.
-//   7. After the VM is actually deleted, the record and its bytes are re-read and
+//   8. After the VM is actually deleted, the record and its bytes are re-read and
 //      re-verified from private storage.
-//   8. The report carries metadata checks only: sizes, digests, states, flags.
+//   9. The report carries metadata checks only: sizes, digests, states, flags.
 //
 // SAFETY
 //
-//   - The only addressable VM is the task-retained research VM below. Any other
-//     --vm/--worker value is refused. There is no arbitrary target and no force
-//     delete anywhere in this file.
-//   - Destruction needs BOTH --execute and --destroy-proven-fixture, and it always
-//     goes through the coordinator's normal (non-forced) destroy control.
+//   - The only addressable VM is the constant above, the existing DATA-plane owner
+//     fixture. There is no --vm and no --worker at all, so no argument can
+//     retarget this runner, and there is no force delete anywhere in this file.
+//   - Destruction needs --execute AND --destroy-proven-fixture AND a read-only
+//     provenance snapshot, and it always goes through the coordinator's normal
+//     (non-forced) destroy control.
 //   - Every failure path records the retained state and exits non-zero. Nothing
 //     here destroys anything it has not proven.
 //   - Host credentials are never printed. Errors are passed through the project's
@@ -45,6 +49,18 @@
 //     existing report is preserved to an immutable backup that this run never
 //     rewrites, and this run's own report is a separate file, so no run can
 //     destroy another's evidence.
+//
+// GIT DURABILITY PROVENANCE
+//
+//   Ownership of the guest stays with its original worker. This runner never
+//   claims authorship, never fabricates a verified result and never bypasses an
+//   existing Git guard. `branchFor` derives a branch from team/task/worker, so a
+//   private record minted with a fresh worker id would name a branch that does not
+//   exist on the guest. Instead the real identity and the real handoff are read
+//   from a read-only snapshot the lead captured, and the branch computed from that
+//   identity is cross-checked against the branch the real result reported; a
+//   mismatch refuses the run. `inspectPersistence` is branch-agnostic by design and
+//   checks the real workspace either way.
 //
 // USAGE
 //
@@ -66,6 +82,7 @@
 // thing two runs share is the target VM, and a run that finds the VM already gone
 // refuses rather than inventing a new one.
 
+import { Database } from "bun:sqlite";
 import { createHash, randomUUID } from "node:crypto";
 import {
   appendFileSync,
@@ -87,17 +104,24 @@ import type {
   VmInfo,
   Worker,
 } from "../src/domain";
+import { branchFor } from "../src/git-handoff";
 import { FreestyleProvider } from "../src/providers/freestyle";
 import { inspectPersistence } from "../src/safety";
 import { redactorFor } from "../src/security";
 import { Store } from "../src/store";
 
-// The single VM this runner may address. It is the research VM retained for this
-// task, still owned by the previous worker. Nothing else is addressable.
-const PROOF_VM = "vm-f5291240e51a4432a1556387bb9ab20b";
-const PROOF_WORKER = "w-0aa35639-10b7-400e-bc07-e273b6d95e5b";
-const FIXTURE_PATH = ".swarmforge/artifacts/e2e-findings.json";
-const LARGE_FIXTURE_PATH = ".swarmforge/artifacts/e2e-large.bin";
+// The single VM this runner may address, and the worker that owns it.
+//
+// The earlier retained research VM (vm-f5291240e51a4432a1556387bb9ab20b) and the
+// older validation VM have both been destroyed externally, so neither can be
+// targeted any more. The target is now the existing DATA-plane owner fixture, whose
+// owner must have finished all of its code, source and reports durably before the
+// lead executes this runner against it.
+const PROOF_VM = "vm-debbc6d8e4cf4705ba96574c8f1ac519";
+const PROOF_WORKER = "w-c6875611-3237-4c55-aa4b-8e5c047e6efb";
+/** The workspace-relative findings document this task is expected to produce. */
+const FIXTURE_PATH = ".swarmforge/artifacts/findings.json";
+const LARGE_FIXTURE_PATH = ".swarmforge/artifacts/findings-large.bin";
 const LARGE_MIB = 32;
 /** Comfortably larger than any MCP inline read, which is bounded at 32 KiB. */
 const LARGE_BYTES = LARGE_MIB * 1024 * 1024;
@@ -107,8 +131,8 @@ interface Options {
   evidenceDir?: string;
   destroy: boolean;
   large: boolean;
-  vm: string;
-  worker: string;
+  /** Read-only, already-captured snapshot of the live database, or absent. */
+  provenanceDb?: string;
 }
 class ProofFailure extends Error {
   constructor(
@@ -124,8 +148,6 @@ const defaultOptions = (): Options => ({
   execute: false,
   destroy: false,
   large: false,
-  vm: PROOF_VM,
-  worker: PROOF_WORKER,
 });
 function parse(argv: string[]): Options {
   const out = defaultOptions();
@@ -141,8 +163,9 @@ function parse(argv: string[]): Options {
     else if (flag === "--destroy-proven-fixture") out.destroy = true;
     else if (flag === "--with-large-binary") out.large = true;
     else if (flag === "--evidence-dir") out.evidenceDir = value(i++, flag);
-    else if (flag === "--vm") out.vm = value(i++, flag);
-    else if (flag === "--worker") out.worker = value(i++, flag);
+    else if (flag === "--provenance-db") out.provenanceDb = value(i++, flag);
+    // There is deliberately no --vm and no --worker: the target is a constant, not
+    // an option, so no argument can retarget this runner at any other guest.
     else if (flag === "--help" || flag === "-h") usage();
     else throw new ProofFailure(`unknown argument: ${flag}`);
   }
@@ -153,10 +176,11 @@ function usage() {
     [
       "usage: bun scripts/artifact-salvage-real-proof.ts",
       "       bun scripts/artifact-salvage-real-proof.ts --execute --evidence-dir <dir> [--with-large-binary]",
-      "       bun scripts/artifact-salvage-real-proof.ts --execute --evidence-dir <dir> --destroy-proven-fixture",
+      "       bun scripts/artifact-salvage-real-proof.ts --execute --evidence-dir <dir> --provenance-db <snapshot.sqlite> [--destroy-proven-fixture]",
       "",
       "Plan mode is the default and touches no credential and no guest.",
-      `Only VM ${PROOF_VM} is addressable. Destruction is never forced.`,
+      `VM ${PROOF_VM} is a constant; there is no --vm and no --worker.`,
+      "Destruction is never forced.",
     ].join("\n"),
   );
   process.exit(0);
@@ -323,15 +347,129 @@ export async function digestStream(
   return { bytes, sha256: hash.digest("hex") };
 }
 
+/**
+ * The Git durability provenance this run will rely on, read from a read-only
+ * snapshot of the live database that the lead captured beforehand.
+ */
+export interface Provenance {
+  /** team_id / task_id / worker_id exactly as the original owner recorded them. */
+  team_id: string;
+  task_id: string;
+  worker_id: string;
+  /** The branch `branchFor` computes from that identity. */
+  branch: string;
+  /** The branch the real run reports, as recorded in the real result. */
+  reported_branch: string | null;
+  /** The real result's git block, or null when the snapshot has no result. */
+  git: Record<string, unknown> | null;
+  /** run_id of the real worker's newest dispatch, when the snapshot has one. */
+  latest_run_id: string | null;
+  latest_state: string | null;
+  latest_persisted: boolean;
+  /** The vm_id the snapshot records for that worker. */
+  vm_id: string | null;
+}
+
+/**
+ * Read the ORIGINAL owner's Git durability provenance from an already-captured
+ * snapshot, read-only.
+ *
+ * Nothing here writes to, migrates or checkpoints the snapshot: it is opened
+ * `readonly: true`, so the live database is neither read under a mutating
+ * connection nor modified. Every value is copied verbatim from the snapshot; this
+ * function never invents, defaults or upgrades a value. In particular
+ * `git.persisted` is reported exactly as stored: if the original owner's handoff
+ * was never verified, `latest_persisted` is false and the destroy phase must
+ * refuse rather than proceed.
+ *
+ * The identity matters because `branchFor` derives the branch from
+ * team/task/worker. A private record minted with a fresh worker id would compute a
+ * branch that does not exist on the guest, so `pushBranch`'s
+ * `git branch --show-current = branchFor(w)` assertion could not be about the
+ * branch the real work actually published. Reading the real identity keeps the
+ * destroy path pointed at the actual published branch.
+ */
+export function readProvenance(
+  snapshotPath: string,
+  expectedWorker: string,
+  expectedVm: string,
+): Provenance {
+  if (!existsSync(snapshotPath))
+    throw new ProofFailure(`provenance snapshot not found: ${snapshotPath}`);
+  let db: Database;
+  try {
+    db = new Database(snapshotPath, { readonly: true });
+  } catch (error) {
+    throw new ProofFailure(
+      `cannot open the provenance snapshot read-only: ${identityError(error)}`,
+    );
+  }
+  try {
+    const row = db
+      .query("SELECT body FROM workers WHERE worker_id=?")
+      .get(expectedWorker) as { body: string } | null;
+    if (!row)
+      throw new ProofFailure(
+        `the snapshot has no record for ${expectedWorker}; refusing to invent one`,
+      );
+    const worker = JSON.parse(row.body) as Worker;
+    if (worker.vm_id !== expectedVm)
+      throw new ProofFailure(
+        `snapshot records ${worker.worker_id} on ${String(worker.vm_id)}, not ${expectedVm}`,
+      );
+    // A WorkerResult is not its own table: it rides on the dispatch row. Read the
+    // dispatches newest-first, exactly as `Store.result` does, so the value here is
+    // the same one the production handoff gate would see.
+    const dispatchRows = db
+      .query(
+        "SELECT body FROM dispatches WHERE worker_id=? ORDER BY rowid DESC",
+      )
+      .all(expectedWorker) as { body: string }[];
+    const parsed = dispatchRows
+      .map((r) => JSON.parse(r.body) as Dispatch)
+      .find((d) => d.result !== null);
+    const latest = dispatchRows[0]
+      ? (JSON.parse(dispatchRows[0].body) as Dispatch)
+      : null;
+    const result = parsed?.result ?? null;
+    const provenance: Provenance = {
+      team_id: worker.team_id,
+      task_id: worker.task_id,
+      worker_id: worker.worker_id,
+      branch: branchFor(worker),
+      reported_branch:
+        typeof result?.git?.branch === "string" ? result.git.branch : null,
+      git: (result?.git as Record<string, unknown> | undefined) ?? null,
+      latest_run_id: latest?.run_id ?? null,
+      latest_state: latest?.state ?? null,
+      latest_persisted: result?.git?.persisted === true,
+      vm_id: worker.vm_id,
+    };
+    // Truthfulness cross-check. The branch this run would act on must be the
+    // branch the real run actually reported, or the durability proof would be
+    // about some other branch and is refused instead of being run.
+    if (
+      provenance.reported_branch !== null &&
+      provenance.reported_branch !== provenance.branch
+    )
+      throw new ProofFailure(
+        `provenance branch mismatch: identity computes ${provenance.branch} but the real result reports ${provenance.reported_branch}`,
+      );
+    return provenance;
+  } finally {
+    db.close();
+  }
+}
+/** Errors about record identity carry no host data, so they need no redaction. */
+const identityError = (value: unknown) =>
+  (value instanceof Error ? value.message : String(value)).slice(0, 200);
 async function main(opts: Options) {
-  if (opts.vm !== PROOF_VM)
-    throw new ProofFailure(
-      `refusing to address ${opts.vm}: this runner may only target ${PROOF_VM}`,
-    );
-  if (opts.worker !== PROOF_WORKER)
-    throw new ProofFailure(
-      `refusing worker ${opts.worker}: this runner may only adopt ${PROOF_WORKER}`,
-    );
+  // There is no --vm and no --worker, so the target cannot be chosen by a caller.
+  // These asserts only guard against a future edit that reintroduces a target.
+  if (PROOF_VM !== "vm-debbc6d8e4cf4705ba96574c8f1ac519")
+    throw new ProofFailure(`unexpected proof VM constant ${PROOF_VM}`);
+  if (PROOF_WORKER !== "w-c6875611-3237-4c55-aa4b-8e5c047e6efb")
+    throw new ProofFailure(`unexpected proof worker constant ${PROOF_WORKER}`);
   if (opts.destroy && !opts.execute)
     throw new ProofFailure("--destroy-proven-fixture requires --execute");
   if (!opts.execute) {
@@ -350,9 +488,14 @@ async function main(opts: Options) {
             "coordinator.tick() then coordinator.finalize()",
             "verify the preserved SHA-256 and re-read the raw private bytes",
             "gate on the existing Git durability check; refuse and retain on failure",
-            "normal (never forced) destroy only with --destroy-proven-fixture",
+            "read the original owner's handoff from a read-only provenance snapshot",
+            "normal (never forced) destroy only with --destroy-proven-fixture and a snapshot",
             "re-read and re-verify the bytes after the VM is actually deleted",
           ],
+          target_is_constant: "there is no --vm and no --worker",
+          new_guest: "none; the retained VM is adopted, never provisioned",
+          provenance:
+            "read-only snapshot only; no live database is opened or written",
           large_binary: `${LARGE_MIB} MiB streamed upload with --with-large-binary`,
         },
         null,
@@ -378,8 +521,8 @@ async function main(opts: Options) {
   const keptReport = preserveExisting(report, runStamp);
   const evidence = new Evidence(join(evidenceDir, "real-proof.jsonl"));
   evidence.event("run_started", {
-    vm: opts.vm,
-    worker: opts.worker,
+    vm: PROOF_VM,
+    worker: PROOF_WORKER,
     destroy_proven_fixture: opts.destroy,
     large_binary: opts.large,
     run_stamp: runStamp,
@@ -397,12 +540,23 @@ async function main(opts: Options) {
     runStamp,
   );
   const config = loadConfig({
+    // `loadConfig`'s env argument defaults to `process.env` ONLY when it is omitted
+    // entirely. Passing a partial object therefore does not fall back to the host
+    // environment, it just fails validation, because FREESTYLE_API_TOKEN,
+    // FREESTYLE_SNAPSHOT_ID, SWARMFORGE_MODEL_API_KEY and SWARMFORGE_MODEL_NAME are
+    // mandatory with no default. So the whole host environment is spread in first
+    // and the two private paths are FORCED over it afterwards.
+    ...process.env,
     SWARMFORGE_DB_PATH: dbPath,
     SWARMFORGE_ARTIFACT_DIR: artifactDir,
   });
   if (config.SWARMFORGE_DB_PATH !== dbPath)
     throw new ProofFailure(
       `private database path was not honoured: ${config.SWARMFORGE_DB_PATH}`,
+    );
+  if (config.SWARMFORGE_ARTIFACT_DIR !== artifactDir)
+    throw new ProofFailure(
+      `private artifact directory was not honoured: ${config.SWARMFORGE_ARTIFACT_DIR}`,
     );
   privateDir(artifactDir);
   const provider = new FreestyleProvider(config);
@@ -412,24 +566,24 @@ async function main(opts: Options) {
   const redact = (text: string) => redactorFor(coordinator).text(text);
   const finished: Record<string, unknown> = {
     mode: "real",
-    vm: opts.vm,
-    worker: opts.worker,
+    vm: PROOF_VM,
+    worker: PROOF_WORKER,
     run_stamp: runStamp,
     report: basename(runReport),
     preserved_previous_report: keptReport ? basename(keptReport) : null,
   };
 
   try {
-    const vm: VmInfo | null = await provider.getWorker(opts.vm);
-    if (!vm) throw new ProofFailure(`VM ${opts.vm} is not reachable`);
-    if (vm.id !== opts.vm)
+    const vm: VmInfo | null = await provider.getWorker(PROOF_VM);
+    if (!vm) throw new ProofFailure(`VM ${PROOF_VM} is not reachable`);
+    if (vm.id !== PROOF_VM)
       throw new ProofFailure(`provider answered a different VM (${vm.id})`);
     evidence.event("vm_reachable", { vm_state: vm.state });
 
     // 1. OpenCode is stopped through the provider, using the coordinator's own
     //    command, and its absence is confirmed rather than assumed.
     const stop = await provider.exec(
-      opts.vm,
+      PROOF_VM,
       "systemctl stop swarmforge-opencode.service && ! systemctl is-active --quiet swarmforge-opencode.service",
     );
     evidence.event("opencode_stopped", { exit_code: stop.code });
@@ -458,7 +612,7 @@ async function main(opts: Options) {
     const findingsDigest = digest(findings);
     const fixtureAbsolute = join(config.SWARMFORGE_WORKSPACE, FIXTURE_PATH);
     await provider.client.vms
-      .ref(opts.vm)
+      .ref(PROOF_VM)
       .fs.writeFile(fixtureAbsolute, findings, { mode: 0o600 });
     evidence.event("fixture_written", {
       path: FIXTURE_PATH,
@@ -482,7 +636,7 @@ async function main(opts: Options) {
       await writer.end();
       largeDigest = hash.digest("hex");
       await provider.client.vms
-        .ref(opts.vm)
+        .ref(PROOF_VM)
         .fs.writeFile(
           join(config.SWARMFORGE_WORKSPACE, LARGE_FIXTURE_PATH),
           await openAsBlob(staging),
@@ -512,13 +666,13 @@ async function main(opts: Options) {
     // straight to ready, so no new guest is ever created.
     store.patch(spawned.worker_id, {
       state: "ready",
-      vm_id: opts.vm,
-      opencode_session_id: `ses-${opts.worker}`,
+      vm_id: PROOF_VM,
+      opencode_session_id: `ses-${PROOF_WORKER}`,
       started_at: Date.now(),
     });
     evidence.event("worker_adopted_vm", {
       worker_id: spawned.worker_id,
-      vm_id: opts.vm,
+      vm_id: PROOF_VM,
       required_artifact: FIXTURE_PATH,
     });
 
@@ -597,6 +751,12 @@ async function main(opts: Options) {
 
     // 6. The existing Git durability gate, checked before anything is destroyed.
     //    A dirty or unpushed primary source refuses here and the VM is retained.
+    //
+    //    `inspectPersistence` is branch-agnostic on purpose: it walks every
+    //    repository under the roots and requires a clean tree plus every local
+    //    branch tip reachable from a remote ref. It therefore checks the REAL
+    //    workspace no matter which record is passed, which is why passing this
+    //    run's private adopted worker does not weaken it.
     const safety = await inspectPersistence(
       provider,
       config,
@@ -610,8 +770,55 @@ async function main(opts: Options) {
     if (!safety.safe)
       throw new ProofFailure(
         `source durability gate refused: ${bounded(redact, safety.reason)}`,
-        { retained_vm: opts.vm, state: settled.state },
+        { retained_vm: PROOF_VM, state: settled.state },
       );
+
+    // 6b. Provenance. Destroying a guest is a real act, so it may only proceed
+    //     against a handoff that was REALLY verified. The snapshot is read-only
+    //     and only ever supplies values it already holds; if the original owner's
+    //     newest dispatch is not a completed run carrying git.persisted === true,
+    //     this refuses. Nothing here fabricates a verified result, and the
+    //     production handoff gate inside the coordinator still runs unchanged on
+    //     top of this.
+    if (opts.provenanceDb) {
+      const provenance = readProvenance(
+        opts.provenanceDb,
+        PROOF_WORKER,
+        PROOF_VM,
+      );
+      evidence.event("provenance_read", {
+        source: "read-only snapshot",
+        worker_id: provenance.worker_id,
+        team_id: provenance.team_id,
+        task_id: provenance.task_id,
+        branch: provenance.branch,
+        reported_branch: provenance.reported_branch,
+        latest_run_id: provenance.latest_run_id,
+        latest_state: provenance.latest_state,
+        latest_persisted: provenance.latest_persisted,
+      });
+      finished.provenance = {
+        worker_id: provenance.worker_id,
+        branch: provenance.branch,
+        reported_branch: provenance.reported_branch,
+        latest_state: provenance.latest_state,
+        latest_persisted: provenance.latest_persisted,
+      };
+      if (!opts.destroy) return;
+      if (
+        provenance.latest_state !== "completed" ||
+        !provenance.latest_persisted
+      )
+        throw new ProofFailure(
+          `refusing to destroy: ${PROOF_WORKER}'s newest dispatch is ${String(provenance.latest_state)} with git.persisted=${provenance.latest_persisted}, so no verified handoff exists`,
+          { retained_vm: PROOF_VM, state: settled.state },
+        );
+    } else if (opts.destroy) {
+      throw new ProofFailure(
+        "--destroy-proven-fixture requires --provenance-db <read-only snapshot>, so the handoff is checked against the original owner's real record",
+        { retained_vm: PROOF_VM, state: settled.state },
+      );
+    }
 
     if (!opts.destroy) {
       finished.result = "proven";
@@ -629,14 +836,14 @@ async function main(opts: Options) {
     if (destroyed.state !== "destroyed")
       throw new ProofFailure(
         `destruction refused (state ${destroyed.state}): ${bounded(redact, destroyed.error ?? "")}`,
-        { retained_vm: opts.vm, state: destroyed.state },
+        { retained_vm: PROOF_VM, state: destroyed.state },
       );
-    const gone = await provider.getWorker(opts.vm);
+    const gone = await provider.getWorker(PROOF_VM);
     evidence.event("vm_deleted", { provider_still_reports_vm: Boolean(gone) });
     if (gone)
       throw new ProofFailure(
         "the VM is still reported after destruction; the proof is incomplete",
-        { retained_vm: opts.vm },
+        { retained_vm: PROOF_VM },
       );
 
     // 8. The record and its bytes outlive the VM. Re-read and re-verify after the
@@ -687,8 +894,8 @@ async function main(opts: Options) {
   } catch (error) {
     // A failure records the retained state. Nothing here deletes anything.
     const retained = {
-      vm_id: opts.vm,
-      worker_id: opts.worker,
+      vm_id: PROOF_VM,
+      worker_id: PROOF_WORKER,
       state: "retained",
       ...(error instanceof ProofFailure ? (error.retained ?? {}) : {}),
     };

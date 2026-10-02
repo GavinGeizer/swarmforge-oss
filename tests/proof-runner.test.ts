@@ -21,8 +21,11 @@ import {
   preserveExisting,
   privateDir,
   privateRunPaths,
+  readProvenance,
   writeRunReports,
 } from "../scripts/artifact-salvage-real-proof";
+import { loadConfig } from "../src/config";
+import { Database } from "bun:sqlite";
 import { duplicateFindings } from "../scripts/artifact-salvage-scale";
 
 let root = "";
@@ -193,6 +196,60 @@ describe("MEDIUM: the private database never inherits the live one", () => {
     }
   });
 
+  test("a partial loadConfig env fails, so the host environment must be spread in", () => {
+    // loadConfig's env argument defaults to process.env ONLY when it is omitted.
+    // A partial object therefore does not fall back to the host: it fails
+    // validation, because these have no default.
+    expect(() =>
+      loadConfig({
+        SWARMFORGE_DB_PATH: join(root, "proof.sqlite"),
+        SWARMFORGE_ARTIFACT_DIR: join(root, "artifacts"),
+      }),
+    ).toThrow();
+    // Spreading the real environment over the forced private paths loads cleanly
+    // and still resolves the private database, never a host-configured one.
+    // These mandatory values are inert placeholders for validation only; this test
+    // holds no credential and opens no connection.
+    const loaded = loadConfig({
+      ...process.env,
+      FREESTYLE_API_TOKEN: "test-placeholder",
+      FREESTYLE_SNAPSHOT_ID: "test-placeholder",
+      SWARMFORGE_MODEL_BASE_URL: "http://127.0.0.1:0",
+      SWARMFORGE_MODEL_NAME: "test-placeholder",
+      SWARMFORGE_MODEL_API_KEY: "test-placeholder",
+      SWARMFORGE_DB_PATH: join(root, "proof.sqlite"),
+      SWARMFORGE_ARTIFACT_DIR: join(root, "artifacts"),
+    });
+    expect(loaded.SWARMFORGE_DB_PATH).toBe(join(root, "proof.sqlite"));
+    expect(loaded.SWARMFORGE_ARTIFACT_DIR).toBe(join(root, "artifacts"));
+  });
+
+  test("forcing the private path overrides a host that pre-sets a live one", () => {
+    // The order matters: the forced keys come last, so a host whose environment
+    // already points at the live database cannot redirect this runner.
+    const privatePaths = privateRunPaths(root, "stamp-1");
+    const host = {
+      ...process.env,
+      FREESTYLE_API_TOKEN: "test-placeholder",
+      FREESTYLE_SNAPSHOT_ID: "test-placeholder",
+      SWARMFORGE_MODEL_BASE_URL: "http://127.0.0.1:0",
+      SWARMFORGE_MODEL_NAME: "test-placeholder",
+      SWARMFORGE_MODEL_API_KEY: "test-placeholder",
+      // A host that already points at the live database and artifacts.
+      SWARMFORGE_DB_PATH: "/var/lib/swarmforge/live.sqlite",
+      SWARMFORGE_ARTIFACT_DIR: "/var/lib/swarmforge/live-artifacts",
+    };
+    // This is the shape the runner uses: the host environment first, then the
+    // private paths forced over it.
+    const loaded = loadConfig({
+      ...host,
+      SWARMFORGE_DB_PATH: privatePaths.dbPath,
+      SWARMFORGE_ARTIFACT_DIR: privatePaths.artifactDir,
+    });
+    expect(loaded.SWARMFORGE_DB_PATH).toBe(join(root, "proof-stamp-1.sqlite"));
+    expect(loaded.SWARMFORGE_ARTIFACT_DIR).toBe(join(root, "artifacts-stamp-1"));
+  });
+
   test("two runs never share a private database file", () => {
     const first = privateRunPaths(root, "stamp-1");
     const second = privateRunPaths(root, "stamp-2");
@@ -260,5 +317,134 @@ describe("MEDIUM: duplicated artifacts fail the scale probe", () => {
     const found = duplicateFindings(records);
     expect(found.paths).toBe(12);
     expect(found.records).toBe(24);
+  });
+});
+
+describe("Git durability provenance is truthful, never fabricated", () => {
+  const VM = "vm-debbc6d8e4cf4705ba96574c8f1ac519";
+  const WORKER = "w-c6875611-3237-4c55-aa4b-8e5c047e6efb";
+  const TEAM = "artifact-salvage-20261001";
+  const TASK = "harden-data-plane";
+  const BRANCH = `swarmforge/${TEAM}/${TASK}/${WORKER}`;
+
+  /** A read-only snapshot shaped exactly like the live store's own schema. */
+  function snapshot(overrides?: {
+    vmId?: string | null;
+    result?: Record<string, unknown> | null;
+    dispatchState?: string;
+  }) {
+    const path = join(root, "provenance.sqlite");
+    const db = new Database(path, { create: true });
+    // One statement per exec: `exec(sql, ...params)` binds extra arguments, so
+    // passing two statements to one call would bind the second as a parameter.
+    db.exec(
+      "CREATE TABLE workers(worker_id TEXT PRIMARY KEY,team_id TEXT NOT NULL,task_id TEXT NOT NULL,state TEXT NOT NULL,request_id TEXT,body TEXT NOT NULL,UNIQUE(team_id,request_id));",
+    );
+    db.exec(
+      "CREATE TABLE dispatches(run_id TEXT PRIMARY KEY,worker_id TEXT NOT NULL,message_id TEXT NOT NULL UNIQUE,state TEXT NOT NULL,body TEXT NOT NULL);",
+    );
+    db.query("INSERT INTO workers VALUES (?,?,?,?,?,?)").run(
+      WORKER,
+      TEAM,
+      TASK,
+      "failed",
+      null,
+      JSON.stringify({
+        worker_id: WORKER,
+        team_id: TEAM,
+        task_id: TASK,
+        state: "failed",
+        vm_id: overrides?.vmId === undefined ? VM : overrides.vmId,
+      }),
+    );
+    if (overrides?.result !== null)
+      db.query("INSERT INTO dispatches VALUES (?,?,?,?,?)").run(
+        "run-1",
+        WORKER,
+        "msg-1",
+        overrides?.dispatchState ?? "completed",
+        JSON.stringify({
+          run_id: "run-1",
+          worker_id: WORKER,
+          message_id: "msg-1",
+          message: "",
+          state: overrides?.dispatchState ?? "completed",
+          created_at: 1,
+          sent_at: 1,
+          result: overrides?.result ?? {
+            status: "completed",
+            summary: "real work",
+            git: { persisted: true, branch: BRANCH, workspace: "/workspace" },
+          },
+        }),
+      );
+    db.close();
+    return path;
+  }
+
+  test("a verified handoff yields the identity and the real published branch", () => {
+    const p = readProvenance(snapshot(), WORKER, VM);
+    expect(p.team_id).toBe(TEAM);
+    expect(p.task_id).toBe(TASK);
+    expect(p.worker_id).toBe(WORKER);
+    // The branch comes from the ORIGINAL owner's identity, not a fresh worker id.
+    expect(p.branch).toBe(BRANCH);
+    expect(p.reported_branch).toBe(BRANCH);
+    expect(p.latest_state).toBe("completed");
+    expect(p.latest_persisted).toBe(true);
+  });
+
+  test("an unverified handoff is reported unverified, never upgraded", () => {
+    const p = readProvenance(
+      snapshot({
+        result: { status: "completed", summary: "x", git: { persisted: false, branch: BRANCH } },
+      }),
+      WORKER,
+      VM,
+    );
+    expect(p.latest_persisted).toBe(false);
+  });
+
+  test("no result at all is reported as no verified handoff", () => {
+    const p = readProvenance(snapshot({ result: null }), WORKER, VM);
+    expect(p.latest_persisted).toBe(false);
+    expect(p.latest_run_id).toBeNull();
+    expect(p.reported_branch).toBeNull();
+  });
+
+  test("a VM mismatch refuses instead of adopting a different guest", () => {
+    expect(() =>
+      readProvenance(snapshot({ vmId: "vm-someone-else" }), WORKER, VM),
+    ).toThrow(/not vm-debbc6d8e4cf4705ba96574c8f1ac519/);
+  });
+
+  test("an unknown worker refuses rather than inventing a record", () => {
+    expect(() =>
+      readProvenance(snapshot(), "w-not-in-the-snapshot", VM),
+    ).toThrow(/refusing to invent one/);
+  });
+
+  test("a branch the real result does not report refuses the run", () => {
+    // The identity computes BRANCH but the real result claims a different branch;
+    // acting on that would be a durability proof about the wrong branch.
+    expect(() =>
+      readProvenance(
+        snapshot({
+          result: {
+            status: "completed",
+            summary: "x",
+            git: { persisted: true, branch: "swarmforge/some/other/branch" },
+          },
+        }),
+        WORKER,
+        VM,
+      ),
+    ).toThrow(/provenance branch mismatch/);
+  });
+
+  test("a missing snapshot is refused", () => {
+    expect(() =>
+      readProvenance(join(root, "absent.sqlite"), WORKER, VM),
+    ).toThrow(/not found/);
   });
 });
