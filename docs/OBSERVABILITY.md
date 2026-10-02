@@ -47,20 +47,20 @@ event types, and this is the contract the metric depends on:
 
 | Event type | Meaning | Label value |
 | --- | --- | --- |
-| `finalization.pending` | Preservation must still run for this worker | `pending` |
-| `finalization.collecting` | One attempt was claimed and persisted before any effect | `attempted` |
-| `finalization.attempt_failed` | One attempt failed and may be retried | `attempt_failed` |
+| `finalization.attempted` | One collection attempt was claimed and persisted before any effect | `attempted` |
 | `finalization.preserved` | Collection settled with its artifacts stored | `preserved` |
 | `finalization.failed` | Collection gave up | `failed` |
 | `finalization.abandoned` | Preservation was explicitly abandoned, normally by forced destruction | `abandoned` |
 
-`finalization.collecting` is the durable attempt count, and because a claim persists its attempt
-before doing anything, a worker whose process died mid-attempt still leaves exactly one event per
-attempt when the claim is recovered. Anything else under the `finalization.` prefix counts as
-`other`. Event payloads are never read, so a recorded error cannot become a label or a value. A
-database written before these events existed reports zero attempts, which is honest: the history
-was never persisted. The stage gauge `swarmforge_finalizations{state}` still comes from the live
-worker record, and is a gauge of current state rather than a sum of attempts.
+`finalization.attempted` is the durable attempt count. A claim persists it before doing anything,
+so a worker whose process died mid-attempt still leaves exactly one event per attempt when the
+claim is re-entered after a restart, and the counter always matches the persisted attempts field.
+Creating the preservation record announces nothing and a scheduled retry is not an outcome, so
+neither produces an event. Anything else under the `finalization.` prefix counts as `other`.
+Event payloads are never read, so a recorded error cannot become a label or a value. A database
+written before these events existed reports zero attempts, which is honest: the history was never
+persisted. The stage gauge `swarmforge_finalizations{state}` still comes from the live worker
+record, and is a gauge of current state rather than a sum of attempts.
 
 Counters are reconstructed from SQLite, so server restarts preserve observed totals. Usage is keyed by worker/message and updates monotonically to deduplicate polling. Detailed worker/team/task usage appears in MCP status tools. OpenCode reporting is the accounting source; provider billing may use different definitions. Data unavailable after a guest failure cannot be reconstructed from the model provider.
 

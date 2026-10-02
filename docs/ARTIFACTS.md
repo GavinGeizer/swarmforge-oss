@@ -47,10 +47,11 @@ error, in metadata, in events or in metrics.
 
 Every attempt and every settled collection also persists a durable event, because the record's
 `attempts` field describes one collection cycle and cannot carry history:
-`finalization.collecting` per claimed attempt, `finalization.attempt_failed` per failed attempt,
-and exactly one of `finalization.preserved`, `finalization.failed` or `finalization.abandoned`
-per settled collection. Those events are the source of the cumulative metrics in
-[OBSERVABILITY.md](OBSERVABILITY.md).
+`finalization.attempted` per claimed attempt, persisted before any effect so a restart re-entering
+an interrupted attempt still leaves exactly one, and exactly one of `finalization.preserved`,
+`finalization.failed` or `finalization.abandoned` per settled collection. Creating the record
+announces nothing and a scheduled retry is not an outcome. Those events are the source of the
+cumulative metrics in [OBSERVABILITY.md](OBSERVABILITY.md).
 
 No automatic VM deletion policy is added. Completion and failure still retain the VM, and
 destruction stays explicit. Normal destruction requires preservation to have settled
@@ -62,10 +63,12 @@ Automatic retries use a persisted attempt count and an exponential backoff
 (`SWARMFORGE_FINALIZATION_RETRY_MS` doubling per attempt). Once the attempts are exhausted
 the worker stays retained and the lead can drive collection again with
 `retry_worker_finalization`, or inspect the retained workspace with `list_worker_files` before
-deciding. A deliberate retry resets the attempt budget and is refused while a collection is
-already running, while a retry is still scheduled inside its backoff window, after an explicit
-abandonment, and after a collection already succeeded; forcing destruction records an
-abandonment instead. A collection that cannot settle blocks normal destruction, so the worker
+deciding. A deliberate retry supersedes any scheduled automatic one, resets the
+attempt budget and runs exactly one attempt, so it never blocks on a backoff. It is a no-op once
+a collection has succeeded (the records it produced are the answer and are not duplicated) and is
+refused for a destroyed worker, a worker with no preservation record, an explicitly abandoned
+record, an unavailable VM, and a collection that is already running. Forcing destruction records
+an abandonment instead. A collection that cannot settle blocks normal destruction, so the worker
 and its workspace are retained for inspection rather than deleted. Cancellation and forced destruction abort in-flight transfers before the
 provider is asked to delete anything.
 

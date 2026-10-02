@@ -565,15 +565,84 @@ test("retry_worker_finalization collects a cancelled worker and then refuses a s
     expect(paths).toContain(".swarmforge/logs/run.log");
     expect(out.artifacts.every((a) => a.state === "preserved")).toBe(true);
     expect(JSON.stringify(retried)).not.toContain("server_password");
-    // Preservation is settled, so a deliberate second retry is refused rather than repeated.
+    // Preservation is settled, so a deliberate retry is a no-op: it neither fails nor
+    // duplicates the records the first collection already produced.
     const again = await client.callTool({
       name: "retry_worker_finalization",
       arguments: { worker_id: h.workerId },
     });
-    expect(again.isError).toBe(true);
-    expect(JSON.stringify(again)).not.toContain("server_password");
-    // The settled record survives the refusal, and the durable attempt count did not move.
+    expect(again.isError).not.toBe(true);
+    const repeated = body(again) as unknown as {
+      finalization: { state: string; attempts: number } | null;
+      artifacts: { artifact_id: string }[];
+    };
+    expect(repeated.finalization?.state).toBe("preserved");
+    expect(repeated.artifacts.length).toBe(out.artifacts.length);
     expect(h.store.get(h.workerId).finalization?.state).toBe("preserved");
+    // An abandoned record is refused outright rather than reopened.
+    h.store.patch(h.workerId, {
+      finalization: {
+        state: "abandoned",
+        run_id: null,
+        attempts: 1,
+        error: null,
+        next_retry_at: null,
+        started_at: Date.now(),
+        completed_at: Date.now(),
+      },
+    } as never);
+    const refused = await client.callTool({
+      name: "retry_worker_finalization",
+      arguments: { worker_id: h.workerId },
+    });
+    expect(refused.isError).toBe(true);
+    expect(JSON.stringify(refused)).not.toContain("server_password");
+  } finally {
+    await close();
+    await h.done();
+  }
+});
+
+test("a worker that produced none of the optional output still settles preserved", async () => {
+  const h = await artifactWorker();
+  const { client, close } = await lead(h);
+  try {
+    // Optional default targets that do not exist must be skipped rather than failing the
+    // collection: a worker that only wrote its declared artifact still settles, and normal
+    // destruction is unblocked.
+    const created = h.coordinator.spawn({
+      team_id: "team",
+      task_id: "task",
+      role: "coder",
+      prompt: "write only findings.json",
+      artifacts: [{ path: "findings.json", required: true }],
+    });
+    await runToRunning(h, created.worker_id);
+    h.write("findings.json", '{"only":"output"}');
+    await h.coordinator.control(created.worker_id, "cancel");
+    for (let attempt = 0; attempt < 60; attempt++) {
+      await h.coordinator.tick();
+      const record = h.store.get(created.worker_id).finalization;
+      if (record?.state === "preserved" || record?.state === "failed") break;
+      await Bun.sleep(10);
+    }
+    expect(h.store.get(created.worker_id).finalization?.state).toBe(
+      "preserved",
+    );
+    const listed = body(
+      await client.callTool({
+        name: "list_artifacts",
+        arguments: { worker_id: created.worker_id },
+      }),
+    ) as unknown as {
+      artifacts: { original_path: string; state: string }[];
+    };
+    const preserved = listed.artifacts
+      .filter((a) => a.state === "preserved")
+      .map((a) => a.original_path);
+    expect(preserved).toContain("findings.json");
+    await h.coordinator.control(created.worker_id, "destroy");
+    expect(h.store.get(created.worker_id).state).toBe("destroyed");
   } finally {
     await close();
     await h.done();
@@ -587,7 +656,7 @@ test("an unsettled collection keeps the worker, refuses destruction and exposes 
     // A required artifact that does not exist can never settle: the collection retries on a
     // configured backoff, then reports the failure and retains the worker.
     h.coordinator.config.SWARMFORGE_FINALIZATION_MAX_ATTEMPTS = 2;
-    h.coordinator.config.SWARMFORGE_FINALIZATION_RETRY_MS = 10;
+    h.coordinator.config.SWARMFORGE_FINALIZATION_RETRY_MS = 1;
     h.coordinator.config.SWARMFORGE_ARTIFACT_TIMEOUT_MS = 5000;
     h.write(
       ".swarmforge/result.json",
@@ -612,22 +681,36 @@ test("an unsettled collection keeps the worker, refuses destruction and exposes 
     const out = body(retried) as unknown as {
       finalization: { state: string; attempts: number; error: string | null };
     };
-    expect(out.finalization?.state).toBe("failed");
-    expect(out.finalization?.attempts).toBeGreaterThan(0);
-    expect(out.finalization?.error).toBeTruthy();
+    // A deliberate retry runs exactly one attempt and never blocks on the automatic backoff, so
+    // the record it returns is still in flight; the automatic schedule finishes the story.
+    expect(["collecting", "pending", "failed"]).toContain(
+      out.finalization?.state,
+    );
+    for (let attempt = 0; attempt < 40; attempt++) {
+      await h.coordinator.tick();
+      const record = h.store.get(created.worker_id).finalization;
+      if (record?.state === "failed") break;
+      await Bun.sleep(10);
+    }
+    const settledRecord = h.store.get(created.worker_id).finalization;
+    expect(settledRecord?.state).toBe("failed");
+    expect(settledRecord?.attempts).toBeGreaterThan(0);
+    expect(settledRecord?.error).toBeTruthy();
     // Automatic attempts are durable events, and the failed record is visible.
     const attempts = h.store.db
       .query(
         "SELECT type, count(*) n FROM events WHERE type LIKE 'finalization.%' GROUP BY type",
       )
       .all() as { type: string; n: number }[];
-    const failedAttempts = attempts.find(
-      (row) => row.type === "finalization.attempt_failed",
+    // The published event contract: one attempted event per claimed attempt, including a
+    // restart re-entering an interrupted one, plus one settled outcome.
+    const claimed = attempts.find(
+      (row) => row.type === "finalization.attempted",
     );
-    expect(
-      (failedAttempts?.n ?? 0) +
-        attempts.find((row) => row.type === "finalization.failed")!.n,
-    ).toBeGreaterThan(0);
+    expect(claimed?.n ?? 0).toBe(settledRecord?.attempts ?? 0);
+    expect(attempts.find((row) => row.type === "finalization.failed")?.n).toBe(
+      1,
+    );
     // The worker and its workspace are retained until preservation settles or is forced.
     await h.coordinator.control(created.worker_id, "destroy");
     const refused = h.store.get(created.worker_id);

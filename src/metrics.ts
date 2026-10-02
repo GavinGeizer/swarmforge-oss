@@ -21,24 +21,21 @@ const finalizationStates = [
 // attempts counter derived from a record that resets per collection cycle would fall back
 // towards zero while the history keeps growing. The lifecycle package persists exactly these
 // event names, and this mapping is the contract those counters depend on:
-//   finalization.pending        a finalization that has not started collecting
-//   finalization.collecting     a claimed attempt, persisted before any effect
-//   finalization.attempt_failed one attempt failed and may be retried
-//   finalization.preserved      the collection settled with its artifacts stored
-//   finalization.failed         collection gave up
-//   finalization.abandoned      preservation was explicitly abandoned
+//   finalization.attempted one claimed attempt, persisted before any effect, including a
+//                       restart that re-enters an interrupted collecting record
+//   finalization.preserved the collection settled with its artifacts stored
+//   finalization.failed    the collection gave up
+//   finalization.abandoned preservation was explicitly abandoned
+// Creating the record announces nothing, and a scheduled retry is not an outcome, so neither
+// produces an event. Any other event under the prefix counts as "other".
 const finalizationEvents: Record<string, string> = {
-  pending: "pending",
-  collecting: "attempted",
-  attempt_failed: "attempt_failed",
+  attempted: "attempted",
   preserved: "preserved",
   failed: "failed",
   abandoned: "abandoned",
 };
 const finalizationOutcomes = [
-  "pending",
   "attempted",
-  "attempt_failed",
   "preserved",
   "failed",
   "abandoned",
@@ -267,9 +264,7 @@ export class Metrics {
     }
     for (const row of rows) {
       const suffix = row.type.slice("finalization.".length);
-      const label =
-        finalizationEvents[suffix] ??
-        (suffix.startsWith("attempt") ? "attempt_failed" : "other");
+      const label = finalizationEvents[suffix] ?? "other";
       counts.set(label, (counts.get(label) ?? 0) + Math.max(0, row.n));
     }
     for (const outcome of finalizationOutcomes)

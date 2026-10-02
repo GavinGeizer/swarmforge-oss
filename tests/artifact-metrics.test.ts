@@ -159,21 +159,16 @@ test("finalization stage and durable events follow a real collection cycle", asy
 test("finalization attempts and failures come from durable events, not from the live record", async () => {
   const h = await observed();
   try {
-    // The lifecycle contract: a claim persists finalization.collecting before any effect, so a
-    // restart mid-attempt still leaves one event per attempt, and attempt_failed records an
-    // attempt that will be retried. Three collection cycles follow, each resetting the live
-    // record, so a counter derived from that record alone would fall back towards zero.
-    h.store.event(h.workerId, "finalization.pending" as never);
+    // The published lifecycle contract: a claim persists finalization.attempted before any
+    // effect, so a restart mid-attempt still leaves exactly one event per attempt, and a settled
+    // collection records preserved, failed or abandoned once. Three collection cycles follow, each
+    // resetting the live record, so a counter derived from that record alone falls towards zero.
     for (let cycle = 1; cycle <= 3; cycle++) {
       for (let attempt = 0; attempt < cycle; attempt++)
-        h.store.event(h.workerId, "finalization.collecting" as never, {
+        h.store.event(h.workerId, "finalization.attempted" as never, {
           attempt: attempt + 1,
         });
       const preserved = cycle < 3;
-      if (!preserved)
-        h.store.event(h.workerId, "finalization.attempt_failed" as never, {
-          error: "model-secret must not be a metric value",
-        });
       h.store.event(
         h.workerId,
         preserved
@@ -196,9 +191,7 @@ test("finalization attempts and failures come from durable events, not from the 
     const text = await new Metrics(h.coordinator).render();
     const attempts = sample(text, "swarmforge_finalization_attempts_total");
     expect(attempts).toEqual([
-      { labels: '{outcome="pending"}', value: 1 },
       { labels: '{outcome="attempted"}', value: 6 },
-      { labels: '{outcome="attempt_failed"}', value: 1 },
       { labels: '{outcome="preserved"}', value: 2 },
       { labels: '{outcome="failed"}', value: 1 },
       { labels: '{outcome="abandoned"}', value: 0 },
@@ -217,9 +210,7 @@ test("finalization attempts and failures come from durable events, not from the 
           (series) => series.labels,
         ),
       ).toEqual([
-        '{outcome="pending"}',
         '{outcome="attempted"}',
-        '{outcome="attempt_failed"}',
         '{outcome="preserved"}',
         '{outcome="failed"}',
         '{outcome="abandoned"}',
