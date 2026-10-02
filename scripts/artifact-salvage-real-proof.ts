@@ -31,13 +31,20 @@
 //   - The only addressable VM is the task-retained research VM below. Any other
 //     --vm/--worker value is refused. There is no arbitrary target and no force
 //     delete anywhere in this file.
+//   - Destruction needs BOTH --execute and --destroy-proven-fixture, and it always
+//     goes through the coordinator's normal (non-forced) destroy control.
 //   - Every failure path records the retained state and exits non-zero. Nothing
 //     here destroys anything it has not proven.
 //   - Host credentials are never printed. Errors are passed through the project's
 //     own Redactor BEFORE they are truncated, so a secret that straddles the
 //     truncation boundary cannot be partially revealed.
-//   - The report is written under an explicit private evidence directory with
-//     mode 0700, and an existing report is preserved, never clobbered.
+//   - The private database path is FORCED under an explicit private evidence
+//     directory (mode 0700, files 0600). It is never inherited from the host
+//     environment, so this runner cannot open the live Swarmforge database.
+//   - The report is written under the evidence directory with mode 0600. An
+//     existing report is preserved to an immutable backup that this run never
+//     rewrites, and this run's own report is a separate file, so no run can
+//     destroy another's evidence.
 //
 // USAGE
 //
@@ -50,11 +57,20 @@
 // Plan mode is the default and touches no credential, no network and no guest.
 // Real mode needs the host environment already configured for SwarmForge; this
 // script never requests, sends or logs host infrastructure secrets.
+//
+// RE-RUNS
+//
+// A second run is safe and independent. It adopts the same retained VM, spawns a
+// FRESH worker with a fresh private database and artifact store, writes its own
+// report, and preserves the previous report into an immutable backup. The only
+// thing two runs share is the target VM, and a run that finds the VM already gone
+// refuses rather than inventing a new one.
 
 import { createHash, randomUUID } from "node:crypto";
 import {
   appendFileSync,
   chmodSync,
+  constants,
   copyFileSync,
   existsSync,
   mkdirSync,
@@ -220,7 +236,7 @@ function bounded(redact: (text: string) => string, value: unknown, max = 400) {
   return redact(raw).slice(0, max);
 }
 
-function privateDir(dir: string) {
+export function privateDir(dir: string) {
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   try {
     chmodSync(dir, 0o700);
@@ -228,17 +244,83 @@ function privateDir(dir: string) {
   return dir;
 }
 
-/** Preserve, never clobber: an earlier report survives this run. */
-function preserveExisting(report: string) {
+/**
+ * Preserve, never clobber. An earlier report is copied ONCE into its own backup
+ * and that backup is then immutable: nothing in this run ever writes to the
+ * returned path, so the bytes that were on disk when the run started are still
+ * readable afterwards.
+ *
+ * The backup name carries the run's unique stamp, so two runs in the same
+ * millisecond get distinct backups rather than one overwriting the other, and
+ * COPYFILE_EXCL turns any remaining collision into a refusal instead of a silent
+ * overwrite.
+ */
+export function preserveExisting(report: string, stamp: string): string | null {
   if (!existsSync(report)) return null;
-  const kept = `${report}.${Date.now()}.bak`;
+  const kept = `${report}.${stamp}.bak`;
   try {
-    copyFileSync(report, kept);
+    copyFileSync(report, kept, constants.COPYFILE_EXCL);
     chmodSync(kept, 0o600);
     return kept;
   } catch {
     return null;
   }
+}
+
+/**
+ * This run's own report file, plus the newest-report pointer. The run's report is
+ * a DISTINCT file, so a later run cannot overwrite an earlier run's report, and
+ * the pointer is only ever written after the previous report has been preserved
+ * to an immutable backup. Neither write touches `keptReport`.
+ */
+export function writeRunReports(reports: {
+  pointer: string;
+  run: string;
+  body: string;
+}) {
+  writeFileSync(reports.run, reports.body, { mode: 0o600 });
+  writeFileSync(reports.pointer, reports.body, { mode: 0o600 });
+}
+
+/**
+ * The private database and artifact-store locations for one run. Both are derived
+ * from the evidence directory alone. Nothing here consults the environment, so an
+ * inherited SWARMFORGE_DB_PATH pointing at the live Swarmforge database cannot be
+ * picked up, and every path is inside the private evidence directory.
+ */
+export function privateRunPaths(evidenceDir: string, runStamp: string) {
+  const dbPath = join(evidenceDir, `proof-${runStamp}.sqlite`);
+  const artifactDir = join(evidenceDir, `artifacts-${runStamp}`);
+  const snapshot = join(evidenceDir, `proof-${runStamp}.sqlite.snapshot`);
+  if (!dbPath.startsWith(`${evidenceDir}/`))
+    throw new ProofFailure(
+      `refusing a private database outside the evidence directory: ${dbPath}`,
+    );
+  if (!artifactDir.startsWith(`${evidenceDir}/`))
+    throw new ProofFailure(
+      `refusing a private artifact store outside the evidence directory: ${artifactDir}`,
+    );
+  return { dbPath, artifactDir, snapshot };
+}
+
+/**
+ * Drain a byte stream and finalize its digest EXACTLY ONCE.
+ *
+ * `Hash.digest()` finalizes the hash; a second call throws
+ * ERR_CRYPTO_HASH_FINALIZED. Finalizing once here and returning the single value
+ * means callers assert against a real string instead of accidentally digesting
+ * again, which is the defect this helper exists to prevent.
+ */
+export async function digestStream(
+  stream: AsyncIterable<Uint8Array>,
+  hash: ReturnType<typeof createHash> = createHash("sha256"),
+): Promise<{ bytes: number; sha256: string }> {
+  let bytes = 0;
+  for await (const part of stream) {
+    hash.update(part);
+    bytes += part.byteLength;
+  }
+  return { bytes, sha256: hash.digest("hex") };
 }
 
 async function main(opts: Options) {
@@ -285,24 +367,44 @@ async function main(opts: Options) {
       join(process.cwd(), ".swarmforge", "artifacts", "real-proof"),
   );
   const report = join(evidenceDir, "artifact-salvage-real-proof.json");
-  const keptReport = preserveExisting(report);
+  // Each run owns a distinct report, so a re-run never overwrites an earlier
+  // report's file. The canonical name is preserved to an immutable backup and
+  // then used only as a pointer at the newest report.
+  const runStamp = `${Date.now()}-${randomUUID().slice(0, 8)}`;
+  const runReport = join(
+    evidenceDir,
+    `artifact-salvage-real-proof.${runStamp}.json`,
+  );
+  const keptReport = preserveExisting(report, runStamp);
   const evidence = new Evidence(join(evidenceDir, "real-proof.jsonl"));
   evidence.event("run_started", {
     vm: opts.vm,
     worker: opts.worker,
     destroy_proven_fixture: opts.destroy,
     large_binary: opts.large,
+    run_stamp: runStamp,
+    report: basename(runReport),
     preserved_previous_report: keptReport ? basename(keptReport) : null,
   });
 
   // The private database and private artifact store live under the explicit
-  // evidence directory, never beside the live ones.
+  // evidence directory. The database path is FORCED: it is never inherited from
+  // the environment, because SWARMFORGE_DB_PATH in the host environment points at
+  // the live SwarmForge database and this runner must never open, migrate or
+  // write it.
+  const { dbPath, artifactDir, snapshot } = privateRunPaths(
+    evidenceDir,
+    runStamp,
+  );
   const config = loadConfig({
-    ...(process.env.SWARMFORGE_DB_PATH
-      ? {}
-      : { SWARMFORGE_DB_PATH: join(evidenceDir, "proof.sqlite") }),
-    SWARMFORGE_ARTIFACT_DIR: join(evidenceDir, "artifacts"),
+    SWARMFORGE_DB_PATH: dbPath,
+    SWARMFORGE_ARTIFACT_DIR: artifactDir,
   });
+  if (config.SWARMFORGE_DB_PATH !== dbPath)
+    throw new ProofFailure(
+      `private database path was not honoured: ${config.SWARMFORGE_DB_PATH}`,
+    );
+  privateDir(artifactDir);
   const provider = new FreestyleProvider(config);
   const store = new Store(config.SWARMFORGE_DB_PATH);
   const agent = new MalformedHandoffAgent();
@@ -312,6 +414,8 @@ async function main(opts: Options) {
     mode: "real",
     vm: opts.vm,
     worker: opts.worker,
+    run_stamp: runStamp,
+    report: basename(runReport),
     preserved_previous_report: keptReport ? basename(keptReport) : null,
   };
 
@@ -398,7 +502,7 @@ async function main(opts: Options) {
     //    and the malformed handoff is delivered through the coordinator.
     const spawned = coordinator.spawn({
       team_id: "artifact-salvage-real-proof",
-      task_id: `real-proof-${Date.now()}`,
+      task_id: `real-proof-${runStamp}`,
       role: "coder",
       prompt: "salvage proof: the workspace must survive this worker",
       timeout_seconds: 300,
@@ -555,17 +659,22 @@ async function main(opts: Options) {
       const streamed = await coordinator.artifacts.download(
         largeRecord.artifact_id,
       );
-      const hash = createHash("sha256");
-      let bytes = 0;
-      for await (const part of streamed as unknown as AsyncIterable<Uint8Array>) {
-        hash.update(part);
-        bytes += part.byteLength;
-      }
-      evidence.event("large_artifact_verified", {
+      // Exactly one digest. A Hash is finalized by its first digest() call, so a
+      // second call to compare would throw ERR_CRYPTO_HASH_FINALIZED; the value is
+      // finalized once, then asserted and emitted from that single result.
+      const { bytes, sha256: streamedDigest } = await digestStream(
+        streamed as unknown as AsyncIterable<Uint8Array>,
+      );
+      if (streamedDigest !== largeDigest)
+        throw new ProofFailure(
+          "the large streamed artifact does not match the bytes uploaded",
+          { artifact_id: largeRecord.artifact_id, bytes },
+        );
+      evidence.event("large_artifact_verified_after_destroy", {
         artifact_id: largeRecord.artifact_id,
         bytes,
-        sha256: hash.digest("hex"),
-        matches: hash.digest("hex") === largeDigest,
+        sha256: streamedDigest,
+        matches: true,
       });
     }
     evidence.event("sha_verified_after_destroy", {
@@ -595,31 +704,51 @@ async function main(opts: Options) {
     });
     throw error;
   } finally {
-    // The report is written last and never clobbers an earlier one.
+    // Written last. This run gets its OWN report file, so a second run never
+    // overwrites the first run's report; the previous canonical report has already
+    // been preserved to an immutable backup above and is not touched again here.
     try {
       const body = `${JSON.stringify(
-        { ...finished, at: Date.now(), evidence: basename(evidence.jsonl) },
+        {
+          ...finished,
+          run_stamp: runStamp,
+          at: Date.now(),
+          evidence: basename(evidence.jsonl),
+          private_db: basename(dbPath),
+        },
         null,
         2,
       )}\n`;
-      writeFileSync(report, body, { mode: 0o600 });
-      if (keptReport)
-        writeFileSync(keptReport, `${JSON.stringify(finished, null, 2)}\n`, {
-          mode: 0o600,
-        });
+      writeRunReports({ pointer: report, run: runReport, body });
+    } catch {}
+    // The private store runs in WAL mode, so an abrupt exit could leave committed
+    // work in the -wal file rather than in the database the lead reads. Fold the
+    // WAL back in, then take one consistent private snapshot.
+    try {
+      store.db.exec("PRAGMA wal_checkpoint(TRUNCATE);");
+    } catch {}
+    try {
+      if (existsSync(dbPath)) {
+        copyFileSync(dbPath, snapshot, constants.COPYFILE_EXCL);
+        chmodSync(snapshot, 0o600);
+      }
     } catch {}
     store.close();
   }
 }
 
-try {
-  await main(parse(process.argv.slice(2)));
-} catch (error) {
-  console.log(
-    JSON.stringify({
-      event: "runner_failed",
-      error: error instanceof Error ? error.message : String(error),
-    }),
-  );
-  process.exitCode = 1;
+// Only run the proof when this file is the entry point. Importing it exposes the
+// helpers above for tests without touching a credential, a VM or the filesystem.
+if (import.meta.main) {
+  try {
+    await main(parse(process.argv.slice(2)));
+  } catch (error) {
+    console.log(
+      JSON.stringify({
+        event: "runner_failed",
+        error: error instanceof Error ? error.message : String(error),
+      }),
+    );
+    process.exitCode = 1;
+  }
 }
