@@ -68,7 +68,8 @@ not a per-worker parameter. `spawn_worker` has no repository override, and every
 
 1. **Finish the old repository first.** Let running workers settle, collect their output with
    `list_artifacts`, then `destroy_worker` them. A worker still holding a VM of the old repository
-   keeps a workspace you can no longer fetch under the new settings.
+   still uses the coordinator's global Git configuration for execution and source publication;
+   finish it before switching targets. Stored artifacts and filesystem retrieval remain available.
 2. **Stop the server.** Do not rewrite these values underneath a running process.
 3. **Change only the repository fields.** Every other value in `.env` — Freestyle token, snapshot,
    model endpoint and key, push credentials, `SWARMFORGE_API_TOKEN` — stays exactly as it is.

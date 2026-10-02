@@ -55,7 +55,7 @@ There is no automatic VM deletion policy — completion and failure both **retai
 
 ## 5. End to end
 
-Send `examples/artifact-task.json`: it returns immediately with `worker_id`, `task_id`, `team_id`, `state` and **no handle for the bytes** — the worker's *report* is not the deliverable. When it settles, take `get_worker_result` **and** `list_artifacts`, treating the result JSON as a claim and the artifact as the evidence; `sha256sum` the download against `get_artifact_metadata`; then destroy normally and re-read. If the Git handoff itself is unavailable — no push server, provider unreachable, `preserve_artifact` refused — the salvage path still applies: collection runs through the guest helper over the raw byte transport, so it works with a dead OpenCode service and nothing asks a model to recover a file.
+Send `examples/artifact-task.json`: it returns immediately with `worker_id`, `task_id`, `team_id`, `state` and **no handle for the bytes** — the worker's *report* is not the deliverable. When it settles, take `get_worker_result` **and** `list_artifacts`, treating the result JSON as a claim and the artifact as the evidence; `sha256sum` the download against `get_artifact_metadata`; then destroy normally and re-read. A failed model or Git handoff does not prevent native file collection while the VM and provider transport remain reachable. During a provider outage, retain the VM and retry retrieval after transport recovers.
 
 ## Check the wiring
 
@@ -73,4 +73,4 @@ bun scripts/artifact-salvage-smoke.ts
 bun scripts/artifact-salvage-smoke.ts --freestyle <vm-id>   # never destroys the VM
 ```
 
-A local filesystem run proves the coordinator and manager surfaces, not the guest helper: the descriptor-relative capture is proven by the provider tests and by `--freestyle`. Final real-VM release verification is still pending. No new setup automation and no model-generated shell recovery: if a capture fails, a person reads `list_worker_files` and retries — a model is never asked to reconstruct a file.
+A local filesystem run executes the production guest helper and proves coordinator and manager behavior on local files. The credentialed Freestyle proof additionally verifies the native VM transport. Final real-VM release verification is still pending. If a capture fails, inspect `list_worker_files` and retry; artifact bytes never need model reconstruction.
