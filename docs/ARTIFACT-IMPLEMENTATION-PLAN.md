@@ -35,3 +35,13 @@ Each worker writes failing behavioral tests first and records red/green evidence
 Independent SwarmForge reviewers examine each exact implementation head before integration, with complementary lifecycle/restart and filesystem/security/streaming scopes. Correct substantive findings and review corrected heads. Integrate in `/tmp/swarmforge-artifact-salvage`, preserving unrelated local work. Run targeted artifact/recovery/provider/lifecycle/MCP/persistence tests, full `bun test`, `bun run check`, and actual helper-backed salvage flow. Exercise a real retained worker VM if available: produce file, stop OpenCode, preserve into coordinator storage, verify SHA-256, destroy VM normally, reread and verify storage. No giant artifact JSON, model printing, or file base64 commands.
 
 Report architecture, changed files, coverage, exact commands/results, limitations, follow-ups, and every worker disposition. No cloud storage, daemon, generic SSH filesystem, tenant auth, automatic large successful-task snapshots, or unrelated audit fixes.
+
+## Requested follow-up: recovery procedure in the skill
+
+- [ ] Update `using-swarmforge` and its worker-operations reference with the procedure used to salvage `recovery_required` instances. Preserve existing local skill edits.
+  - Compare coordinator state and dispatch identity with native provider ownership, VM existence, OpenCode health, filesystem reports, and exact Git HEAD/worktree state. Distinguish an active worker from a stale control-plane observation.
+  - Preserve needed reports and artifact bytes through the provider/data plane into private durable storage; verify bounds and checksums. Do not ask the model to print or encode files.
+  - Verify branch publication against the exact commit before cleanup. Record retained, missing, and destroyed instances separately.
+  - Document stale handoff identity recovery as an exceptional metadata repair: require an idle worker, matching worker/task identity, verified clean exact commit, and a durable original report backup; change only proven stale identity fields, record the repair, and independently validate test claims. Never manufacture a successful result or bypass preservation/Git guards.
+  - Explain retry, explicit abandonment, normal destruction, authorized force destruction, and final provider-side cleanup verification. Include bounded commands/tool examples and stopping conditions for ambiguous provenance or ongoing work.
+  - Review the resulting skill instructions independently and validate them against the finished artifact APIs before calling the procedure portable.
