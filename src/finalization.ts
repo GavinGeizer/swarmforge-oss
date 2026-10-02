@@ -110,14 +110,14 @@ export function retryDelay(config: Config, attempts: number) {
   return Number.isSafeInteger(delay) && delay > 0 ? delay : base;
 }
 
+// Listings are cached per attempt and per worker: the default targets share their parents, so
+// one capture run would otherwise pay a listing per declared path, but the same relative path in
+// one workspace says nothing about the same path in another. The cache lives in the attempt that
+// owns it, so concurrent workers and later attempts can never reuse or clear each other's view.
+type Listings = Map<string, { entries: ArtifactEntry[]; truncated: boolean }>;
+
 export class Finalizer {
   private runs = new Map<string, LiveRun>();
-  // Listings are cached per attempt: the default targets share their parents, and one capture
-  // run must not turn into a listing per declared path.
-  private listings = new Map<
-    string,
-    { entries: ArtifactEntry[]; truncated: boolean }
-  >();
   private readonly describe: (error: unknown) => string;
   constructor(
     readonly config: Config,
@@ -225,13 +225,12 @@ export class Finalizer {
     run_id: string | null,
     signal: AbortSignal,
   ) {
-    // Listings never outlive an attempt: a retry must see the workspace as it is now.
-    this.listings.clear();
+    const listings: Listings = new Map();
     const w = this.store.get(id);
     if (!this.collectable(w)) throw new Error("Worker VM is unavailable");
     for (const target of [...w.artifacts, ...defaultTargets]) {
       this.guard(signal);
-      await this.target(id, run_id, target, signal);
+      await this.target(id, run_id, target, signal, listings);
     }
     if (w.snapshot_on_failure && w.state !== "completed") {
       this.guard(signal);
@@ -248,8 +247,9 @@ export class Finalizer {
     run_id: string | null,
     target: ArtifactDeclaration,
     signal: AbortSignal,
+    listings: Listings,
   ) {
-    const kind = await this.classify(id, target.path, signal);
+    const kind = await this.classify(id, target.path, signal, listings);
     if (kind === "missing") {
       if (target.required)
         throw new Error(`Required artifact ${target.path} is missing`);
@@ -330,8 +330,13 @@ export class Finalizer {
     }
     return bytes;
   }
-  private async listing(id: string, path: string, signal: AbortSignal) {
-    const cached = this.listings.get(path);
+  private async listing(
+    id: string,
+    path: string,
+    signal: AbortSignal,
+    listings: Listings,
+  ) {
+    const cached = listings.get(path);
     if (cached) return cached;
     const entries: ArtifactEntry[] = [];
     let truncated = false;
@@ -358,12 +363,17 @@ export class Finalizer {
       offset = page.next_offset;
     }
     const value = { entries, truncated };
-    this.listings.set(path, value);
+    listings.set(path, value);
     return value;
   }
-  private async classify(id: string, path: string, signal: AbortSignal) {
+  private async classify(
+    id: string,
+    path: string,
+    signal: AbortSignal,
+    listings: Listings,
+  ) {
     try {
-      await this.listing(id, path, signal);
+      await this.listing(id, path, signal, listings);
       return "directory" as const;
     } catch (error) {
       // Only a type mismatch is ambiguous: some transports report an absent path and a
@@ -372,20 +382,25 @@ export class Finalizer {
       // permission refusal, a limit, a changed source or a transport failure is an error.
       const code = artifactErrorCode(error);
       if (code === artifactErrorCodes.notDirectory)
-        return this.fromParent(id, path, signal);
+        return this.fromParent(id, path, signal, listings);
       if (code === artifactErrorCodes.notFound) return "missing" as const;
       throw new Error(
         `Artifact path ${path} could not be inspected: ${this.describe(error)}`,
       );
     }
   }
-  private async fromParent(id: string, path: string, signal: AbortSignal) {
+  private async fromParent(
+    id: string,
+    path: string,
+    signal: AbortSignal,
+    listings: Listings,
+  ) {
     const parts = path.split("/");
     const name = parts.pop() ?? "";
     const parent = parts.join("/");
     let listing: { entries: ArtifactEntry[]; truncated: boolean };
     try {
-      listing = await this.listing(id, parent, signal);
+      listing = await this.listing(id, parent, signal, listings);
     } catch (error) {
       // The parent is absent, so the target is; anything else is a refusal worth reporting.
       if (artifactErrorCode(error) !== artifactErrorCodes.notFound) throw error;

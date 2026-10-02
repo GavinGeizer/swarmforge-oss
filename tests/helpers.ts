@@ -59,6 +59,9 @@ export class FakeProvider implements WorkerProvider {
   transportAborted = 0;
   // Resolves once a hanging transfer has actually started streaming.
   slowStarted: (() => void) | null = null;
+  // Holds one transport call for a `${vm}:${path}` key until released, so a test can interleave
+  // two workers at a precise point instead of racing them.
+  transportHolds = new Map<string, Promise<void>>();
   transportOpens: string[] = [];
   transportLists: string[] = [];
   transportSnapshots = 0;
@@ -88,6 +91,10 @@ export class FakeProvider implements WorkerProvider {
       this.activeGuests.delete(guest);
       this.concurrent--;
     }
+  }
+  private async hold(id: string, path: string) {
+    const gate = this.transportHolds.get(this.key(id, path));
+    if (gate) await gate;
   }
   private key(id: string, path: string) {
     return `${id}:${path.replace(/\/{2,}/g, "/")}`;
@@ -206,7 +213,7 @@ export class FakeProvider implements WorkerProvider {
             `ENOENT: no such file or directory, stat '${target}'`,
           );
         }
-        this.transportLists.push(path);
+        this.transportLists.push(`${id}:${path}`);
         const names = this.children(id, root, path);
         const start = options.offset ?? 0;
         const limit = options.limit ?? names.length;
@@ -246,6 +253,8 @@ export class FakeProvider implements WorkerProvider {
             `EISDIR: illegal operation on a directory, open '${target}'`,
           );
         this.transportOpens.push(path);
+        // A held capture parks this worker at a precise point while another one runs.
+        await this.hold(id, target);
         // A windowed open stages only the requested bytes, exactly as the guest helper does.
         const source = new TextEncoder().encode(
           this.files.get(this.key(id, target)) ?? "",

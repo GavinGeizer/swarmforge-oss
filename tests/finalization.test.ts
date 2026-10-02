@@ -1379,6 +1379,75 @@ test("retry backoff stays a safe integer within a bounded horizon", () => {
   expect(retryDelay(short, 100)).toBe(5000);
 });
 
+test("two workers with the same relative path each collect their own listing", async () => {
+  const h = harness({
+    ...fast,
+    SWARMFORGE_MAX_WORKERS: 4,
+    SWARMFORGE_MAX_PROVISIONING: 4,
+  });
+  // A's workspace has repo/a-one.txt and repo/a-two.txt and no repo/findings.json; B's has only
+  // repo/b-only.txt. The same relative path therefore means different things in each guest.
+  const a = await started(h, "listing-a");
+  const b = await started(h, "listing-b");
+  await h.provider.writeFile(a.vm, "/workspace/repo/a-one.txt", "a1");
+  await h.provider.writeFile(a.vm, "/workspace/repo/a-two.txt", "a2");
+  await h.provider.writeFile(b.vm, "/workspace/repo/b-only.txt", "b1");
+  h.provider.transportStyle = "coded";
+  const declare = (
+    workerId: string,
+    artifacts: { path: string; required?: boolean; directory?: boolean }[],
+  ) =>
+    h.store.patch(workerId, {
+      artifacts: artifacts.map(({ path, required, directory }) => ({
+        path,
+        required: required ?? false,
+        directory: directory ?? false,
+      })),
+    });
+  declare(a.id, [
+    { path: "repo/a-one.txt" },
+    { path: "repo/a-two.txt" },
+    { path: "repo/findings.json" },
+  ]);
+  declare(b.id, [{ path: "repo/b-only.txt", required: true }]);
+  h.agent.complete(h.store.get(a.id));
+  h.agent.complete(h.store.get(b.id));
+  await h.coordinator.tick();
+  // A is parked inside its first capture, so B completes a whole attempt in between.
+  let releaseA: () => void = () => {};
+  h.provider.transportHolds.set(
+    `${a.vm}:/workspace/repo/a-one.txt`,
+    new Promise<void>((resolve) => {
+      releaseA = resolve;
+    }),
+  );
+  const runningA = h.coordinator.finalize(a.id);
+  for (let spin = 0; spin < 500; spin++) {
+    if (h.provider.transportOpens.length > 0) break;
+    await Bun.sleep(1);
+  }
+  // B settles a whole attempt while A is parked, which is where a shared listing cache used to
+  // let B's view of repo/ replace A's.
+  expect((await h.coordinator.finalize(b.id)).finalization?.state).toBe(
+    "preserved",
+  );
+  releaseA();
+  const afterA = await runningA;
+  const afterB = h.store.get(b.id);
+  // Each worker's records come from its own workspace: no listing crosses workers, and the
+  // optional absence in A's workspace is skipped without hiding A's present files.
+  expect(afterB.finalization?.state).toBe("preserved");
+  expect(afterA.finalization?.state).toBe("preserved");
+  const aPaths = records(h, a.id).map((r) => r.original_path);
+  expect(aPaths).toContain("repo/a-one.txt");
+  expect(aPaths).toContain("repo/a-two.txt");
+  expect(aPaths).not.toContain("repo/findings.json");
+  expect(records(h, b.id).map((r) => r.original_path)).toContain(
+    "repo/b-only.txt",
+  );
+  h.store.close();
+});
+
 test("the finalization gate hands a reserved slot on and drops an aborted waiter", async () => {
   const gate = new FinalizationGate(1);
   const first = new AbortController();
