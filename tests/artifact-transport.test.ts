@@ -1014,3 +1014,120 @@ test("an alternates entry that stays inside the root is still allowed", async ()
   expect(report).not.toContain("not-applicable");
   expect(ws.stagingEntries()).toEqual([]);
 });
+
+test("gitdiag-probe4: a commondir outside the root disables the git capture", async () => {
+  const outside = join(ws.base, "outside-meta");
+  mkdirSync(join(outside, "objects"), { recursive: true });
+  mkdirSync(join(outside, "refs"), { recursive: true });
+  const repo = join(ws.root, "repo");
+  mkdirSync(repo, { recursive: true, mode: 0o700 });
+  writeFileSync(join(repo, "inside.txt"), "inside\n");
+  mkdirSync(join(repo, ".git", "objects"), { recursive: true });
+  mkdirSync(join(repo, ".git", "refs"), { recursive: true });
+  writeFileSync(join(repo, ".git", "HEAD"), "ref: refs/heads/main\n");
+  writeFileSync(join(repo, ".git", "config"), "[core]\n\tbare = false\n");
+  // A linked worktree names its metadata elsewhere; Git follows commondir.
+  writeFileSync(join(repo, ".git", "commondir"), `${outside}\n`);
+  const report = await gitReportOf(ws.root);
+  expect(report).toContain("not-applicable=");
+  expect(report).toMatch(/commondir/);
+  expect(report).not.toContain(canary);
+  expect(ws.stagingEntries()).toEqual([]);
+});
+
+test("gitdiag-probe5: a symlink anywhere inside the metadata disables the capture", async () => {
+  const repo = join(ws.root, "repo");
+  mkdirSync(repo, { recursive: true, mode: 0o700 });
+  const run = (args: string[]) =>
+    Bun.spawnSync(["git", ...args], {
+      cwd: repo,
+      stdout: "ignore",
+      stderr: "ignore",
+    });
+  run(["init", "--quiet", "--initial-branch=main", "."]);
+  run(["config", "user.email", "probe@example.invalid"]);
+  run(["config", "user.name", "probe"]);
+  writeFileSync(join(repo, "tracked.txt"), "content\n");
+  run(["add", "-A"]);
+  run(["commit", "--quiet", "-m", "inside"]);
+  // A descendant of the metadata - not the metadata directory itself - pointing
+  // out of the workspace. Git would read through it.
+  const outside = join(ws.base, "outside-meta-refs");
+  mkdirSync(outside, { recursive: true });
+  const packed = join(repo, ".git", "refs", "heads");
+  rmSync(packed, { recursive: true, force: true });
+  mkdirSync(join(repo, ".git", "refs"), { recursive: true });
+  symlinkSync(outside, packed);
+  const report = await gitReportOf(ws.root);
+  expect(report).toMatch(/not-applicable=Git metadata contains a symlink/);
+  expect(report).not.toContain(canary);
+  expect(ws.stagingEntries()).toEqual([]);
+});
+
+test("gitdiag-probe6: an alternates chain that leaves the root through a second store is refused", async () => {
+  // The first store is inside the root, so a shallow check passes; the escape is
+  // one level deeper in the chain.
+  const repo = join(ws.root, "repo");
+  mkdirSync(repo, { recursive: true, mode: 0o700 });
+  const run = (args: string[]) =>
+    Bun.spawnSync(["git", ...args], {
+      cwd: repo,
+      stdout: "ignore",
+      stderr: "ignore",
+    });
+  run(["init", "--quiet", "--initial-branch=main", "."]);
+  run(["config", "user.email", "probe@example.invalid"]);
+  run(["config", "user.name", "probe"]);
+  writeFileSync(join(repo, "tracked.txt"), "content\n");
+  run(["add", "-A"]);
+  run(["commit", "--quiet", "-m", "inside"]);
+  const first = join(ws.root, "store-one");
+  mkdirSync(join(first, "info"), { recursive: true });
+  const second = join(ws.base, "store-two");
+  mkdirSync(join(second, "info"), { recursive: true });
+  writeFileSync(join(first, "info", "alternates"), `${second}\n`);
+  writeFileSync(
+    join(repo, ".git", "objects", "info", "alternates"),
+    "../../../store-one\n",
+  );
+  const report = await gitReportOf(ws.root);
+  expect(report).toMatch(/not-applicable=alternates points outside/);
+  expect(report).not.toContain(canary);
+  expect(ws.stagingEntries()).toEqual([]);
+});
+
+test("gitdiag-probe7: metadata replaced after a capture is refused, not followed", async () => {
+  // What is proven here is the boundary itself: once the metadata has changed,
+  // the next capture verifies what is actually there and refuses the ones it
+  // cannot vouch for. The helper also re-verifies after its commands, which
+  // narrows the window in which a change can happen; that is a mitigation, not a
+  // proof, and nothing here claims otherwise.
+  const repo = join(ws.root, "repo");
+  mkdirSync(repo, { recursive: true, mode: 0o700 });
+  const run = (args: string[]) =>
+    Bun.spawnSync(["git", ...args], {
+      cwd: repo,
+      stdout: "ignore",
+      stderr: "ignore",
+    });
+  run(["init", "--quiet", "--initial-branch=main", "."]);
+  run(["config", "user.email", "probe@example.invalid"]);
+  run(["config", "user.name", "probe"]);
+  writeFileSync(join(repo, "tracked.txt"), "content\n");
+  run(["add", "-A"]);
+  run(["commit", "--quiet", "-m", "inside"]);
+  const first = await gitReportOf(ws.root);
+  // A real repository inside the workspace is described, and the commit shows up.
+  expect(first).toContain("inside");
+  expect(first).not.toContain("not-applicable");
+  // The metadata is replaced with something that points out of the workspace.
+  const outside = join(ws.base, "swapped-into");
+  mkdirSync(outside, { recursive: true });
+  const packed = join(repo, ".git", "refs", "heads");
+  rmSync(packed, { recursive: true, force: true });
+  symlinkSync(outside, packed);
+  const second = await gitReportOf(ws.root);
+  expect(second).toMatch(/not-applicable=Git metadata contains a symlink/);
+  expect(second).not.toContain(canary);
+  expect(ws.stagingEntries()).toEqual([]);
+});

@@ -933,6 +933,15 @@ GIT_PINNED = (
 # Bytes a source's own diagnostics may add to the private staged file.
 STDERR_BOUND = 4096
 ALTERNATES_BOUND = 64 * 1024
+# The metadata tree Git will resolve is walked whole, inside these bounds. A
+# repository that is bigger than this is not described rather than walked: the
+# budget is the limit of what can be verified, and an unverified repository is not
+# captured at all.
+METADATA_MAX_ENTRIES = 20000
+METADATA_MAX_DEPTH = 8
+# An alternates chain is followed only inside the root and only this deep.
+ALTERNATES_MAX_DEPTH = 4
+ALTERNATES_MAX_STORES = 64
 
 
 class GitRefusal(Exception):
@@ -1001,6 +1010,148 @@ def _resolve_alternate(root, base, line):
     os.close(fd)
 
 
+def _walk_metadata(parts, depth=0):
+    """Every entry under a metadata directory, inside a hard budget.
+
+    Git resolves paths inside its own metadata as it reads it, so the only way to
+    know that none of them is a symlink out of the permitted root is to look at
+    all of them. Anything that is not a plain file or directory - a symlink, a
+    FIFO, a device, a socket - refuses the repository, and so does a tree that
+    does not fit the budget, because an unverified repository is not described.
+    """
+    if depth > METADATA_MAX_DEPTH:
+        raise GitRefusal("Git metadata is deeper than its bound")
+    seen = 0
+    try:
+        fd = open_at(parts)
+    except HelperError:
+        raise GitRefusal("Git metadata directory is not inside the permitted root")
+    os.close(fd)
+    # os.scandir yields one entry at a time, so a directory with a million entries
+    # costs one unit of budget rather than a million strings.
+    try:
+        handle = os.scandir(open_at(parts))
+    except OSError:
+        raise GitRefusal("Git metadata directory is not inside the permitted root")
+    try:
+        with handle as entries:
+            for entry in entries:
+                seen += 1
+                if seen > METADATA_MAX_ENTRIES:
+                    raise GitRefusal("Git metadata exceeds its entry bound")
+                try:
+                    info = entry.stat(follow_symlinks=False)
+                except OSError:
+                    raise GitRefusal("Git metadata changed while it was read")
+                if statmod.S_ISLNK(info.st_mode):
+                    raise GitRefusal("Git metadata contains a symlink")
+                if statmod.S_ISDIR(info.st_mode):
+                    _walk_metadata(parts + [entry.name], depth + 1)
+                    continue
+                if not statmod.S_ISREG(info.st_mode):
+                    raise GitRefusal("Git metadata contains a special file")
+    finally:
+        try:
+            handle.close()
+        except OSError:
+            pass
+
+
+def _read_pinned(parent_fd, name, bound):
+    try:
+        info = os.lstat(name, dir_fd=parent_fd)
+    except OSError:
+        return None
+    if not statmod.S_ISREG(info.st_mode):
+        raise GitRefusal("Git object alternates is not a regular file")
+    if info.st_size > bound:
+        raise GitRefusal("Git object alternates is larger than its bound")
+    handle = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=parent_fd)
+    try:
+        return _read_bounded_fd(handle, bound)
+    finally:
+        os.close(handle)
+
+
+def _check_alternates(root, root_parts, objects_parts, depth=0, seen=None):
+    """Follow an alternates chain, refusing anything outside the permitted root.
+
+    A store may name stores of its own, so this recurses: every level is resolved
+    inside the root, and both the depth and the number of stores are bounded, so
+    a chain that loops or fans out is refused rather than followed.
+    """
+    if depth > ALTERNATES_MAX_DEPTH:
+        raise GitRefusal("Git object alternates chain is too deep")
+    visited = set() if seen is None else seen
+    key = "/".join(objects_parts)
+    if key in visited:
+        raise GitRefusal("Git object alternates chain repeats a store")
+    visited.add(key)
+    if len(visited) > ALTERNATES_MAX_STORES:
+        raise GitRefusal("Git object alternates chain names too many stores")
+    try:
+        info_fd = open_at(objects_parts + ["info"])
+    except HelperError:
+        return
+    try:
+        for name in ("alternates", "http-alternates"):
+            body = _read_pinned(info_fd, name, ALTERNATES_BOUND)
+            if body is None:
+                continue
+            if name == "http-alternates" and body.strip():
+                raise GitRefusal("Git object alternates names a remote store")
+            for line in body.decode("utf-8", "replace").splitlines():
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if "\x00" in line:
+                    raise GitRefusal("alternates entry is not a usable path")
+                if line.startswith("/"):
+                    parts = _normalize(clean_absolute(line))
+                else:
+                    parts = _normalize(objects_parts + line.split("/"))
+                if not _under_root(root_parts, parts):
+                    raise GitRefusal(
+                        "alternates points outside the permitted root"
+                    )
+                store = open_at(parts)
+                os.close(store)
+                _check_alternates(root, root_parts, parts, depth + 1, visited)
+    finally:
+        os.close(info_fd)
+
+
+def _commondir_parts(root_parts, git_parts):
+    """The shared metadata directory Git would use, verified inside the root.
+
+    A `commondir` file is how a linked worktree names metadata that lives
+    elsewhere. Git follows it, so it is resolved and checked like any other path
+    before a command runs; one that leaves the permitted root refuses the capture.
+    """
+    try:
+        fd = open_at(root_parts + git_parts)
+    except HelperError:
+        raise GitRefusal("Git metadata directory is not accessible")
+    try:
+        body = _read_pinned(fd, "commondir", 4096)
+    finally:
+        os.close(fd)
+    if body is None:
+        return None
+    text = body.decode("utf-8", "replace").strip()
+    if not text or "\x00" in text:
+        raise GitRefusal("Git metadata commondir is not a usable path")
+    if text.startswith("/"):
+        parts = _normalize(clean_absolute(text))
+    else:
+        parts = _normalize(git_parts + text.split("/"))
+    if not _under_root(root_parts, parts):
+        raise GitRefusal("Git metadata commondir points outside the permitted root")
+    store = open_at(parts)
+    os.close(store)
+    return parts
+
+
 def git_repository(root, relative):
     """Verify a repository and return the two pinned paths to run Git against.
 
@@ -1008,10 +1159,10 @@ def git_repository(root, relative):
     symlink is refused rather than followed. A `gitdir:` pointer file is refused
     outright: it is the one shape whose whole purpose is to name metadata
     elsewhere, and no flag can make a repository whose metadata is outside the
-    root safe to describe. Descendants git resolves for itself - the object store
-    and the ref store - are checked the same way, and an alternates file that
-    names anything outside the root disables the capture instead of quietly
-    borrowing its objects.
+    root safe to describe. What Git resolves for itself is then checked too - the
+    whole metadata tree entry by entry, a shared metadata directory named by
+    `commondir`, and an alternates chain followed recursively - and anything that
+    cannot be verified disables the capture rather than being trusted.
     """
     base = relative.split("/") if relative else []
     root_parts = clean_absolute(root)
@@ -1042,8 +1193,6 @@ def git_repository(root, relative):
     # command line names the same two directories this helper verified.
     git_dir = "/" + "/".join(root_parts + git_parts)
     work_tree = "/" + "/".join(root_parts + base)
-    # The directories Git resolves for itself have to be real directories inside
-    # the root, opened the pinned way, before any command runs.
     for name in ("objects", "refs"):
         try:
             fd = open_at(root_parts + git_parts + [name])
@@ -1053,32 +1202,15 @@ def git_repository(root, relative):
             # the answer; failing the whole diagnostic would not be.
             raise GitRefusal("Git metadata is missing its %s directory" % name)
         os.close(fd)
-    for name in ("alternates", "http-alternates"):
-        try:
-            parent = open_at(root_parts + git_parts + ["objects", "info"])
-        except HelperError:
-            break
-        try:
-            try:
-                info = os.lstat(name, dir_fd=parent)
-            except OSError:
-                continue
-            if not statmod.S_ISREG(info.st_mode):
-                raise GitRefusal("Git object alternates is not a regular file")
-            if info.st_size > ALTERNATES_BOUND:
-                raise GitRefusal("Git object alternates is larger than its bound")
-            body = _read_bounded_fd(
-                os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=parent),
-                ALTERNATES_BOUND,
-            )
-        finally:
-            os.close(parent)
-        if name == "http-alternates" and body.strip():
-            # Dumb transport alternates fetch content over the network, which a
-            # bounded salvage never does.
-            raise GitRefusal("Git object alternates names a remote store")
-        for line in body.decode("utf-8", "replace").splitlines():
-            _resolve_alternate(root, root_parts + git_parts + ["objects"], line)
+    shared = _commondir_parts(root_parts, git_parts)
+    # The whole metadata tree, in both the repository's own directory and a shared
+    # one it names, entry by entry and inside the budget.
+    _walk_metadata(root_parts + git_parts)
+    if shared is not None:
+        _walk_metadata(shared)
+    _check_alternates(root, root_parts, root_parts + git_parts + ["objects"])
+    if shared is not None:
+        _check_alternates(root, root_parts, shared + ["objects"])
     return git_dir, work_tree
 
 
@@ -1340,6 +1472,21 @@ def op_capture(request):
                         "bytes": stats["bytes"] - before,
                     }
                 )
+                if source["git"]:
+                    # The worker owns everything under its workspace, so a
+                    # repository verified before a command ran can be changed
+                    # while it runs. The tree is checked again afterwards and the
+                    # capture is refused if it no longer verifies. This narrows
+                    # the window; it does not close it, because a hostile writer
+                    # and a check cannot be made atomic from here, and nothing in
+                    # this file claims otherwise.
+                    try:
+                        git_repository(root, source["cwd"])
+                    except GitRefusal as refusal:
+                        raise HelperError(
+                            "Git metadata changed during the capture: %s" % refusal,
+                            CODE_UNSAFE_PATH,
+                        )
                 if stats["timed_out"]:
                     # A source that had not finished when the deadline arrived is
                     # not a failure of the guest, and it is not complete either.
