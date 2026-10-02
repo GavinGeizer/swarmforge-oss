@@ -228,7 +228,10 @@ export class Finalizer {
     const listings: Listings = new Map();
     const w = this.store.get(id);
     if (!this.collectable(w)) throw new Error("Worker VM is unavailable");
-    for (const target of [...w.artifacts, ...defaultTargets]) {
+    // A row written before artifact declarations existed carries no list at all, so its defaults
+    // stand alone. Spreading an absent field would throw and fail the whole attempt, which is how
+    // a legacy worker lost its workspace on destruction instead of keeping it.
+    for (const target of [...(w.artifacts ?? []), ...defaultTargets]) {
       this.guard(signal);
       await this.target(id, run_id, target, signal, listings);
     }
