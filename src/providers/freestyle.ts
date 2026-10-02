@@ -1,13 +1,20 @@
 import { readFileSync } from "node:fs";
 import { Freestyle, FreestyleApiError, type VmData } from "freestyle";
+import type { WorkerArtifactTransport } from "../artifact-types";
 import type { Config } from "../config";
 import { gitTree, workerEnvironment } from "../config";
 import type { VmInfo, Worker, WorkerProvider } from "../domain";
 import { branchFor, githubInstallationToken } from "../git-handoff";
+import {
+  guestStagingRoot,
+  HelperArtifactTransport,
+} from "./artifact-transport";
 import { openCodeConfig } from "./opencode";
 export const quote = (s: string) => `'${s.replaceAll("'", "'\\''")}'`;
 export class FreestyleProvider implements WorkerProvider {
   readonly client: Freestyle;
+  /** Secure artifact capture over the same binary filesystem transport. */
+  readonly artifactTransport: WorkerArtifactTransport;
   constructor(
     readonly config: Config,
     client?: Freestyle,
@@ -17,12 +24,57 @@ export class FreestyleProvider implements WorkerProvider {
       new Freestyle({
         apiKey: config.FREESTYLE_API_TOKEN,
         baseUrl: config.FREESTYLE_API_URL,
+        // The caller's signal is combined with the configured timeout instead of
+        // being replaced by it: a per-call abort must still be able to cancel
+        // work that the shared timeout alone would let run.
         fetch: ((input: RequestInfo | URL, init?: RequestInit) =>
           fetch(input, {
             ...init,
-            signal: AbortSignal.timeout(config.SWARMFORGE_API_TIMEOUT_MS),
+            signal: combine(
+              init?.signal as AbortSignal | undefined,
+              AbortSignal.timeout(config.SWARMFORGE_API_TIMEOUT_MS),
+            ),
           })) as typeof fetch,
       });
+    this.artifactTransport = new HelperArtifactTransport(
+      {
+        exec: (vmId, command, options) =>
+          this.artifactExec(vmId, command, options),
+        openRaw: (vmId, path, options) =>
+          this.client.vms
+            .ref(vmId)
+            .fs.readFileStream(
+              path,
+              options.signal ? { signal: options.signal } : {},
+            ),
+        writeRaw: (vmId, path, bytes, options) =>
+          this.client.vms.ref(vmId).fs.writeFile(path, bytes, {
+            mode: options.mode,
+          }),
+        stagingDir: () => guestStagingRoot,
+      },
+      { timeoutMs: artifactTimeout(config) },
+    );
+  }
+  /**
+   * Artifact helper runs get their own budget: a bounded snapshot of a large
+   * workspace legitimately outlives the ordinary API timeout.
+   */
+  private async artifactExec(
+    id: string,
+    command: string,
+    options: { timeoutMs: number; signal?: AbortSignal },
+  ) {
+    const result = await this.client.vms.ref(id).exec({
+      command,
+      linuxUser: "root",
+      timeoutMs: options.timeoutMs,
+    });
+    return {
+      stdout: result.stdout ?? "",
+      stderr: result.stderr ?? "",
+      code: result.statusCode ?? null,
+    };
   }
   slug(w: Worker) {
     return `sf-${this.config.SWARMFORGE_INSTANCE_ID}-${w.worker_id.slice(2)}`;
@@ -112,7 +164,7 @@ export class FreestyleProvider implements WorkerProvider {
     const vm = this.client.vms.ref(w.vm_id);
     const workspace = this.config.SWARMFORGE_WORKSPACE;
     const init = await vm.exec({
-      command: `mkdir -p ${quote(`${workspace}/.swarmforge/artifacts`)} ${quote(`${workspace}/.swarmforge/logs`)} /opt/swarmforge && chmod 700 /opt/swarmforge && command -v opencode && command -v python3 && command -v git && command -v systemctl`,
+      command: `mkdir -p ${quote(`${workspace}/.swarmforge/artifacts`)} ${quote(`${workspace}/.swarmforge/logs`)} ${quote(guestStagingRoot)} && chmod 700 /opt/swarmforge && chmod 700 ${quote(guestStagingRoot)} && command -v opencode && command -v python3 && command -v git && command -v systemctl`,
       linuxUser: "root",
       timeoutMs: 30000,
     });
@@ -128,7 +180,9 @@ export class FreestyleProvider implements WorkerProvider {
         vm.exec({
           command: `if [ -d ${quote(`${repository}/.git`)} ]; then exit 0; fi; if [ -e ${quote(repository)} ]; then echo 'Repository destination already exists and is not a Git checkout' >&2; exit 1; fi; rm -rf ${quote(staging)} && ${auth} git clone -- ${quote(tree.target)} ${quote(staging)} && mv ${quote(staging)} ${quote(repository)}`,
           linuxUser: "root",
-          timeoutMs: this.config.SWARMFORGE_GIT_PUSH_TIMEOUT_MS,
+          timeoutMs: boundedExecTimeout(
+            this.config.SWARMFORGE_GIT_PUSH_TIMEOUT_MS,
+          ),
         }),
       );
       if (clone.statusCode !== 0)
@@ -254,7 +308,9 @@ export class FreestyleProvider implements WorkerProvider {
       vm.exec({
         command: `set -eu; cd ${quote(repo)}; test "$(git branch --show-current)" = ${quote(branch)}; test -z "$(git status --porcelain --untracked-files=all)"; base=$(cat ${quote(`${this.config.SWARMFORGE_WORKSPACE}/.swarmforge/git-base`)}); commit=$(git rev-parse HEAD); git merge-base --is-ancestor "$base" "$commit"; ${auth} git push -- ${quote(target)} ${quote(`HEAD:refs/heads/${branch}`)} >&2; remote=$(${auth} git ls-remote -- ${quote(target)} ${quote(`refs/heads/${branch}`)}); remote_sha=$(printf '%s\n' "$remote" | cut -f1); test "$remote_sha" = "$commit"; git update-ref ${quote(`refs/remotes/origin/${branch}`)} "$commit"; printf '%s\n%s\n' "$base" "$commit"`,
         linuxUser: "root",
-        timeoutMs: this.config.SWARMFORGE_GIT_PUSH_TIMEOUT_MS,
+        timeoutMs: boundedExecTimeout(
+          this.config.SWARMFORGE_GIT_PUSH_TIMEOUT_MS,
+        ),
       }),
     );
     if (result.statusCode !== 0)
@@ -311,4 +367,32 @@ export class FreestyleProvider implements WorkerProvider {
   stat(id: string, path: string) {
     return this.client.vms.ref(id).fs.stat(path);
   }
+}
+
+function combine(signal: AbortSignal | undefined, timeout: AbortSignal) {
+  return signal ? AbortSignal.any([signal, timeout]) : timeout;
+}
+
+/** The guest API accepts 1-300000 ms for one exec; nothing may ask for more. */
+export const guestExecTimeoutLimit = 300000;
+
+function artifactTimeout(config: Config) {
+  const raw = (config as unknown as Record<string, unknown>)
+    .SWARMFORGE_ARTIFACT_TIMEOUT_MS;
+  const value = typeof raw === "number" ? raw : Number(raw);
+  if (!Number.isSafeInteger(value) || value <= 0) return 120000;
+  return Math.min(value, guestExecTimeoutLimit);
+}
+
+/**
+ * Every guest exec goes through one clamp. A configured budget above what the
+ * guest API accepts is not honoured by being sent anyway: the call is rejected
+ * there, which would look like a capture failure rather than a configuration
+ * mistake.
+ */
+export function boundedExecTimeout(milliseconds: number, fallback = 30000) {
+  const value =
+    typeof milliseconds === "number" ? milliseconds : Number(milliseconds);
+  if (!Number.isSafeInteger(value) || value <= 0) return fallback;
+  return Math.min(value, guestExecTimeoutLimit);
 }
