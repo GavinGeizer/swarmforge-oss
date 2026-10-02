@@ -40,6 +40,13 @@ preserved after the transferred length and SHA-256 both match what the helper re
 Repeating the same worker, run, path and content is idempotent, so a retry or a restart does
 not create duplicates.
 
+Every attempt is its own record, so a **recapture that changes content** publishes a new record
+and marks the previous one superseded. Exactly one record per source is the published copy;
+superseded records are history. `list_artifacts` lists published copies only, `get_artifact_metadata`
+and `read_artifact` still resolve a superseded record by identifier while its bytes exist, and
+the cumulative metrics in [OBSERVABILITY.md](OBSERVABILITY.md) count every attempt and every
+verified copy because they are rebuilt from the append-only artifact event log.
+
 Every attempt and outcome is also appended to a durable artifact event log, which is what the
 cumulative counters in [OBSERVABILITY.md](OBSERVABILITY.md) are built from: a `_total` only grows,
 while the stored-copy gauges describe the current state, because a recapture supersedes the copy
@@ -112,10 +119,13 @@ character, or resolves to a symlink or a non-regular file. Task declarations acc
 files and directories; a trailing `/**` means that directory, and any other wildcard is
 rejected. A path that itself contains a configured credential is refused before any lookup.
 
-Default collections are `.swarmforge/artifacts`, `.swarmforge/logs`, the result and metadata
-files, and diagnostics. Full-workspace snapshots are never automatic for a successful task:
-they are explicit through `snapshot_worker`, configured per task with `snapshot_on_failure`,
-or taken by an operator.
+The default collections are `.swarmforge/artifacts/**`, `.swarmforge/logs/**`,
+`.swarmforge/result.json`, `.swarmforge/task.json` and `.swarmforge/metadata.json`, followed by
+the guest's journal and Git-state diagnostics. All of them are optional: a worker that produced
+none of them still settles preserved, while a declared `required` path that is absent fails the
+collection. Full-workspace snapshots are never automatic for a successful task: they are explicit
+through `snapshot_worker`, configured per task with `snapshot_on_failure`, or taken by an
+operator.
 
 ## Faithful raw bytes versus safe excerpts
 
@@ -124,7 +134,7 @@ content, and verifies it. What a model is shown is a deliberately smaller thing.
 
 | Surface | What it returns | Bound |
 | --- | --- | --- |
-| `list_artifacts`, `get_artifact_metadata` | Metadata only: identifiers, path, filename, kind, size, SHA-256, state, attempts, error, timestamps | 100 records per page |
+| `list_artifacts`, `get_artifact_metadata` | Metadata only: identifiers, path, filename, kind, size, SHA-256, state, attempts, error, timestamps. The listing returns published copies, not superseded history | 100 records per page (the repository itself allows up to 200) |
 | `read_artifact` | Screened text excerpt of a byte range, or size, checksum and a download handle when the range is not text | 32 KiB per call |
 | `preserve_artifact`, `snapshot_worker` | Captured records, with `total` and `truncated` | 100 records and 48 KiB of serialized metadata |
 | `GET /artifacts/<artifact_id>/download` | Raw bytes, as an attachment | 8 MiB per response |
@@ -144,9 +154,10 @@ payloads are always fetched through the download route.
 `snapshot_worker` asks the guest helper for a bounded, regular-file-only `tar.gz` of the
 workspace (or of the listed paths). Collecting a directory preserves each regular file in it and
 archives any nested directory as its own snapshot artifact rather than dropping or flattening
-it. `.git` and `node_modules` are excluded by default, source
-and output byte limits, entry limits and depth limits all apply, symlinks and special files
-are skipped, and SwarmForge never extracts an archive. The archive is one artifact: it is
+it; a directory that would exceed the entry budget is **refused as incomplete** rather than
+returned partially. `.git` and `node_modules` are excluded, source and output byte limits, entry
+limits and depth limits all apply, symlinks and special files are skipped, and SwarmForge never
+extracts an archive. The archive is one artifact: it is
 listed and verified like any other, so a retained workspace can be recovered wholesale before
 the VM is destroyed.
 

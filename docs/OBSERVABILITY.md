@@ -37,9 +37,9 @@ lowers the byte total again. Current state is therefore a gauge, not a total:
 (`superseded_by IS NULL`), and `swarmforge_artifacts_in_flight` counts captures still running.
 
 Counters and gauges come from grouped queries, so they are exact at any repository size and need
-no paging. The collection-duration histogram has to walk rows, so it streams them with a budget
-and reports `swarmforge_artifacts_scan_complete 0` if that budget is ever reached, rather than
-silently truncating; alert on that gauge. A capture still in `preserving` is in flight, never a
+no paging. The collection-duration histogram has to walk rows, so it streams them with a budget of
+twenty thousand completed captures and reports `swarmforge_artifacts_scan_complete 0` if that
+budget is ever reached, rather than silently truncating; alert on that gauge. A capture still in `preserving` is in flight, never a
 failure, and a failure series exists per kind with a zero value so a dashboard never has to tell
 "no failures" from "no data". Record states are counted separately from outcomes: only a recorded
 `artifact.failed` event is a failure.

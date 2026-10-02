@@ -444,16 +444,16 @@ test("an incomplete duration scan is reported instead of silently truncating the
         kind,state,attempts,error,created_at,retrieved_at)
       SELECT 'art-bulk-'||x,'w-1','task',NULL,'bulk-'||x||'.json','k','bulk.json',1,
         '${"a".repeat(64)}','file','preserved',1,NULL,1000,1010
-      FROM (WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM c WHERE x<50001) SELECT x FROM c)`);
+      FROM (WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM c WHERE x<20001) SELECT x FROM c)`);
     const text = await new Metrics(h.coordinator).render();
     expect(text).toMatch(/swarmforge_artifacts_scan_complete 0/);
     // The histogram reports exactly what it observed, never a silently larger total.
     expect(
       sample(text, "swarmforge_artifact_collection_duration_seconds_count"),
-    ).toEqual([{ labels: "", value: 50000 }]);
+    ).toEqual([{ labels: "", value: 20000 }]);
     // Current state is a grouped query, so it stays exact however many rows exist.
     expect(sample(text, "swarmforge_artifacts_stored")).toEqual([
-      { labels: '{kind="file"}', value: 50001 },
+      { labels: '{kind="file"}', value: 20001 },
     ]);
   } finally {
     await h.done();

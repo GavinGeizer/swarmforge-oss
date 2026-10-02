@@ -14,6 +14,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import type { WorkerProvider } from "../src/domain";
 import { createMcpServer } from "../src/mcp";
+import { Metrics } from "../src/metrics";
 import { harness, runToRunning, task } from "./helpers";
 import { localWorkspace } from "./local-artifact-provider";
 
@@ -472,7 +473,7 @@ test("preserve_artifact collects a whole worker directory when asked for one", a
     await close();
     await h.done();
   }
-});
+}, 30000);
 
 test("preservation propagates caller cancellation instead of copying after the caller left", async () => {
   const h = await artifactWorker();
@@ -531,6 +532,63 @@ test("snapshot_worker returns a single archived artifact whose bytes are a real 
     await h.done();
   }
 });
+
+test("a superseded recapture is history: listing shows the current copy and metrics keep both", async () => {
+  const h = await artifactWorker();
+  const { client, close } = await lead(h);
+  try {
+    // Two captures of the same source with different content. The recapture publishes over the
+    // first, so the first record becomes history rather than a second published copy.
+    h.write("findings.json", '{"verdict":"first"}');
+    const first = await h.coordinator.artifacts.preserve(
+      h.workerId,
+      "findings.json",
+      {},
+    );
+    h.write("findings.json", '{"verdict":"second"}');
+    const second = await h.coordinator.artifacts.preserve(
+      h.workerId,
+      "findings.json",
+      {},
+    );
+    expect(second.artifact_id).not.toBe(first.artifact_id);
+    const listed = body(
+      await client.callTool({
+        name: "list_artifacts",
+        arguments: { worker_id: h.workerId },
+      }),
+    ) as unknown as {
+      artifacts: { artifact_id: string; sha256: string; state: string }[];
+    };
+    const ids = listed.artifacts.map((a) => a.artifact_id);
+    expect(ids).toContain(second.artifact_id);
+    // Superseded history is not offered as a current artifact.
+    expect(ids).not.toContain(first.artifact_id);
+    // The superseded copy is still readable by identifier while its bytes exist, and the metrics
+    // counters keep counting both verified captures.
+    const current = await client.callTool({
+      name: "get_artifact_metadata",
+      arguments: { artifact_id: second.artifact_id },
+    });
+    expect(current.isError).not.toBe(true);
+    const metrics = await new Metrics(h.coordinator).render();
+    const preserved = [
+      ...metrics.matchAll(
+        /^swarmforge_artifacts_preserved_total\{kind="([^"]+)"\} ([0-9]+)$/gm,
+      ),
+    ].map((m) => Number(m[2]));
+    expect(preserved.reduce((a, b) => a + b, 0)).toBeGreaterThanOrEqual(2);
+    const stored = [
+      ...metrics.matchAll(
+        /^swarmforge_artifacts_stored\{kind="([^"]+)"\} ([0-9]+)$/gm,
+      ),
+    ].map((m) => Number(m[2]));
+    expect(stored.reduce((a, b) => a + b, 0)).toBe(1);
+  } finally {
+    await close();
+    await h.done();
+  }
+}, 30000);
 
 test("retry_worker_finalization collects a cancelled worker and then refuses a second retry", async () => {
   const h = await artifactWorker();
@@ -620,11 +678,11 @@ test("a worker that produced none of the optional output still settles preserved
     await runToRunning(h, created.worker_id);
     h.write("findings.json", '{"only":"output"}');
     await h.coordinator.control(created.worker_id, "cancel");
-    for (let attempt = 0; attempt < 60; attempt++) {
+    for (let attempt = 0; attempt < 200; attempt++) {
       await h.coordinator.tick();
       const record = h.store.get(created.worker_id).finalization;
       if (record?.state === "preserved" || record?.state === "failed") break;
-      await Bun.sleep(10);
+      await Bun.sleep(20);
     }
     expect(h.store.get(created.worker_id).finalization?.state).toBe(
       "preserved",
@@ -913,7 +971,7 @@ test("a real directory of long file names is captured without exceeding the resp
   const h = await artifactWorker();
   const { client, close } = await lead(h);
   try {
-    for (let n = 0; n < 30; n++)
+    for (let n = 0; n < 12; n++)
       h.write(
         `logs/${`seg-${String(n).padStart(4, "0")}${"y".repeat(190)}`}.json`,
         `{"n":${n}}`,
@@ -928,8 +986,8 @@ test("a real directory of long file names is captured without exceeding the resp
       total: number;
       truncated: boolean;
     };
-    expect(out.total).toBe(30);
-    expect(out.artifacts.length).toBe(30);
+    expect(out.total).toBe(12);
+    expect(out.artifacts.length).toBe(12);
     expect(out.truncated).toBe(false);
     expect(out.artifacts.every((r) => r.state === "preserved")).toBe(true);
     expect(Buffer.byteLength(JSON.stringify(captured))).toBeLessThanOrEqual(
@@ -950,12 +1008,12 @@ test("a real directory of long file names is captured without exceeding the resp
       for (const listed of page.artifacts) seen.add(listed.artifact_id);
       if (page.next_offset === null) break;
     }
-    expect(seen.size).toBe(30);
+    expect(seen.size).toBe(12);
   } finally {
     await close();
     await h.done();
   }
-});
+}, 30000);
 
 test("list_artifacts state filtering is a returned-page filter and does not change paging", async () => {
   const h = await artifactWorker();

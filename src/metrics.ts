@@ -40,9 +40,9 @@ const finalizationOutcomes = [
 ] as const;
 // The cumulative counters come from one grouped query over the durable artifact event table, so
 // they are exact at any size. Only the collection-duration histogram has to walk rows, and it
-// streams them with a budget; reaching the budget reports an incomplete histogram rather than
-// silently truncating it.
-const artifactDurationBound = 50000;
+// streams them with a budget that is twice the per-capture entry bound; reaching the budget
+// reports an incomplete histogram rather than silently truncating it.
+const artifactDurationBound = 20000;
 // Durable artifact event names, written by the data plane's artifact repository.
 const artifactAttemptedEvent = "artifact.attempted";
 const artifactPreservedEvent = "artifact.preserved";
