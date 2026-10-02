@@ -1862,3 +1862,209 @@ test("an injected storage backend is used instead of a local directory", async (
     await harness.cleanup();
   }
 });
+
+test("recaptures with no run id supersede, settle and keep their bytes", async () => {
+  // A capture started without a run id is stored with run_id NULL, and the
+  // current-copy index normalises that column. Every comparison has to use the
+  // same normalisation: compared against a NULL argument, `ifnull(run_id,'')`
+  // is NULL rather than true, matches no row, and leaves the previous copy
+  // current so the row being published collides with it.
+  write("norun.txt", "first copy");
+  const first = await h.artifacts.preserve(
+    worker,
+    ".swarmforge/artifacts/norun.txt",
+  );
+  expect(first.run_id).toBeNull();
+  expect(first.state).toBe("preserved");
+  // Sequential: the same source, new content, still no run id.
+  write("norun.txt", "second copy");
+  const second = await h.artifacts.preserve(
+    worker,
+    ".swarmforge/artifacts/norun.txt",
+  );
+  expect(second.state).toBe("preserved");
+  expect(second.run_id).toBeNull();
+  expect(second.artifact_id).not.toBe(first.artifact_id);
+  expect(h.artifacts.metadata(first.artifact_id).superseded_by).toBe(
+    second.artifact_id,
+  );
+  // One current record for the source, and both bytes are still readable.
+  expect(
+    h.artifacts
+      .list({ worker_id: worker })
+      .artifacts.filter((record) => record.original_path.endsWith("norun.txt")),
+  ).toHaveLength(1);
+  expect(
+    Buffer.from(
+      await h.artifacts.read(first.artifact_id, 0, first.size),
+    ).toString(),
+  ).toBe("first copy");
+  expect(
+    Buffer.from(
+      await h.artifacts.read(second.artifact_id, 0, second.size),
+    ).toString(),
+  ).toBe("second copy");
+  // Identical content again is still idempotent with no run id.
+  const third = await h.artifacts.preserve(
+    worker,
+    ".swarmforge/artifacts/norun.txt",
+  );
+  expect(third.state).toBe("preserved");
+  expect(third.storage_key).toBe(second.storage_key);
+  expect(
+    h.artifacts
+      .list({ worker_id: worker })
+      .artifacts.filter((record) => record.original_path.endsWith("norun.txt")),
+  ).toHaveLength(1);
+});
+
+test("two concurrent recaptures with no run id both settle with one current copy", async () => {
+  write("race-norun.txt", "original");
+  const first = await h.artifacts.preserve(
+    worker,
+    ".swarmforge/artifacts/race-norun.txt",
+  );
+  const gates: (() => void)[] = [];
+  const transport = h.workspace.transport;
+  const original = transport.open.bind(transport);
+  let call = 0;
+  transport.open = async (...args) => {
+    const transfer = await original(...args);
+    call++;
+    if (call !== 1) return transfer;
+    const stream = transfer.stream;
+    return {
+      ...transfer,
+      stream: new ReadableStream<Uint8Array>({
+        async start(read) {
+          await new Promise<void>((resolve) => gates.push(resolve));
+          const reader = stream.getReader();
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            if (value) read.enqueue(value);
+          }
+          read.close();
+        },
+      }),
+    };
+  };
+  const one = h.artifacts.preserve(
+    worker,
+    ".swarmforge/artifacts/race-norun.txt",
+  );
+  const two = h.artifacts.preserve(
+    worker,
+    ".swarmforge/artifacts/race-norun.txt",
+  );
+  try {
+    for (let waited = 0; waited < 250 && gates.length < 1; waited++)
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(gates).toHaveLength(1);
+    gates[0]!();
+    const [a, b] = await Promise.all([one, two]);
+    expect([a.state, b.state]).toEqual(["preserved", "preserved"]);
+    expect(
+      h.artifacts
+        .list({ worker_id: worker })
+        .artifacts.filter((record) =>
+          record.original_path.endsWith("race-norun.txt"),
+        ),
+    ).toHaveLength(1);
+    // Every stored copy still verifies through its own record.
+    for (const record of [first, a, b]) {
+      const bytes = await h.artifacts.read(record.artifact_id, 0, record.size);
+      expect(createHash("sha256").update(bytes).digest("hex")).toBe(
+        record.sha256 ?? "",
+      );
+    }
+  } finally {
+    transport.open = original;
+  }
+});
+
+test("a failed recapture with no run id leaves the previous copy current", async () => {
+  write("fail-norun.txt", "the good copy");
+  const first = await h.artifacts.preserve(
+    worker,
+    ".swarmforge/artifacts/fail-norun.txt",
+  );
+  // Changed content, so the recapture is a real attempt rather than the
+  // idempotent no-op that identical bytes take.
+  write("fail-norun.txt", "a different copy that cannot be stored");
+  const storage = h.artifacts.storage;
+  const put = storage.put.bind(storage);
+  storage.put = async () => {
+    throw new Error("storage unavailable");
+  };
+  try {
+    await expect(
+      h.artifacts.preserve(worker, ".swarmforge/artifacts/fail-norun.txt"),
+    ).rejects.toThrow(/storage unavailable/);
+  } finally {
+    storage.put = put;
+  }
+  const current = h.artifacts.metadata(first.artifact_id);
+  expect(current.state).toBe("preserved");
+  expect(current.superseded_by ?? null).toBeNull();
+  expect(
+    Buffer.from(
+      await h.artifacts.read(first.artifact_id, 0, current.size),
+    ).toString(),
+  ).toBe("the good copy");
+  expect(
+    h.artifacts
+      .list({ worker_id: worker })
+      .artifacts.filter((record) => record.state === "preserved"),
+  ).toHaveLength(1);
+  // A retry with the same content still succeeds on the same source.
+  write("fail-norun.txt", "the good copy");
+  const retry = await h.artifacts.preserve(
+    worker,
+    ".swarmforge/artifacts/fail-norun.txt",
+  );
+  expect(retry.state).toBe("preserved");
+  expect(
+    h.artifacts
+      .list({ worker_id: worker })
+      .artifacts.filter(
+        (record) =>
+          record.original_path.endsWith("fail-norun.txt") &&
+          record.state === "preserved",
+      ),
+  ).toHaveLength(1);
+});
+
+test("a restart after a no-run-id recapture finds the current copy intact", async () => {
+  write("restart-norun.txt", "before");
+  const first = await h.artifacts.preserve(
+    worker,
+    ".swarmforge/artifacts/restart-norun.txt",
+  );
+  write("restart-norun.txt", "after");
+  const second = await h.artifacts.preserve(
+    worker,
+    ".swarmforge/artifacts/restart-norun.txt",
+  );
+  const { ArtifactRepository } = await import("../src/artifact-store");
+  const restarted = new ArtifactRepository(h.store.db as never);
+  // The current copy for a NULL run id is found through the same normalisation.
+  expect(
+    restarted.find({
+      worker_id: worker,
+      run_id: null,
+      original_path: ".swarmforge/artifacts/restart-norun.txt",
+      kind: "file",
+    }),
+  ).toMatchObject({ artifact_id: second.artifact_id, state: "preserved" });
+  expect(restarted.get(first.artifact_id).superseded_by).toBe(
+    second.artifact_id,
+  );
+  expect(restarted.pending()).toEqual([]);
+  for (const record of [first, second]) {
+    const bytes = await h.artifacts.read(record.artifact_id, 0, record.size);
+    expect(createHash("sha256").update(bytes).digest("hex")).toBe(
+      record.sha256 ?? "",
+    );
+  }
+});

@@ -904,7 +904,12 @@ export class ArtifactRepository {
         .run(
           input.artifact_id,
           source.worker_id,
-          source.run_id,
+          // The comparison is `ifnull(run_id,'')`, so the argument has to be the
+          // same normalisation: a NULL run id compared against a NULL argument is
+          // NULL rather than true, which matches no row at all and leaves the
+          // previous copy current - so the row being published then collides with
+          // it on the partial unique index.
+          source.run_id ?? "",
           source.original_path,
           source.kind,
           input.artifact_id,
