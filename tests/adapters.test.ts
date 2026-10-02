@@ -31,15 +31,21 @@ function worker() {
     opencode_session_id: "ses-1",
   };
 }
-test("OpenCode accounting reads older message pages after downtime", async () => {
+test("OpenCode reads the newest bounded window and sends no unsupported paging", async () => {
+  // 1.18.31 accepts limit only: there is no before, offset or cursor, so a session at the
+  // page limit cannot be walked backwards and must never be asked to. The window is bounded,
+  // the current dispatch survives it, and only the supported knob goes on the wire.
+  const requests: URLSearchParams[] = [];
   const a = new OpenCodeAgent(c, (async (input: RequestInfo | URL) => {
     const url = new URL((input as Request).url);
-    if (url.pathname.endsWith("/status"))
-      return Response.json({ "ses-1": { type: "idle" } });
+    if (url.pathname.endsWith("/status")) {
+      return Response.json({ "ses-1": { type: "busy" } });
+    }
+    requests.push(url.searchParams);
     const message = (id: string) => ({
       info: {
         id,
-        parentID: "msg-task",
+        parentID: id === "msg-current" ? "msg-task" : "msg-old",
         role: "assistant",
         modelID: "qwen",
         time: { created: 1, completed: 2 },
@@ -52,17 +58,27 @@ test("OpenCode accounting reads older message pages after downtime", async () =>
       },
       parts: [],
     });
-    return Response.json(
-      url.searchParams.has("before")
-        ? [message("msg-000")]
-        : Array.from({ length: 100 }, (_, i) =>
-            message(`msg-${String(i + 1).padStart(3, "0")}`),
-          ),
-    );
+    // Newest first, then sliced: the shape the server actually returns.
+    const all = [
+      ...Array.from({ length: 300 }, (_, i) => message(`msg-old-${i}`)),
+      { info: message("msg-task").info, parts: [] },
+      message("msg-current"),
+    ];
+    const limit = Number(url.searchParams.get("limit"));
+    return Response.json(all.slice(all.length - limit));
   }) as typeof fetch);
   const snapshot = await a.inspect(worker());
-  expect(snapshot.messages).toHaveLength(101);
-  expect(snapshot.messages.reduce((total, m) => total + m.output, 0)).toBe(202);
+  expect(requests).toHaveLength(1);
+  expect([...(requests[0]?.keys() ?? [])].sort()).toEqual([
+    "directory",
+    "limit",
+  ]);
+  expect(Number(requests[0]?.get("limit"))).toBe(100);
+  expect(snapshot.status).toBe("busy");
+  expect(snapshot.messages).toHaveLength(100);
+  // The current dispatch is the newest turn, so it is inside the bounded window.
+  expect(snapshot.messages.some((m) => m.id === "msg-task")).toBe(true);
+  expect(snapshot.messages.at(-1)?.parent_id).toBe("msg-task");
 });
 test("Freestyle creates persistent uniquely discoverable VMs without management secrets in guest config", async () => {
   const calls: { path: string; body: unknown }[] = [];

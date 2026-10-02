@@ -487,6 +487,66 @@ test("normal destruction refuses an unpreserved workspace and succeeds once it s
   h.store.close();
 });
 
+test("a legacy worker row still preserves its defaults under its own run and destroys", async () => {
+  const h = harness({ ...fast, SWARMFORGE_GIT_PUSH_MODE: "ssh" });
+  const { id, vm, run } = await started(h);
+  await h.provider.writeFile(
+    vm,
+    "/workspace/.swarmforge/artifacts/finding.txt",
+    "legacy-body",
+  );
+  h.agent.complete(h.store.get(id));
+  await h.coordinator.tick();
+  // The completed run handed off successfully, so the retention gates are satisfied on their own.
+  expect(h.store.get(id).state).toBe("completed");
+  expect(h.store.result(id)?.git?.persisted).toBe(true);
+  // A row written by the baseline schema: it predates artifact declarations, workspace
+  // snapshots and preservation records entirely, so those three fields are simply absent.
+  const { artifacts, snapshot_on_failure, finalization, ...legacy } =
+    h.store.get(id);
+  void artifacts;
+  void snapshot_on_failure;
+  void finalization;
+  h.store.db
+    .query("UPDATE workers SET body=? WHERE worker_id=?")
+    .run(JSON.stringify(legacy), id);
+  const row = h.store.get(id) as unknown as Record<string, unknown>;
+  expect(row.artifacts).toBeUndefined();
+  expect(row.snapshot_on_failure).toBeUndefined();
+  expect(row.finalization).toBeUndefined();
+
+  // Normal destruction now succeeds: the absent declarations default to none, and the settled
+  // run is still attributed even though it has no active dispatch any more.
+  const destroyed = await within(5000, h.coordinator.control(id, "destroy"));
+  expect(destroyed.state).toBe("destroyed");
+  expect(destroyed.finalization?.state).toBe("preserved");
+  expect(destroyed.finalization?.run_id).toBe(run);
+  // One attempt: the absent declarations cost nothing, so no workspace is retried away.
+  expect(destroyed.finalization?.attempts).toBe(1);
+  expect(destroyed.finalization?.error).toBeNull();
+  expect(h.provider.vms.has(vm)).toBe(false);
+  // The original outcome and its own validated result are read, never rewritten.
+  expect(h.store.result(id, run)?.status).toBe("completed");
+  expect(h.store.result(id, run)?.git?.persisted).toBe(true);
+  // The workspace survived outside the guest, byte for byte, under its own run.
+  const finding = records(h, id).find(
+    (r) => r.original_path === ".swarmforge/artifacts/finding.txt",
+  )!;
+  expect(finding.state).toBe("preserved");
+  expect(finding.sha256).toBe(sha256("legacy-body"));
+  expect(finding.run_id).toBe(run);
+  expect(decode(await h.coordinator.artifacts.read(finding.artifact_id))).toBe(
+    "legacy-body",
+  );
+  expect(
+    records(h, id)
+      .filter((r) => r.run_id === run)
+      .map((r) => r.original_path)
+      .sort(),
+  ).toEqual([".swarmforge/artifacts/finding.txt", ".swarmforge/result.json"]);
+  h.store.close();
+});
+
 test("force destruction abandons a live collection before deleting the VM", async () => {
   const h = harness({ ...fast, SWARMFORGE_ARTIFACT_TIMEOUT_MS: 400 });
   const { id, vm } = await started(h);

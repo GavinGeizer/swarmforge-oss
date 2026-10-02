@@ -44,6 +44,14 @@ Bun loads `.env`. Empty optional entries use their defaults. Required configurat
 | `SWARMFORGE_METRICS_ENABLED` | `true` | Exactly `true` or `false`. |
 | `SWARMFORGE_METRICS_PORT` | `9090` | Separate Prometheus listener; must differ from MCP port. Protect externally if public. |
 | `SWARMFORGE_METRICS_TEAMS` | `default` | Comma-separated team label allowlist; all other IDs aggregate under `other`. |
+| `SWARMFORGE_ARTIFACT_DIR` | `artifacts` beside `SWARMFORGE_DB_PATH` | Absolute private storage root for preserved artifacts and diagnostics. An in-memory database uses a private temporary directory, so nothing lands in a world-readable place. |
+| `SWARMFORGE_ARTIFACT_MAX_BYTES` | `1073741824` | Maximum bytes for one captured file or archive. A larger source is refused, never truncated. |
+| `SWARMFORGE_ARTIFACT_MAX_ENTRIES` | `10000` | Maximum entries described by one directory listing or snapshot. |
+| `SWARMFORGE_ARTIFACT_MAX_DEPTH` | `32` | Maximum directory depth a listing or snapshot may describe. |
+| `SWARMFORGE_ARTIFACT_TIMEOUT_MS` | `120000` | Deadline for one capture, combining the caller's cancellation with this bound. |
+| `SWARMFORGE_FINALIZATION_MAX_ATTEMPTS` | `3` | Automatic collection attempts per worker. Once exhausted, preservation reports failure, the VM is retained and `retry_worker_finalization` remains available. |
+| `SWARMFORGE_FINALIZATION_RETRY_MS` | `2000` | Backoff before the next automatic attempt; it doubles with each attempt. |
+| `SWARMFORGE_ARTIFACT_CONCURRENCY` | `4` | Concurrent artifact transfers, including direct MCP calls and lifecycle collection. |
 | `SWARMFORGE_RUN_SMOKE` | `false` | Script-only explicit opt-in for a real billable smoke VM. |
 
 Worker environment includes worker/team/task IDs, Git location, workspace, model API key, and the OpenCode port/config/authentication settings. The model URL/name live in the guest OpenCode configuration. Each server receives an independent random password, retained privately in SQLite. Freestyle credentials and the MCP bearer token are never deliberately copied into the guest.
@@ -57,5 +65,7 @@ For branch handoff, SwarmForge creates `swarmforge/<team>/<task>/<worker-id>` fr
 To use GitHub App handoff, create an App with **Contents: Read and write**, install it on the target repository, generate a private key, and put that key on the control-plane host. Set `SWARMFORGE_GIT_TREE=https://github.com/owner/repo.git`, `SWARMFORGE_GIT_PUSH_MODE=github-app`, the repository, App ID, installation ID, and private-key path above. SwarmForge requests a new repository-scoped installation token for clone and push; it does not store that token in SQLite or the worker result.
 
 To use SSH handoff, set `SWARMFORGE_GIT_TREE` to a cloneable Git URL, `SWARMFORGE_GIT_PUSH_MODE=ssh`, and the SSH push URL, key path, and pinned `known_hosts` path above. On GitHub, use a write-enabled deploy key for that repository. For a local machine, expose an SSH Git endpoint reachable from Freestyle VMs and point the push URL at its bare repository. The dedicated key is copied to the worker only during clone and push and then removed; protect that VM while it is running.
+
+Preserved artifact bytes are private to the coordinator process and share its bearer access: they are only served through the authenticated, attachment-only download route described in [ARTIFACTS.md](ARTIFACTS.md). `SWARMFORGE_ARTIFACT_DIR` and its database live on the same volume as the coordinator, so include them in that volume's backups; `bun scripts/artifact-salvage-smoke.ts --freestyle <vm-id>` salvages a retained VM into a private snapshot without touching the live database or the VM itself.
 
 Keep snapshots free of infrastructure credentials. SQLite contains prompts and worker server passwords; permissions are restricted, but disk encryption and backups are deployment responsibilities. Logs use `<DB_PATH>.log` and one rotated backup, each capped at approximately 1 MiB. The process lock is `<DB_PATH>.lock`.

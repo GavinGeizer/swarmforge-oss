@@ -1,11 +1,48 @@
 import { expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import type { WorkerProvider } from "../src/domain";
 import { WorkerFiles } from "../src/files";
 import { createMcpServer } from "../src/mcp";
 import { Metrics } from "../src/metrics";
 import { Redactor } from "../src/security";
 import { harness, runToRunning, task } from "./helpers";
+import { type LocalWorkspace, localWorkspace } from "./local-artifact-provider";
+
+// The live artifact surfaces capture through the guest helper, so a test that touches them needs
+// a real local guest. The coordinator reads the artifact root and storage root once, at
+// construction, so the harness has to be built with them rather than patched afterwards.
+async function harnessWithGuest(overrides: Parameters<typeof harness>[0] = {}) {
+  const workspace: LocalWorkspace = await localWorkspace();
+  const storage = mkdtempSync(join(tmpdir(), "swarmforge-test-storage-"));
+  const h = harness({
+    ...overrides,
+    SWARMFORGE_WORKSPACE: workspace.root,
+    SWARMFORGE_ARTIFACT_DIR: storage,
+  });
+  (h.provider as WorkerProvider).artifactTransport = workspace.transport;
+  // The provider's guest preparation creates these; the transport fixture does not.
+  for (const directory of ["artifacts", "logs"])
+    mkdirSync(join(workspace.root, ".swarmforge", directory), {
+      recursive: true,
+    });
+  return {
+    h,
+    write: (path: string, content: string) => {
+      const target = join(workspace.root, path);
+      mkdirSync(join(target, ".."), { recursive: true });
+      writeFileSync(target, content);
+    },
+    cleanup: async () => {
+      rmSync(workspace.base, { recursive: true, force: true });
+      await workspace.cleanup();
+      rmSync(storage, { recursive: true, force: true });
+    },
+  };
+}
 
 test("log inspection does not execute guest commands for paused workers and retains destroyed-worker events", async () => {
   const h = harness();
@@ -44,15 +81,44 @@ test("log inspection retains audit events during provider outages", async () => 
 });
 
 test("MCP client can create, observe, message, query team/task and collect a structured result", async () => {
-  const h = harness();
+  const { h, cleanup: guestCleanup } = await harnessWithGuest();
   const server = createMcpServer(h.coordinator);
   const client = new Client({ name: "test-lead", version: "1" });
   const [a, b] = InMemoryTransport.createLinkedPair();
   await server.connect(a);
   await client.connect(b);
   const tools = await client.listTools();
-  expect(tools.tools).toHaveLength(17);
+  expect(tools.tools).toHaveLength(24);
   expect(tools.tools.map((t) => t.name)).toContain("wait_for_state_change");
+  expect(tools.tools.map((t) => t.name)).toEqual(
+    expect.arrayContaining([
+      "list_artifacts",
+      "get_artifact_metadata",
+      "preserve_artifact",
+      "read_artifact",
+      "snapshot_worker",
+      "retry_worker_finalization",
+      "list_worker_files",
+    ]),
+  );
+  // Retrieval is read-only; only explicit preservation and retry may mutate a worker.
+  for (const name of [
+    "list_artifacts",
+    "get_artifact_metadata",
+    "read_artifact",
+    "list_worker_files",
+  ])
+    expect(
+      tools.tools.find((t) => t.name === name)?.annotations?.readOnlyHint,
+    ).toBe(true);
+  for (const name of [
+    "preserve_artifact",
+    "snapshot_worker",
+    "retry_worker_finalization",
+  ])
+    expect(
+      tools.tools.find((t) => t.name === name)?.annotations?.readOnlyHint,
+    ).toBe(false);
   const created = await client.callTool({
     name: "spawn_worker",
     arguments: task,
@@ -97,22 +163,18 @@ test("MCP client can create, observe, message, query team/task and collect a str
   await client.close();
   await server.close();
   h.store.close();
+  await guestCleanup();
 });
 test("artifact handles are bounded and path traversal and secret contents are blocked", async () => {
-  const h = harness();
+  const {
+    h,
+    write: guestWrite,
+    cleanup: guestCleanup,
+  } = await harnessWithGuest();
   const w = h.coordinator.spawn(task);
   await runToRunning(h, w.worker_id);
-  const vm = h.store.get(w.worker_id).vm_id!;
-  await h.provider.writeFile(
-    vm,
-    "/workspace/.swarmforge/artifacts/report.txt",
-    "x".repeat(100000),
-  );
-  await h.provider.writeFile(
-    vm,
-    "/workspace/.swarmforge/artifacts/secret.txt",
-    "model-secret",
-  );
+  guestWrite(".swarmforge/artifacts/report.txt", "x".repeat(100000));
+  guestWrite(".swarmforge/artifacts/secret.txt", "model-secret");
   const files = new WorkerFiles(h.coordinator);
   const handle = await files.artifact(w.worker_id, "report.txt");
   expect(handle.size).toBe(100000);
@@ -124,6 +186,7 @@ test("artifact handles are bounded and path traversal and secret contents are bl
     files.readArtifact(w.worker_id, "secret.txt", 0, 1024),
   ).rejects.toThrow();
   h.store.close();
+  await guestCleanup();
 });
 test("metrics aggregate durable tokens and never label by worker/task identifiers", async () => {
   const h = harness();
@@ -155,14 +218,14 @@ test("redaction scrubs known secrets, credential fields and URL passwords recurs
 });
 
 test("artifact resource links can actually be read through an MCP client", async () => {
-  const h = harness();
+  const {
+    h,
+    write: guestWrite,
+    cleanup: guestCleanup,
+  } = await harnessWithGuest();
   const w = h.coordinator.spawn(task);
   await runToRunning(h, w.worker_id);
-  await h.provider.writeFile(
-    h.store.get(w.worker_id).vm_id!,
-    "/workspace/.swarmforge/artifacts/report.txt",
-    "hello",
-  );
+  guestWrite(".swarmforge/artifacts/report.txt", "hello");
   const server = createMcpServer(h.coordinator);
   const client = new Client({ name: "reader", version: "1" });
   const [a, b] = InMemoryTransport.createLinkedPair();
@@ -180,6 +243,7 @@ test("artifact resource links can actually be read through an MCP client", async
     await client.close();
     await server.close();
     h.store.close();
+    await guestCleanup();
   }
 });
 test("artifact directory listing rejects symlink roots", async () => {
