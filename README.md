@@ -58,7 +58,7 @@ repository so "commit nothing and push nothing" leaves no untracked dirt.
 
 Artifact preservation and the finalization lifecycle are integrated here — manager surface, capture
 data plane and lifecycle — and [ARTIFACT-QUICKSTART.md](docs/ARTIFACT-QUICKSTART.md) is the operator
-path through them. Final real-VM release verification is still pending.
+path through them. Native Freestyle recovery and normal destruction were verified; see the [validation report](docs/ARTIFACT-VALIDATION.md).
 
 ### Move the workers to another repository
 
@@ -109,7 +109,7 @@ Artifact retrieval is designed so a worker VM is not the only copy of a worker's
 
 ## Verification and operations
 
-Tests use real SQLite and MCP transports with injected Freestyle/OpenCode doubles; Git safety tests execute real Git commands against disposable repositories. The optional `SWARMFORGE_RUN_SMOKE=true bun run smoke` creates one billable VM using the configured infrastructure. On success it destroys that smoke VM; on failure it retains evidence and prints identifiers. Ordinary tests do not create VMs. `bun scripts/artifact-salvage-smoke.ts` is the artifact end-to-end check: locally it drives the coordinator and manager surfaces over a temporary guest directory whose every capture runs `src/providers/artifact-helper.py` as a subprocess, and `--freestyle <vm-id>` reads one retained VM instead without a worker model. Final real-VM release verification is still pending.
+Tests use real SQLite and MCP transports with injected Freestyle/OpenCode doubles; Git safety tests execute real Git commands against disposable repositories. The optional `SWARMFORGE_RUN_SMOKE=true bun run smoke` creates one billable VM using the configured infrastructure. On success it destroys that smoke VM; on failure it retains evidence and prints identifiers. Ordinary tests do not create VMs. `bun scripts/artifact-salvage-smoke.ts` is the artifact end-to-end check: locally it drives the coordinator and manager surfaces over a temporary guest directory whose every capture runs `src/providers/artifact-helper.py` as a subprocess, and `--freestyle <vm-id>` reads one retained VM instead without a worker model. Native Freestyle recovery and normal destruction were verified; see the [validation report](docs/ARTIFACT-VALIDATION.md).
 
 Read [ARCHITECTURE.md](docs/ARCHITECTURE.md), [WORKER-PROTOCOL.md](docs/WORKER-PROTOCOL.md), [ARTIFACTS.md](docs/ARTIFACTS.md), [OBSERVABILITY.md](docs/OBSERVABILITY.md), and the verified API decisions in [RESEARCH.md](docs/RESEARCH.md).
 

@@ -6,7 +6,7 @@ lifecycle stage: an artifact that was never preserved dies with the VM, and a ta
 survives destruction but its reports, logs and profiles do not.
 
 > Artifact preservation and the finalization lifecycle are integrated here — manager surface, capture
-> data plane and lifecycle — and final real-VM release verification is still pending. See
+> data plane and lifecycle — and native Freestyle recovery and normal destruction are verified ([validation](ARTIFACT-VALIDATION.md)). See
 > [ARTIFACT-QUICKSTART.md](ARTIFACT-QUICKSTART.md) for the operator runbook.
 
 ```text

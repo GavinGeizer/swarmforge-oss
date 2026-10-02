@@ -73,4 +73,4 @@ bun scripts/artifact-salvage-smoke.ts
 bun scripts/artifact-salvage-smoke.ts --freestyle <vm-id>   # never destroys the VM
 ```
 
-A local filesystem run executes the production guest helper and proves coordinator and manager behavior on local files. The credentialed Freestyle proof additionally verifies the native VM transport. Final real-VM release verification is still pending. If a capture fails, inspect `list_worker_files` and retry; artifact bytes never need model reconstruction.
+A local filesystem run executes the production guest helper and proves coordinator and manager behavior on local files. The credentialed Freestyle proof additionally verifies the native VM transport. Native Freestyle recovery and normal destruction were verified; see the [validation report](ARTIFACT-VALIDATION.md). If a capture fails, inspect `list_worker_files` and retry; artifact bytes never need model reconstruction.
