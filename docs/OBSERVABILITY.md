@@ -57,8 +57,8 @@ never decrease. Do not alert on them as a lossless ledger for a churning path â€
 `swarmforge_artifacts_stored`, `swarmforge_artifacts_stored_bytes` and `swarmforge_artifacts_in_flight`,
 which come from the record table and are exact current state, or `swarmforge_artifacts_attempts_total`,
 which is exact. The same bound also limits the per-artifact event history the data plane can read
-back (`ArtifactService.events(artifact_id, limit = 20)`, newest first); that accessor is not
-currently exposed as an MCP tool.
+back (`ArtifactService.events(artifact_id, limit = 20)`, oldest first, and hard-capped at 200 rows by
+the store); that accessor is not currently exposed as an MCP tool.
 
 Counters and gauges otherwise come from grouped queries, so they need no paging. The
 collection-duration histogram has to walk rows, so it streams them with a budget of twenty

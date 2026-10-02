@@ -5,16 +5,9 @@ the coordinator copies it into private storage, so artifact preservation is a fi
 lifecycle stage: an artifact that was never preserved dies with the VM, and a task result
 survives destruction but its reports, logs and profiles do not.
 
-> **Integration status on this branch: the manager surface only.** `src/mcp.ts`, `src/http.ts`,
-> `src/metrics.ts` and the tests below exist here, but the capture data plane (`src/artifacts.ts`,
-> `src/artifact-store.ts`, the guest helper) and the finalization lifecycle (`src/finalization.ts`)
-> are **not merged into this branch**. `Coordinator.artifacts`, `Worker.finalization`, the
-> `SWARMFORGE_ARTIFACT_*` / `SWARMFORGE_FINALIZATION_*` settings and the `artifacts` /
-> `snapshot_on_failure` keys on `spawnSchema` therefore do not exist yet, `bun run check` does not
-> pass, and no artifact call in this document has been executed end to end. This page is the
-> reference for the intended contract, not a description of running software. See
-> [ARTIFACT-QUICKSTART.md](ARTIFACT-QUICKSTART.md) for the operator runbook and the honest
-> verification steps, and [README.md](../README.md) for what the branch does run today.
+> Artifact preservation and the finalization lifecycle are integrated here — manager surface, capture
+> data plane and lifecycle — and final real-VM release verification is still pending. See
+> [ARTIFACT-QUICKSTART.md](ARTIFACT-QUICKSTART.md) for the operator runbook.
 
 ```text
 worker workspace file
@@ -143,6 +136,11 @@ none of them still settles preserved, while a declared `required` path that is a
 collection. Full-workspace snapshots are never automatic for a successful task: they are explicit
 through `snapshot_worker`, configured per task with `snapshot_on_failure`, or taken by an
 operator.
+
+The `repo/` prefix in a declaration follows the clone target, so the same declaration keeps working
+after the coordinator is pointed at another repository. The repository is global configuration with no
+per-worker override, so retargeting means finishing the old repository's workers before the switch —
+see [Move the workers to another repository](../README.md#move-the-workers-to-another-repository).
 
 ## Faithful raw bytes versus safe excerpts
 
