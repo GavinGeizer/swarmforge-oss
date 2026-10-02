@@ -1,6 +1,6 @@
 # Artifact retrieval release validation
 
-Validated on 2026-10-02 with Bun 1.4.2 and Python 3.12.3. Feature work was implemented and independently reviewed through SwarmForge workers. The coordinator checkout used for the final candidate was `/tmp/swarmforge-ready-candidate20261002`; private evidence is under `/tmp/artifact-salvage-evidence` on the validation host.
+Validated on 2026-10-02 with Bun 1.4.2 and Python 3.12.3. Feature work was implemented and independently reviewed through SwarmForge workers. The final candidate was verified in `/tmp/swarmforge-ready-candidate20261002` and then integrated in `/tmp/swarmforge-artifact-salvage`; private evidence is under `/tmp/artifact-salvage-evidence` on the validation host.
 
 ## Architecture
 
@@ -12,19 +12,19 @@ Raw artifact bytes remain faithful in private storage. MCP excerpts are screened
 
 ## Exact validation commands and results
 
-Commands ran from the candidate checkout unless otherwise stated.
+The full suite, project check, final smoke and final scale commands also ran from the integrated checkout. Source, script and test files were compared byte for byte with the proven candidate: all 60 matched.
 
 | Command | Result |
 | --- | --- |
-| `bun test > /tmp/artifact-salvage-evidence/ready-1844-tests.log 2>&1` | 400 pass, 2 skip, 0 fail; 402 tests across 27 files; 2,390 assertions. |
+| `bun test > /tmp/artifact-salvage-evidence/integrated-final-tests.log 2>&1` | 400 pass, 2 skip, 0 fail; 402 tests across 27 files; 2,390 assertions. |
 | `bun run check` | TypeScript and Biome pass; 59 files checked. |
 | `bun test tests/finalization.test.ts > /tmp/artifact-salvage-evidence/finalization-1849.log 2>&1` | 43 pass, 0 fail; 355 assertions. |
 | `bun test tests/artifact-transport.test.ts` | 43 pass, 0 fail, including real Python helper and low file-descriptor-limit regressions. |
 | `bun scripts/artifact-salvage-smoke.ts --keep > /tmp/artifact-salvage-evidence/ready-1803-smoke-keep.json 2>&1` | Pass: dead OpenCode, malformed handoff, 8 preserved artifacts, download checksum valid after workspace deletion; retained-evidence reporting works. |
-| `bun scripts/artifact-salvage-scale.ts > /tmp/artifact-salvage-evidence/ready-1725-scale.json` | 12 workers, 420 preserved artifacts, 120,041,712 stored bytes; 252 checksum rechecks, no mismatches or duplicate records; peak helper concurrency 4, sampled heap 73 MiB and RSS 90 MiB. |
+| `bun scripts/artifact-salvage-scale.ts > /tmp/artifact-salvage-evidence/integrated-final-scale.json` | 12 workers, 420 preserved artifacts, 120,040,008 stored bytes; 252 checksum rechecks, no mismatches or duplicate records; peak helper concurrency 4, sampled heap 64 MiB and RSS 92 MiB. |
 | `bun --env-file=/home/overlord/swarmforge/.env scripts/artifact-salvage-real-proof.ts --execute --provenance-db /tmp/artifact-salvage-evidence/native-proof-provenance/snapshot-1790964083824.sqlite --evidence-dir /tmp/artifact-salvage-evidence/real-native-proof --with-large-binary --destroy-proven-fixture` | Final run exits 0: native Freestyle retrieval, normal VM destruction, provider confirms deletion, both stored files checksum-valid afterward. |
 
-The two full-suite skips are an absent-package sentinel (the actual nested-output test runs) and the optional baseline live model smoke. The separate credentialed native recovery proof did run. The scale result predates the final legacy compatibility correction; its new-worker collection paths are unchanged by that correction.
+The two full-suite skips are an absent-package sentinel (the actual nested-output test runs) and the optional baseline live model smoke. The separate credentialed native recovery proof did run. The final integrated scale run included the legacy compatibility correction and completed in 9.703 seconds. `bun scripts/artifact-salvage-smoke.ts > /tmp/artifact-salvage-evidence/integrated-final-smoke.json 2>&1` also passed on the integrated branch. Provider inventory confirmed zero VMs remain for this task; other teams were untouched.
 
 ## Real VM proof
 
