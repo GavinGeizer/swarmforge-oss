@@ -1,0 +1,21 @@
+{
+  "name": "spawn_worker",
+  "arguments": {
+    "team_id": "audit",
+    "task_id": "findings-audit",
+    "role": "coder",
+    "prompt": "Audit the module boundaries in the checked-out repository and write every finding to repo/findings.json as JSON with a stable shape: { \"findings\": [ { \"file\": \"<repo-relative path>\", \"severity\": \"low|medium|high\", \"note\": \"<one sentence>\" } ] }. Create repo/findings.json yourself; do not only print the findings to stdout. Commit nothing and push nothing. Also leave any long log at .swarmforge/artifacts/audit.log.",
+    "timeout_seconds": 1800,
+    "artifacts": [
+      {
+        "path": "repo/findings.json",
+        "required": true
+      },
+      {
+        "path": ".swarmforge/artifacts/**",
+        "required": false
+      }
+    ],
+    "snapshot_on_failure": true
+  }
+}
