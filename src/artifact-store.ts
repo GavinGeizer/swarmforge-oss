@@ -700,14 +700,12 @@ export class ArtifactRepository {
   }): ArtifactRecord {
     return this.db.transaction(() => {
       const current = this.get(input.record.artifact_id);
-      // The attempt this record is being replaced by is named straight away, so
-      // exactly one record is ever the current one for a source. It is cleared
-      // again if the attempt fails, which is what puts the previous copy back in
-      // charge with its bytes untouched.
+      // The attempt does not touch the record it replaces. The previous copy
+      // stays current and readable for as long as it is the only verified one, so
+      // an attempt that is interrupted, that crashes the process or that fails
+      // leaves the source exactly as it was, and a restart finds the good copy
+      // rather than a hidden one.
       const artifact_id = `art-${randomUUID()}`;
-      this.db
-        .query("UPDATE artifacts SET superseded_by=? WHERE artifact_id=?")
-        .run(artifact_id, current.artifact_id);
       const attempt = this.insert({
         worker_id: current.worker_id,
         task_id: current.task_id,
@@ -816,23 +814,13 @@ export class ArtifactRepository {
     incomplete?: string | null;
   }): ArtifactRecord {
     return this.db.transaction(() => {
-      this.db
-        .query(
-          "UPDATE artifacts SET state='preserved',storage_key=?,size=?,sha256=?,error=NULL,retrieved_at=?,incomplete=? WHERE artifact_id=?",
-        )
-        .run(
-          input.storage_key,
-          input.size,
-          input.sha256,
-          Date.now(),
-          input.incomplete ?? null,
-          input.artifact_id,
-        );
-      // Last publisher wins for a source: any other current copy, whether it is
-      // the one this attempt was told to replace or a concurrent attempt that
-      // finished first, becomes history. The transaction is what keeps exactly
-      // one current row per source while both are being written.
       const source = this.get(input.artifact_id);
+      // Last publisher wins for a source, and the order matters: the other
+      // current copies are marked first, because publishing this row while
+      // another current row exists for the same source is exactly what the
+      // partial unique index forbids. Two recaptures that finish together both
+      // take this path, and neither can fail on the index because the row that
+      // would have conflicted is already history by then.
       this.db
         .query(
           `UPDATE artifacts SET superseded_by=? WHERE worker_id=? AND ifnull(run_id,'')=?
@@ -844,6 +832,18 @@ export class ArtifactRepository {
           source.run_id,
           source.original_path,
           source.kind,
+          input.artifact_id,
+        );
+      this.db
+        .query(
+          "UPDATE artifacts SET state='preserved',storage_key=?,size=?,sha256=?,error=NULL,retrieved_at=?,incomplete=? WHERE artifact_id=?",
+        )
+        .run(
+          input.storage_key,
+          input.size,
+          input.sha256,
+          Date.now(),
+          input.incomplete ?? null,
           input.artifact_id,
         );
       const settled = this.get(input.artifact_id);
@@ -862,16 +862,55 @@ export class ArtifactRepository {
         "UPDATE artifacts SET state='failed',error=?,retrieved_at=coalesce(retrieved_at,?) WHERE artifact_id=?",
       )
       .run(message, Date.now(), record.artifact_id);
-    // A failed attempt replaces nothing, so whatever it was superseding is the
-    // current copy again. Its bytes were never touched.
-    this.db
-      .query("UPDATE artifacts SET superseded_by=NULL WHERE superseded_by=?")
-      .run(record.artifact_id);
+    // A failed attempt replaces nothing. If the row it was going to supersede is
+    // still pointed at by it and no other attempt has published a current copy in
+    // the meantime, that row is the current one again - restoring it blindly would
+    // put two current rows on one source and break the index. Its bytes were never
+    // touched either way.
     const settled = this.get(record.artifact_id);
+    this.restoreSuperseded(settled);
     this.event(artifactEventNames.failed, settled, settled.attempts, {
       error: message,
     });
     return settled;
+  }
+  /**
+   * Puts the previous copy back in charge for a source, but only when this
+   * attempt was the thing hiding it and nothing else has published since.
+   */
+  private restoreSuperseded(failed: ArtifactRecord) {
+    this.db.transaction(() => {
+      const hidden = this.db
+        .query(
+          "SELECT * FROM artifacts WHERE superseded_by=? AND state='preserved'",
+        )
+        .all(failed.artifact_id) as ArtifactRecord[];
+      for (const previous of hidden) {
+        const current = (
+          this.db
+            .query(
+              `SELECT count(*) total FROM artifacts WHERE worker_id=? AND ifnull(run_id,'')=?
+               AND original_path=? AND kind=? AND state='preserved'
+               AND superseded_by IS NULL AND artifact_id<>?`,
+            )
+            .get(
+              failed.worker_id,
+              failed.run_id ?? "",
+              failed.original_path,
+              failed.kind,
+              previous.artifact_id,
+            ) as { total: number }
+        ).total;
+        // Somebody else is the current copy for this source, so the hidden one
+        // stays history: two current rows for one source would be a lie anyway.
+        if (!current)
+          this.db
+            .query(
+              "UPDATE artifacts SET superseded_by=NULL WHERE artifact_id=?",
+            )
+            .run(previous.artifact_id);
+      }
+    })();
   }
   /**
    * One content-free event row: a name, an attempt number, a bounded error and

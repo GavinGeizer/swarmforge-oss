@@ -212,8 +212,6 @@ test("preserving the same source twice is idempotent, and a retry re-attempts", 
   expect(changed.sha256).toBe(sha(text("different output entirely")));
   expect(changed.storage_key).not.toBe(first.storage_key);
   expect(changed.superseded_by).toBeNull();
-  // Only the current copy is kept once its replacement is verified.
-  expect(storedFiles()).toEqual([`${changed.storage_key}`]);
   expect(
     Buffer.from(
       await h.artifacts.read(changed.artifact_id, 0, changed.size),
@@ -221,12 +219,19 @@ test("preserving the same source twice is idempotent, and a retry re-attempts", 
   ).toBe("different output entirely");
   const replaced = h.artifacts.metadata(first.artifact_id);
   expect(replaced.superseded_by).toBe(changed.artifact_id);
-  // A verified replacement supersedes the old copy, so only one object is kept
-  // and the replaced record is history rather than a second stored blob.
+  // A verified replacement supersedes the old copy: the replaced record is
+  // history, and its bytes stay verifiable under the key it always had.
   expect(h.artifacts.metadata(first.artifact_id).storage_key).toBe(
     first.storage_key,
   );
-  expect(storedFiles()).toEqual([`${changed.storage_key}`]);
+  expect(storedFiles()).toEqual(
+    [`${first.storage_key}`, `${changed.storage_key}`].sort(),
+  );
+  expect(
+    Buffer.from(
+      await h.artifacts.read(first.artifact_id, 0, first.size),
+    ).toString(),
+  ).toBe("stable output");
   // Exactly one current record per source, so a listing cannot grow with retries.
   expect(
     h.artifacts
@@ -1017,7 +1022,7 @@ test("a failed recapture keeps the copy readable after the guest is destroyed", 
   });
 });
 
-test("a successful recapture supersedes the old record and drops its object", async () => {
+test("a successful recapture supersedes the old record and retains its bytes", async () => {
   write("swap.txt", "first version");
   const first = await h.artifacts.preserve(
     worker,
@@ -1034,7 +1039,16 @@ test("a successful recapture supersedes the old record and drops its object", as
   expect(h.artifacts.metadata(first.artifact_id).superseded_by).toBe(
     second.artifact_id,
   );
-  expect(storedFiles()).toEqual([`${second.storage_key}`]);
+  // An artifact id that was ever handed out stays readable for exactly the bytes
+  // it described, so both copies are still there and both still verify.
+  expect(storedFiles()).toEqual(
+    [`${first.storage_key}`, `${second.storage_key}`].sort(),
+  );
+  expect(
+    Buffer.from(
+      await h.artifacts.read(first.artifact_id, 0, first.size),
+    ).toString(),
+  ).toBe("first version");
   expect(h.artifacts.list({ worker_id: worker }).artifacts).toHaveLength(1);
   expect(h.artifacts.counters({ worker_id: worker })).toMatchObject({
     preserved: 2,
@@ -1499,4 +1513,240 @@ test("a path that is both declared and inside a default directory is one artifac
     preserved: 1,
     failed: 0,
   });
+});
+
+test("a secret that crosses any cut is never persisted, in transport or storage errors", async () => {
+  // The secret starts before every plausible bound and runs past all of them, so
+  // a bound applied before screening would persist its prefix and leak most of
+  // it. Nothing may be cut before the redactor has seen the whole message.
+  const secret = `BEGIN-${"s".repeat(2000)}-END`;
+  const harness = await localHarness({
+    SWARMFORGE_MODEL_API_KEY: secret,
+  });
+  try {
+    const created = harness.spawn();
+    await harness.provider.createWorker(created);
+    // A transport failure whose message carries the secret across the old cuts.
+    const directory = join(harness.workspace.root, ".swarmforge");
+    mkdirSync(directory, { recursive: true, mode: 0o700 });
+    writeFileSync(join(directory, "t.txt"), "content\n");
+    writeFileSync(join(directory, "u.txt"), "content\n");
+    const transport = harness.workspace.transport;
+    const original = transport.open.bind(transport);
+    transport.open = async () => {
+      throw new Error(`capture refused ${secret}`);
+    };
+    try {
+      await expect(
+        harness.artifacts.preserve(created.worker_id, ".swarmforge/t.txt"),
+      ).rejects.toThrow();
+    } finally {
+      transport.open = original;
+    }
+    const transportRecord = harness.artifacts
+      .list({ worker_id: created.worker_id })
+      .artifacts.at(-1)!;
+    expect(transportRecord.state).toBe("failed");
+    expect(transportRecord.error).not.toContain("BEGIN-");
+    expect(transportRecord.error).not.toContain("-END");
+    expect(transportRecord.error).toContain("[REDACTED]");
+    // A storage failure carrying it as well, through the ingest path.
+    const storage = harness.artifacts.storage;
+    const put = storage.put.bind(storage);
+    storage.put = async () => {
+      throw new Error(`storage refused ${secret}`);
+    };
+    try {
+      await expect(
+        harness.artifacts.preserve(created.worker_id, ".swarmforge/u.txt"),
+      ).rejects.toThrow();
+    } finally {
+      storage.put = put;
+    }
+    const storageRecord = harness.artifacts
+      .list({ worker_id: created.worker_id })
+      .artifacts.at(-1)!;
+    expect(storageRecord.state).toBe("failed");
+    expect(storageRecord.error).not.toContain("BEGIN-");
+    expect(storageRecord.error).toContain("[REDACTED]");
+    // The durable event stream is screened on the same terms: no prefix, no tail.
+    const events = harness.artifacts.events(storageRecord.artifact_id);
+    const failed = events.find((event) => event.kind === "artifact.failed");
+    expect(failed?.error).toBeTruthy();
+    expect(failed?.error).not.toContain("BEGIN-");
+    expect(failed?.error).not.toContain("-END");
+    // Every persisted error in the repository is free of the secret.
+    const rows = harness.store.db
+      .query("SELECT error FROM artifacts WHERE error IS NOT NULL")
+      .all() as { error: string }[];
+    for (const row of rows) {
+      expect(row.error).not.toContain("BEGIN-");
+      expect(row.error.length).toBeLessThanOrEqual(1000);
+    }
+    const eventRows = harness.store.db
+      .query("SELECT error FROM artifact_events WHERE error IS NOT NULL")
+      .all() as { error: string }[];
+    for (const row of eventRows) {
+      expect(row.error).not.toContain("BEGIN-");
+      expect(row.error.length).toBeLessThanOrEqual(1000);
+    }
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+test("two recaptures of one source settle without a constraint error or a lost copy", async () => {
+  // Both attempts start against the same stored copy, with the finish order
+  // controlled so the second one to publish is not the first one to start.
+  write("race.txt", "original");
+  const first = await h.artifacts.preserve(
+    worker,
+    ".swarmforge/artifacts/race.txt",
+    { runId: "run-1" },
+  );
+  write("race.txt", "version one");
+  const gates: (() => void)[] = [];
+  const transport = h.workspace.transport;
+  const original = transport.open.bind(transport);
+  let call = 0;
+  transport.open = async (...args) => {
+    const transfer = await original(...args);
+    call++;
+    if (call === 1) {
+      // The first attempt to start is held until the second has been started.
+      const stream = transfer.stream;
+      return {
+        ...transfer,
+        stream: new ReadableStream<Uint8Array>({
+          async start(read) {
+            await new Promise<void>((resolve) => gates.push(resolve));
+            const reader = stream.getReader();
+            while (true) {
+              const { done, value } = await reader.read();
+              if (done) break;
+              if (value) read.enqueue(value);
+            }
+            read.close();
+          },
+        }),
+      };
+    }
+    return transfer;
+  };
+  const one = h.artifacts.preserve(worker, ".swarmforge/artifacts/race.txt", {
+    runId: "run-1",
+  });
+  const two = h.artifacts.preserve(worker, ".swarmforge/artifacts/race.txt", {
+    runId: "run-1",
+  });
+  try {
+    // Let both attempts reach their capture, then let the held one finish last.
+    // The wait is for the attempt to arrive, not a guess at how long a capture
+    // takes: the helper is installed once per guest on the first attempt.
+    for (let waited = 0; waited < 500 && gates.length < 1; waited++)
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(gates).toHaveLength(1);
+    gates[0]!();
+    const [a, b] = await Promise.all([one, two]);
+    // Both settle as preserved, neither raised a constraint error, and the bytes
+    // each reported are still readable through the record that describes them.
+    expect([a.state, b.state]).toEqual(["preserved", "preserved"]);
+    const listed = h.artifacts.list({
+      worker_id: worker,
+      run_id: "run-1",
+    } as never);
+    // Exactly one current record for the source, whichever won.
+    const current = h.artifacts
+      .list({ worker_id: worker })
+      .artifacts.filter((record) => record.original_path.endsWith("race.txt"));
+    expect(current).toHaveLength(1);
+    expect(listed.next_offset).toBeNull();
+    for (const record of [a, b]) {
+      const bytes = await h.artifacts.read(record.artifact_id, 0, record.size);
+      expect(createHash("sha256").update(bytes).digest("hex")).toBe(
+        record.sha256 ?? "",
+      );
+    }
+    // The copy that was already there is untouched and still verifies.
+    const old = h.artifacts.metadata(first.artifact_id);
+    expect(old.superseded_by).not.toBeNull();
+    expect(
+      Buffer.from(
+        await h.artifacts.read(old.artifact_id, 0, old.size),
+      ).toString(),
+    ).toBe("original");
+  } finally {
+    transport.open = original;
+  }
+});
+
+test("an attempt interrupted by a restart leaves the previous copy current and readable", async () => {
+  write("restart.txt", "verified before the attempt");
+  const first = await h.artifacts.preserve(
+    worker,
+    ".swarmforge/artifacts/restart.txt",
+    { runId: "run-1" },
+  );
+  // The attempt that a crash interrupts: a new row, its own key, and no
+  // outcome. This is the state a restart finds, so it is built directly rather
+  // than through an error path that would settle it.
+  const { ArtifactRepository } = await import("../src/artifact-store");
+  const repository = new ArtifactRepository(h.store.db as never);
+  const attempt = repository.beginAttempt({
+    record: first,
+    size: 4,
+    sha256: createHash("sha256").update("lost").digest("hex"),
+  });
+  expect(attempt.state).toBe("preserving");
+  expect(attempt.storage_key).not.toBe(first.storage_key);
+  // The good copy is still the current one: it was never hidden by an attempt
+  // that has not proved anything yet.
+  expect(
+    repository.find({
+      worker_id: worker,
+      run_id: "run-1",
+      original_path: ".swarmforge/artifacts/restart.txt",
+      kind: "file",
+    }),
+  ).toMatchObject({ artifact_id: first.artifact_id, state: "preserved" });
+  // A fresh repository over the same database is what a restart sees.
+  const restarted = new ArtifactRepository(h.store.db as never);
+  const settled = restarted.get(first.artifact_id);
+  expect(settled.state).toBe("preserved");
+  expect(settled.superseded_by ?? null).toBeNull();
+  expect(settled.storage_key).toBe(first.storage_key);
+  expect(
+    Buffer.from(
+      await h.artifacts.read(first.artifact_id, 0, settled.size),
+    ).toString(),
+  ).toBe("verified before the attempt");
+  // Recovery sees the interrupted attempt and fails it; that must not disturb
+  // the good copy or raise a constraint error.
+  const pending = restarted.pending();
+  expect(pending.map((record) => record.artifact_id)).toEqual([
+    attempt.artifact_id,
+  ]);
+  restarted.failed(attempt, "coordinator restarted mid attempt");
+  expect(restarted.pending()).toEqual([]);
+  const after = restarted.get(first.artifact_id);
+  expect(after.state).toBe("preserved");
+  expect(after.superseded_by ?? null).toBeNull();
+  expect(
+    Buffer.from(
+      await h.artifacts.read(first.artifact_id, 0, after.size),
+    ).toString(),
+  ).toBe("verified before the attempt");
+  // The failed attempt is its own inspectable row, and the source still has one
+  // current record.
+  const failed = h.artifacts
+    .list({ worker_id: worker })
+    .artifacts.filter((record) => record.state === "failed");
+  expect(failed.map((record) => record.artifact_id)).toEqual([
+    attempt.artifact_id,
+  ]);
+  expect(
+    h.artifacts
+      .list({ worker_id: worker })
+      .artifacts.filter((record) => record.state === "preserved"),
+  ).toHaveLength(1);
 });

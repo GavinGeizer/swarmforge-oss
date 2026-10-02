@@ -42,6 +42,9 @@ FILE_FLAGS = os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK
 WRITE_FLAGS = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC
 NAME_RE = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9._-]{0,63}\Z")
 MAX_ARCNAME = 1024
+# A helper message never quotes a file's contents, so it is small by
+# construction; the bound here is a last resort for a pathological message, and
+# it is applied only to text this program generates itself.
 MAX_ERROR = 512
 EXCLUDED = (".git", "node_modules")
 MAX_SOURCES = 8

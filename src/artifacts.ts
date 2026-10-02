@@ -200,10 +200,10 @@ export class ArtifactService {
     } catch (error) {
       if (error instanceof ArtifactCaptureError) throw error;
       const code = artifactErrorCode(error);
+      // Whole, and unbounded on the way out: whatever reaches a record is
+      // screened first and bounded once, in fail().
       throw new ArtifactCaptureError(
-        `${describeArtifactError(code)}: ${
-          error instanceof Error ? error.message : String(error)
-        }`.slice(0, 500),
+        `${describeArtifactError(code)}: ${message(error)}`,
         code,
       );
     }
@@ -331,7 +331,7 @@ export class ArtifactService {
     } catch (error) {
       if (this.repository.get(record.artifact_id).state === "preserving")
         throw this.fail(record, message(error));
-      throw error instanceof Error ? error : new Error(message(error));
+      throw error instanceof Error ? error : new Error(this.screened(error));
     }
   }
 
@@ -499,7 +499,7 @@ export class ArtifactService {
       for (const record of started)
         if (this.repository.get(record.artifact_id).state === "preserving")
           this.fail(record, message(error));
-      throw error instanceof Error ? error : new Error(message(error));
+      throw error instanceof Error ? error : new Error(this.screened(error));
     }
   }
 
@@ -806,12 +806,13 @@ export class ArtifactService {
    * own bytes cannot commit them. What is published is always a key of this
    * attempt's own: a first capture stores under the record's key, and a recapture
    * of changed content stores under a new key held by a new attempt record. The
-   * previous verified copy keeps its record and its key for as long as the
-   * replacement has not been stored, so a transfer that is interrupted,
+   * previous verified copy keeps its record, its key and its bytes for as long as
+   * the replacement has not been stored, so a transfer that is interrupted,
    * corrupted or refused leaves the earlier copy exactly as it was, readable
    * under the record that still points at it, and its failure puts that copy back
-   * in charge. Only a verified replacement supersedes it, and only then is the
-   * superseded object dropped.
+   * in charge. Only a verified replacement supersedes it, and even then the
+   * superseded object is retained: an artifact id that was ever handed out stays
+   * readable for exactly the bytes it described.
    */
   private async ingest(
     record: ArtifactRecord,
@@ -876,14 +877,10 @@ export class ArtifactService {
         sha256: transfer.sha256,
         incomplete: transfer.incomplete ?? null,
       });
-      // The replaced copy is no longer the current one for this source, so it is
-      // dropped only now that a verified replacement exists under its own key.
-      if (
-        existing?.storage_key &&
-        existing.artifact_id !== replacement.artifact_id &&
-        existing.storage_key !== key
-      )
-        await this.storage.remove(existing.storage_key).catch(() => {});
+      // The replaced copy is kept. Its record stays readable and its bytes stay
+      // verifiable under its own artifact id, so a consumer that captured an
+      // artifact id before a recapture can still read exactly those bytes; a
+      // stored object is never deleted on the strength of a recapture.
       return published;
     } catch (error) {
       // Only this attempt's own key is cleaned up, and only if it was ever
@@ -905,15 +902,31 @@ export class ArtifactService {
    * cut, and the artifact bytes themselves are never touched by this.
    */
   private fail(record: ArtifactRecord, error: string): Error {
-    const screened = this.redactor.text(String(error)).slice(0, 1000);
+    const screened = this.screened(error);
     this.repository.failed(record, screened);
     return new Error(screened);
   }
+
+  /**
+   * The only place an error is bounded, and only after the whole message has
+   * been screened. Screening first is the point: a credential that starts just
+   * before a cut and runs past it is only recognisable while it is whole.
+   */
+  private screened(error: unknown): string {
+    return this.redactor.text(message(error)).slice(0, 1000);
+  }
 }
 
+/**
+ * The raw text of an error, whole.
+ *
+ * Nothing is cut before the redactor has seen it. A bound applied here would
+ * keep a prefix of a message whose credential starts before the cut and runs past
+ * it, and the redactor matches on whole strings: the surviving prefix would then
+ * be persisted. The only bound is applied once, after screening.
+ */
 function message(error: unknown) {
-  const text = error instanceof Error ? error.message : String(error);
-  return text.slice(0, 1000);
+  return error instanceof Error ? error.message : String(error);
 }
 
 /**

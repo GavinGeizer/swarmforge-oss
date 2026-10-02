@@ -540,14 +540,16 @@ export class HelperArtifactTransport implements WorkerArtifactTransport {
     const payload = parsed as { ok?: unknown; error?: unknown; code?: unknown };
     if (payload?.ok !== true) {
       const code = helperCode(payload?.code, payload?.error);
-      // The message always names the class it belongs to, so a caller that
-      // still reads text sees the same six outcomes this code describes.
+      // Whole and unbounded here. This text can still carry a credential out of
+      // the guest, so it is cut nowhere in the transport: it is screened once, in
+      // full, by the service before anything is persisted or returned. A bound
+      // applied now would leave the prefix of a secret that runs past it.
       throw new ArtifactTransportError(
         `${describeArtifactError(code)}: ${
           typeof payload?.error === "string"
-            ? payload.error.slice(0, 512)
+            ? payload.error
             : "artifact capture failed"
-        }`.slice(0, 500),
+        }`,
         code,
       );
     }
