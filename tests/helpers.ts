@@ -1,9 +1,11 @@
 import { createHash } from "node:crypto";
-import type {
-  ArtifactEntry,
-  ArtifactListing,
-  ArtifactTransfer,
-  WorkerArtifactTransport,
+import {
+  ArtifactCaptureError,
+  type ArtifactEntry,
+  type ArtifactListing,
+  type ArtifactTransfer,
+  artifactErrorCodes,
+  type WorkerArtifactTransport,
 } from "../src/artifact-types";
 import { type Config, loadConfig } from "../src/config";
 import { Coordinator } from "../src/coordinator";
@@ -44,10 +46,13 @@ export class FakeProvider implements WorkerProvider {
   created = 0;
   execCommands: string[] = [];
   transportFailure = "";
-  // "helper": the guest helper's deliberately unspecific vocabulary, where listing a missing
-  // directory and listing a file produce the same message.
-  transportStyle: "fake" | "helper" = "fake";
+  // "fake": the double's own wording. "coded": the data plane's stable error codes, the way a
+  // production capture refuses. "helper": a vocabulary that conflates an absent path with a
+  // non-directory leaf, which only a listing can tell apart.
+  transportStyle: "fake" | "coded" | "helper" = "fake";
   transportMissing = new Set<string>();
+  // Paths whose capture is refused as unsafe, as a symlinked component would be.
+  transportUnsafe = new Set<string>();
   // Paths whose reported digest does not describe the staged bytes.
   transportCorrupt = new Set<string>();
   transportSlow = false;
@@ -93,6 +98,11 @@ export class FakeProvider implements WorkerProvider {
   }
   private fail() {
     if (this.transportFailure) throw new Error(this.transportFailure);
+  }
+  private refuse(kind: "notFound" | "notDirectory", message: string) {
+    return this.transportStyle === "coded"
+      ? new ArtifactCaptureError(message, artifactErrorCodes[kind])
+      : new Error(message);
   }
   // A trusted guest helper resolves workspace paths descriptor-relatively and
   // refuses a symlinked component, so the fake guest refuses one too instead of
@@ -181,12 +191,18 @@ export class FakeProvider implements WorkerProvider {
         this.fail();
         const target = this.join(root, path);
         await this.noSymlink(id, target);
+        if (this.transportUnsafe.has(this.key(id, target)))
+          throw new Error(`symlinked component refused: ${target}`);
         if (!this.directory(id, target)) {
           if (this.transportStyle === "helper")
             throw new Error("path component is missing or not a directory");
           if (this.exists(id, target))
-            throw new Error(`ENOTDIR: not a directory, stat '${target}'`);
-          throw new Error(
+            throw this.refuse(
+              "notDirectory",
+              `ENOTDIR: not a directory, stat '${target}'`,
+            );
+          throw this.refuse(
+            "notFound",
             `ENOENT: no such file or directory, stat '${target}'`,
           );
         }
@@ -213,10 +229,15 @@ export class FakeProvider implements WorkerProvider {
         this.fail();
         const target = this.join(root, path);
         await this.noSymlink(id, target);
+        if (this.transportUnsafe.has(this.key(id, target)))
+          throw new Error(`symlinked component refused: ${target}`);
+        if (this.transportUnsafe.has(this.key(id, target)))
+          throw new Error(`symlinked component refused: ${target}`);
         if (!this.exists(id, target)) {
           if (this.transportStyle === "helper")
             throw new Error("artifact is missing or is not a regular file");
-          throw new Error(
+          throw this.refuse(
+            "notFound",
             `ENOENT: no such file or directory, open '${target}'`,
           );
         }

@@ -104,13 +104,35 @@ export class Store {
       const fingerprint = createHash("sha256")
         .update(JSON.stringify(request, canonicalKeys))
         .digest("hex");
+      // A row written before artifact declarations existed carries the digest of its request as
+      // it was hashed then: the raw object for a direct create, and the parsed request without the
+      // two new fields for one that came through spawnSchema. Retrying either must still resolve
+      // to the same worker instead of reporting a conflict.
+      const legacyFingerprints = [
+        createHash("sha256").update(JSON.stringify(input)).digest("hex"),
+        createHash("sha256")
+          .update(
+            JSON.stringify({
+              team_id: request.team_id,
+              task_id: request.task_id,
+              role: request.role,
+              prompt: request.prompt,
+              timeout_seconds: request.timeout_seconds,
+              request_id: request.request_id,
+            }),
+          )
+          .digest("hex"),
+      ];
       if (input.request_id) {
         const old = this.db
           .query("SELECT body FROM workers WHERE team_id=? AND request_id=?")
           .get(input.team_id, input.request_id) as { body: string } | null;
         if (old) {
           const w = JSON.parse(old.body) as Worker;
-          if (w.request_fingerprint !== fingerprint)
+          if (
+            w.request_fingerprint !== fingerprint &&
+            !legacyFingerprints.includes(w.request_fingerprint)
+          )
             throw new Error("request_id already used with different arguments");
           return w;
         }

@@ -5,7 +5,11 @@ import { join } from "node:path";
 import type { WorkerArtifactTransport } from "../src/artifact-types";
 import { loadConfig } from "../src/config";
 import { Coordinator } from "../src/coordinator";
-import { maxRetryDelay, retryDelay } from "../src/finalization";
+import {
+  FinalizationGate,
+  maxRetryDelay,
+  retryDelay,
+} from "../src/finalization";
 import { publicWorker } from "../src/security";
 import { Store } from "../src/store";
 import {
@@ -955,14 +959,14 @@ test("finalization is visible on the public worker view", async () => {
   h.store.close();
 });
 
-test("declarations classify from listings, never from the guest's error wording", async () => {
+test("declarations classify from the capture's own error codes", async () => {
   const h = harness({ ...fast, SWARMFORGE_FINALIZATION_MAX_ATTEMPTS: 1 });
-  h.provider.transportStyle = "helper";
+  h.provider.transportStyle = "coded";
   const worker = h.coordinator.spawn({
     ...task,
     artifacts: [
       { path: "out/first.txt" },
-      { path: "out/nested/**" },
+      { path: "out/nested", directory: true, required: false },
       { path: "absent/deeper/required.txt", required: true },
     ],
   });
@@ -973,12 +977,11 @@ test("declarations classify from listings, never from the guest's error wording"
   h.agent.complete(h.store.get(worker.worker_id));
   await h.coordinator.tick();
   const settled = await finalized(h, worker.worker_id);
-  // The helper reports a missing directory and a file identically; only a listing can tell them
-  // apart, so the required absence fails while the present files are still captured.
+  // A coded absence fails a required declaration by name, and the present sources are captured.
   expect(settled.finalization?.state).toBe("failed");
   expect(settled.finalization?.attempts).toBe(1);
   expect(settled.finalization?.error ?? "").toContain(
-    "absent/deeper/required.txt",
+    "Required artifact absent/deeper/required.txt is missing",
   );
   const captured = records(h, worker.worker_id).map((r) => r.original_path);
   expect(captured).toContain("out/first.txt");
@@ -986,33 +989,50 @@ test("declarations classify from listings, never from the guest's error wording"
   h.store.close();
 });
 
-test("a missing optional declaration is skipped under the guest's own error wording", async () => {
+test("a missing optional declaration is skipped under the published codes", async () => {
   const h = harness(fast);
-  h.provider.transportStyle = "helper";
+  h.provider.transportStyle = "coded";
   const worker = h.coordinator.spawn({
     ...task,
-    artifacts: [{ path: "never/written.txt" }, { path: "reports/**" }],
+    artifacts: [
+      { path: "never/written.txt" },
+      { path: "reports", directory: true },
+    ],
   });
   await runToRunning(h, worker.worker_id);
   h.agent.complete(h.store.get(worker.worker_id));
   await h.coordinator.tick();
   const settled = await finalized(h, worker.worker_id);
-  // Nothing optional is missing, so the default collection still preserves successfully.
   expect(settled.finalization?.state).toBe("preserved");
   expect(settled.finalization?.attempts).toBe(1);
+  expect(settled.finalization?.error).toBeNull();
   h.store.close();
 });
 
-// The real guest helper, run by python3 against a temporary guest tree. Package 2 behaviour is
-// verified end to end here whenever that interpreter exists.
-const python = process.env.SWARMFORGE_TEST_PYTHON ?? "python3";
-// The data plane owns its real-helper fixture; a rename there must not break package 2.
-const hasHelper =
-  Bun.spawnSync([python, "-c", "pass"]).success &&
-  (await import("./local-artifact-provider").then(
-    (module) => typeof module.localHarness === "function",
-    () => false,
-  ));
+test("an unsafe path refusal fails preservation instead of being skipped", async () => {
+  const h = harness({ ...fast, SWARMFORGE_FINALIZATION_MAX_ATTEMPTS: 1 });
+  h.provider.transportStyle = "coded";
+  const worker = h.coordinator.spawn({
+    ...task,
+    artifacts: [{ path: "out/first.txt" }, { path: "out/escape.txt" }],
+  });
+  await runToRunning(h, worker.worker_id);
+  const vm = h.store.get(worker.worker_id).vm_id!;
+  await h.provider.writeFile(vm, "/workspace/out/first.txt", "one");
+  // A symlinked component is a refusal, not an absence: it is never silently skipped.
+  h.provider.transportUnsafe.add(`${vm}:/workspace/out/escape.txt`);
+  h.agent.complete(h.store.get(worker.worker_id));
+  await h.coordinator.tick();
+  const settled = await finalized(h, worker.worker_id);
+  expect(settled.finalization?.state).toBe("failed");
+  expect(settled.finalization?.error ?? "").toContain("out/escape.txt");
+  expect(settled.finalization?.error ?? "").not.toContain("is missing");
+  // The source captured before the refusal is still readable.
+  expect(records(h, worker.worker_id).map((r) => r.original_path)).toContain(
+    "out/first.txt",
+  );
+  h.store.close();
+});
 
 test("a lost VM keeps the run it lost in its preservation record", async () => {
   const h = harness(fast);
@@ -1173,6 +1193,17 @@ test("a result file that names another run is never attributed to this one", asy
   ).toBe("old");
   h.store.close();
 });
+
+const python = process.env.SWARMFORGE_TEST_PYTHON ?? "python3";
+// The real guest helper, run by python3 against a temporary guest tree. The data plane owns its
+// own fixture, so it is imported defensively: a rename there skips these tests instead of
+// breaking the lifecycle package.
+const hasHelper =
+  Bun.spawnSync([python, "-c", "pass"]).success &&
+  (await import("./local-artifact-provider").then(
+    (module) => typeof module.localHarness === "function",
+    () => false,
+  ));
 
 test("the real guest helper preserves defaults once and never fails on optional boot metadata", async () => {
   if (!hasHelper) return;
@@ -1346,6 +1377,79 @@ test("retry backoff stays a safe integer within a bounded horizon", () => {
   expect(retryDelay(short, 2)).toBe(4000);
   // The bound never exceeds the configured transfer timeout when that is the smaller horizon.
   expect(retryDelay(short, 100)).toBe(5000);
+});
+
+test("the finalization gate hands a reserved slot on and drops an aborted waiter", async () => {
+  const gate = new FinalizationGate(1);
+  const first = new AbortController();
+  const queued = new AbortController();
+  const alsoQueued = new AbortController();
+  let release: () => void = () => {};
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const running = gate.run(first.signal, async () => {
+    await held;
+    return "first";
+  });
+  const waiting = gate.run(queued.signal, async () => "aborted");
+  const surviving = gate.run(alsoQueued.signal, async () => "survivor");
+  // The queued attempt is cancelled while the only slot is busy: it must leave the queue, not
+  // stay in it as a claim the releaser will hand a slot to.
+  queued.abort();
+  await expect(waiting).rejects.toThrow("aborted");
+  release();
+  expect(await running).toBe("first");
+  expect(await surviving).toBe("survivor");
+  // A handed-over slot is reserved exactly once: new work still runs after enough handoffs.
+  for (let round = 0; round < 5; round++) {
+    expect(
+      await gate.run(new AbortController().signal, async () => round),
+    ).toBe(round);
+  }
+});
+
+test("more finalizations than slots, one aborted, and work afterwards never wedges", async () => {
+  const h = harness({
+    ...fast,
+    SWARMFORGE_ARTIFACT_CONCURRENCY: 1,
+    SWARMFORGE_MAX_WORKERS: 8,
+    SWARMFORGE_MAX_PROVISIONING: 8,
+  });
+  h.provider.transportDelayMs = 2;
+  const workers = [];
+  for (let index = 0; index < 4; index++) {
+    const worker = await started(h, `worker-${index}`);
+    await h.provider.writeFile(
+      worker.vm,
+      "/workspace/.swarmforge/artifacts/keep.txt",
+      `keep-${index}`,
+    );
+    h.agent.complete(h.store.get(worker.id));
+    workers.push(worker);
+  }
+  await h.coordinator.tick();
+  const runs = workers.map((worker) => h.coordinator.finalize(worker.id));
+  // One worker is force destroyed while its collection is still queued behind the others.
+  const doomed = workers[3]!;
+  await h.coordinator.control(doomed.id, "destroy", true);
+  const settled = await Promise.all(runs);
+  for (const worker of workers.slice(0, 3)) {
+    const record = h.store.get(worker.id).finalization;
+    expect(["preserved", "pending", "collecting"]).toContain(
+      record?.state ?? "",
+    );
+  }
+  // Everything already admitted has settled, and new work is still admitted afterwards.
+  for (let round = 0; round < 4; round++) {
+    const fresh = await started(h, `after-${round}`);
+    h.agent.complete(h.store.get(fresh.id));
+    await h.coordinator.tick();
+    const record = await within(10000, h.coordinator.finalize(fresh.id));
+    expect(record.finalization?.state).toBe("preserved");
+  }
+  expect(settled.length).toBe(workers.length);
+  h.store.close();
 });
 
 test("concurrent finalizations stay inside the configured bound", async () => {

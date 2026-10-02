@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { Coordinator } from "../src/coordinator";
 import { config, harness, runToRunning, task } from "./helpers";
 
@@ -17,6 +18,49 @@ test("creation retries retain idempotency when the queue is full", () => {
   expect(() => c.spawn({ ...task, request_id: "new" })).toThrow(
     "Creation queue full",
   );
+  h.store.close();
+});
+
+test("a request_id created before artifact declarations still matches its retry", () => {
+  const h = harness();
+  // A row written by the pre-declaration schema: six fields and the digest of the raw request.
+  const legacy = {
+    team_id: "team",
+    task_id: "legacy",
+    role: "coder",
+    prompt: "older request",
+    timeout_seconds: 60,
+    request_id: "legacy-id",
+  };
+  const fingerprint = createHash("sha256")
+    .update(JSON.stringify(legacy))
+    .digest("hex");
+  h.store.db.query("INSERT INTO workers VALUES(?,?,?,?,?,?)").run(
+    "w-legacy",
+    legacy.team_id,
+    legacy.task_id,
+    "completed",
+    legacy.request_id,
+    JSON.stringify({
+      ...legacy,
+      worker_id: "w-legacy",
+      request_fingerprint: fingerprint,
+      state: "completed",
+    }),
+  );
+  // The retry resolves to the existing worker instead of reporting a conflicting request.
+  expect(h.store.create({ ...legacy }).worker_id).toBe("w-legacy");
+  expect(
+    h.coordinator.spawn({ ...legacy, timeout_seconds: 60 }).worker_id,
+  ).toBe("w-legacy");
+  // A genuinely different request under the same id is still a conflict.
+  expect(() =>
+    h.coordinator.spawn({
+      ...legacy,
+      prompt: "a different request",
+      request_id: "legacy-id",
+    }),
+  ).toThrow("request_id already used with different arguments");
   h.store.close();
 });
 

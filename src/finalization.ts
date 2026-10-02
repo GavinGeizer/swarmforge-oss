@@ -1,4 +1,9 @@
-import type { ArtifactEntry, ArtifactListing } from "./artifact-types";
+import {
+  type ArtifactEntry,
+  type ArtifactListing,
+  artifactErrorCode,
+  artifactErrorCodes,
+} from "./artifact-types";
 import type { ArtifactService } from "./artifacts";
 import type { Config } from "./config";
 import {
@@ -24,6 +29,8 @@ export class FinalizationGate {
       if (signal.aborted) throw new Error("Artifact preservation was aborted");
       return await operation();
     } finally {
+      // The slot is transferred, not recreated: the woken waiter already holds the reservation,
+      // so counting it again here would inflate the gate and wedge it permanently.
       const next = this.waiting.shift();
       if (next) next();
       else this.active--;
@@ -35,20 +42,20 @@ export class FinalizationGate {
       this.active++;
       return;
     }
-    // A queued finalization never waits on a worker that is being cancelled or destroyed.
+    // A queued finalization never waits on a worker that is being cancelled or destroyed, and an
+    // aborted waiter leaves the queue by removing the very entry the releaser would hand to.
     await new Promise<void>((resolve, reject) => {
-      const onAbort = () => {
-        this.waiting = this.waiting.filter((entry) => entry !== onAbort);
-        reject(new Error("Artifact preservation was aborted"));
-      };
       const wake = () => {
         signal.removeEventListener("abort", onAbort);
         resolve();
       };
+      const onAbort = () => {
+        this.waiting = this.waiting.filter((entry) => entry !== wake);
+        reject(new Error("Artifact preservation was aborted"));
+      };
       this.waiting.push(wake);
       signal.addEventListener("abort", onAbort, { once: true });
     });
-    this.active++;
   }
 }
 // The canonical result file the coordinator mirrors into the workspace, and the bound used both
@@ -84,12 +91,10 @@ function makeDescribe(redact: (text: string) => string) {
     return safe.length > errorLimit ? `${safe.slice(0, errorLimit)}...` : safe;
   };
 }
-// The guest helper reports a missing directory and a non-directory identically, so its wording
-// is never parsed: a path's kind comes from a listing of a directory known to exist, and only a
-// listing failure is ever treated as a failure.
+// The data plane classifies captures with stable codes, so a path's kind never comes from English.
+// A listing failure is still consulted once, because only an untyped transport cannot say whether
+// an absent path and a non-directory leaf are the same thing.
 const listingPage = 200;
-const notDirectoryPattern =
-  /not a directory|enotdir|illegal operation on a directory/i;
 // Backoff is capped so a long attempt schedule can never overflow the date budget or park a
 // record beyond any sane horizon.
 export const maxRetryDelay = 3600000;
@@ -119,7 +124,9 @@ export class Finalizer {
     readonly store: Store,
     readonly artifacts: ArtifactService,
     readonly gate: FinalizationGate,
-    redact: (text: string) => string,
+    // The coordinator always supplies the project redactor; the identity default only keeps a
+    // direct construction (a fixture, an integration probe) valid.
+    redact: (text: string) => string = (text) => text,
   ) {
     this.describe = makeDescribe(redact);
   }
@@ -257,7 +264,8 @@ export class Finalizer {
         return;
       } catch (error) {
         // A plain path may still name a file if the guest reported it as a directory.
-        if (!notDirectoryPattern.test(this.describe(error))) throw error;
+        if (artifactErrorCode(error) !== artifactErrorCodes.notDirectory)
+          throw error;
       }
     }
     // The kind is the data plane's own "file" for a regular file, deliberately: a declared path
@@ -277,20 +285,50 @@ export class Finalizer {
     record: { artifact_id: string },
     run_id: string | null,
   ) {
-    const bytes = await this.artifacts.read(record.artifact_id, 0, resultLimit);
+    // Streamed and bounded: the data plane keeps whole reads inside its safe window, and a
+    // canonical result is well inside this one, so the attribution is read exactly.
+    const bytes = await this.stored(record.artifact_id);
     let named: unknown;
     try {
       named = (
-        JSON.parse(new TextDecoder().decode(bytes)) as { run_id?: unknown }
+        JSON.parse(new TextDecoder().decode(bytes ?? new Uint8Array())) as {
+          run_id?: unknown;
+        }
       ).run_id;
     } catch {
-      // A result file that is not JSON is the worker's own output, not a stale canonical result.
+      // A result file that is not JSON, or one larger than the bounded window, is the worker's
+      // own output rather than a stale canonical result.
       return;
     }
     if (typeof named === "string" && named !== run_id)
       throw new Error(
         `Result file ${resultTarget} belongs to run ${named}, not ${run_id ?? "an earlier run"}`,
       );
+  }
+  private async stored(artifact_id: string) {
+    const stream = await this.artifacts.download(artifact_id);
+    const reader = stream.getReader();
+    const chunks: Uint8Array[] = [];
+    let total = 0;
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (!value) continue;
+        total += value.byteLength;
+        if (total > resultLimit) return null;
+        chunks.push(value);
+      }
+    } finally {
+      await reader.cancel().catch(() => {});
+    }
+    const bytes = new Uint8Array(total);
+    let at = 0;
+    for (const chunk of chunks) {
+      bytes.set(chunk, at);
+      at += chunk.byteLength;
+    }
+    return bytes;
   }
   private async listing(id: string, path: string, signal: AbortSignal) {
     const cached = this.listings.get(path);
@@ -324,39 +362,44 @@ export class Finalizer {
     return value;
   }
   private async classify(id: string, path: string, signal: AbortSignal) {
-    const parts = path.split("/");
-    let failure: string | null = null;
-    // Walk up to the nearest ancestor that can be listed. Only an entry in a listing of a
-    // directory known to exist decides the kind; a listing that never succeeds is a failure.
-    for (let depth = parts.length - 1; depth >= 0; depth--) {
-      const parent = parts.slice(0, depth).join("/");
-      let listing: { entries: ArtifactEntry[]; truncated: boolean };
-      try {
-        listing = await this.listing(id, parent, signal);
-      } catch (error) {
-        failure ??= this.describe(error);
-        continue;
-      }
-      const entry = listing.entries.find((item) => item.name === parts[depth]);
-      if (!entry) {
-        // A truncated listing cannot prove an absence, so it is a failure and never a skip.
-        if (listing.truncated)
-          throw new Error(
-            `Listing ${parent || "."} is truncated; absence of ${path} cannot be confirmed`,
-          );
-        return "missing" as const;
-      }
-      if (depth < parts.length - 1)
-        throw new Error(
-          `Artifact path ${path} could not be inspected: ${parent} is not listable`,
-        );
-      if (entry.kind === "directory") return "directory" as const;
-      // A symlink or special file is never captured: it is treated as absent.
-      return entry.kind === "file" ? ("file" as const) : ("missing" as const);
+    try {
+      await this.listing(id, path, signal);
+      return "directory" as const;
+    } catch (error) {
+      // Only a type mismatch is ambiguous: some transports report an absent path and a
+      // non-directory leaf identically, and one hop up decides that from a listing rather than
+      // from English. Every other code is conclusive - an absence is an absence, and a symlink, a
+      // permission refusal, a limit, a changed source or a transport failure is an error.
+      const code = artifactErrorCode(error);
+      if (code === artifactErrorCodes.notDirectory)
+        return this.fromParent(id, path, signal);
+      if (code === artifactErrorCodes.notFound) return "missing" as const;
+      throw new Error(
+        `Artifact path ${path} could not be inspected: ${this.describe(error)}`,
+      );
     }
-    throw new Error(
-      `Artifact path ${path} could not be inspected: ${failure ?? "no listable parent"}`,
-    );
+  }
+  private async fromParent(id: string, path: string, signal: AbortSignal) {
+    const parts = path.split("/");
+    const name = parts.pop() ?? "";
+    const parent = parts.join("/");
+    let listing: { entries: ArtifactEntry[]; truncated: boolean };
+    try {
+      listing = await this.listing(id, parent, signal);
+    } catch (error) {
+      // The parent is absent, so the target is; anything else is a refusal worth reporting.
+      if (artifactErrorCode(error) !== artifactErrorCodes.notFound) throw error;
+      return "missing" as const;
+    }
+    if (listing.truncated)
+      throw new Error(
+        `Listing ${parent || "."} is truncated; absence of ${path} cannot be confirmed`,
+      );
+    const entry = listing.entries.find((item) => item.name === name);
+    if (!entry) return "missing" as const;
+    if (entry.kind === "directory") return "directory" as const;
+    // A symlink or special file is never captured: it is treated as absent.
+    return entry.kind === "file" ? ("file" as const) : ("missing" as const);
   }
   // Only the attempt that still owns the record may settle it, so an aborted, abandoned or
   // superseded collection can never mark a worker preserved.
