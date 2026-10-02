@@ -256,10 +256,13 @@ export class Finalizer {
         if (!notDirectoryPattern.test(this.describe(error))) throw error;
       }
     }
+    // The kind is the data plane's own "file" for a regular file, deliberately: a declared path
+    // and the automatic directory collection are then the same capture, so one worker, run,
+    // path and content yields one record and one stored blob instead of a duplicate.
     await this.artifacts.preserve(id, target.path, {
       signal,
       runId: run_id,
-      kind: "declared",
+      kind: "file",
     });
   }
   private async listing(id: string, path: string, signal: AbortSignal) {

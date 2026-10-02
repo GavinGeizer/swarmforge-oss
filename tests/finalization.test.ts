@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { WorkerArtifactTransport } from "../src/artifact-types";
@@ -17,6 +17,7 @@ import {
   sha256,
   task,
 } from "./helpers";
+import { localHarness } from "./local-artifact-provider";
 
 // Collection is bounded and retried on a short clock so behavioural tests stay deterministic.
 const fast = {
@@ -1001,6 +1002,132 @@ test("a missing optional declaration is skipped under the guest's own error word
   expect(settled.finalization?.state).toBe("preserved");
   expect(settled.finalization?.attempts).toBe(1);
   h.store.close();
+});
+
+// The real guest helper, run by python3 against a temporary guest tree. Package 2 behaviour is
+// verified end to end here whenever that interpreter exists.
+const python = process.env.SWARMFORGE_TEST_PYTHON ?? "python3";
+const hasHelper = Bun.spawnSync([python, "-c", "pass"]).success;
+
+test("the real guest helper preserves defaults once and never fails on optional boot metadata", async () => {
+  if (!hasHelper) return;
+  const h = await localHarness({
+    SWARMFORGE_FINALIZATION_RETRY_MS: "1",
+    SWARMFORGE_ARTIFACT_TIMEOUT_MS: "20000",
+  });
+  try {
+    const worker = h.spawn({
+      artifacts: [
+        {
+          path: ".swarmforge/artifacts/report.txt",
+          required: true,
+          directory: false,
+        },
+        { path: "notes", required: false, directory: true },
+      ],
+    });
+    const vm = h.store.get(worker.worker_id).vm_id!;
+    await h.provider.createWorker(h.store.get(worker.worker_id));
+    // The guest bootstrap creates the artifact and log directories, and nothing else: the
+    // optional task metadata defaults do not exist and must be skipped, not treated as failures.
+    mkdirSync(join(h.workspace.root, "notes"), {
+      recursive: true,
+      mode: 0o700,
+    });
+    writeFileSync(
+      join(h.workspace.root, ".swarmforge/artifacts/report.txt"),
+      "real helper body",
+      { mode: 0o600 },
+    );
+    writeFileSync(join(h.workspace.root, "notes/deep.txt"), "notes body", {
+      mode: 0o600,
+    });
+    await h.coordinator.control(worker.worker_id, "cancel");
+    const settled = await within(
+      60000,
+      h.coordinator.finalize(worker.worker_id),
+    );
+    expect(settled.finalization?.state).toBe("preserved");
+    // One attempt is the norm; the bounded retries absorb a staging race in the guest helper's
+    // diagnostics capture, which is reported to the data owner rather than worked around here.
+    expect(settled.finalization?.attempts).toBeGreaterThanOrEqual(1);
+    const records = h.coordinator.artifacts.list({
+      worker_id: worker.worker_id,
+    }).artifacts;
+    // A declared path and the automatic directory collection are the same capture.
+    const reports = records.filter(
+      (record) => record.original_path === ".swarmforge/artifacts/report.txt",
+    );
+    expect(reports).toHaveLength(1);
+    expect(reports[0]!.sha256).toBe(sha256("real helper body"));
+    expect(
+      decode(await h.coordinator.artifacts.read(reports[0]!.artifact_id)),
+    ).toBe("real helper body");
+    // Exactly one capture per source: the declared file, the automatic artifact directory, the
+    // declared notes directory and the guest's own raw diagnostics, with no duplicates.
+    expect(records.map((record) => record.original_path).sort()).toEqual([
+      ".swarmforge/artifacts/report.txt",
+      "logs/git-report.txt",
+      "logs/opencode-journal.txt",
+      "notes/deep.txt",
+    ]);
+    // Optional boot metadata the guest never creates is skipped, not preserved and not failed.
+    expect(
+      records.some(
+        (record) =>
+          record.original_path === ".swarmforge/task.json" ||
+          record.original_path === ".swarmforge/metadata.json",
+      ),
+    ).toBe(false);
+    expect(new Set(records.map((record) => record.storage_key)).size).toBe(
+      records.length,
+    );
+    expect(vm).toBeTruthy();
+    // Preservation settled, so an ordinary destruction is no longer refused.
+    const destroyed = await within(
+      60000,
+      h.coordinator.control(worker.worker_id, "destroy"),
+    );
+    expect(destroyed.state).toBe("destroyed");
+    expect(h.provider.destroyed.has(vm)).toBe(true);
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("the real guest helper fails a required absence without naming it a transport error", async () => {
+  if (!hasHelper) return;
+  const h = await localHarness({
+    SWARMFORGE_FINALIZATION_RETRY_MS: "1",
+    SWARMFORGE_ARTIFACT_TIMEOUT_MS: "20000",
+    SWARMFORGE_FINALIZATION_MAX_ATTEMPTS: "1",
+  });
+  try {
+    const worker = h.spawn({
+      artifacts: [
+        { path: "absent/required.txt", required: true, directory: false },
+      ],
+    });
+    await h.provider.createWorker(h.store.get(worker.worker_id));
+    await h.coordinator.control(worker.worker_id, "cancel");
+    const settled = await within(
+      60000,
+      h.coordinator.finalize(worker.worker_id),
+    );
+    expect(settled.finalization?.state).toBe("failed");
+    expect(settled.finalization?.attempts).toBe(1);
+    expect(settled.finalization?.error ?? "").toContain(
+      "Required artifact absent/required.txt is missing",
+    );
+    // Optional defaults were collected or skipped before the required absence ended the attempt.
+    expect(
+      h.coordinator.artifacts
+        .list({ worker_id: worker.worker_id })
+        .artifacts.map((record) => record.original_path),
+    ).not.toContain(".swarmforge/task.json");
+  } finally {
+    await h.cleanup();
+  }
 });
 
 test("a persisted preservation error is redacted before it is truncated", async () => {
