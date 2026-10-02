@@ -125,7 +125,7 @@ export class LocalArtifactStorage implements ArtifactStorage {
       const info = lstatSync(join(this.incomingDir, entry), {
         throwIfNoEntry: false,
       });
-      if (info && info.isSymbolicLink())
+      if (info?.isSymbolicLink())
         throw new Error(
           "Artifact incoming directory must not contain a symlink",
         );
