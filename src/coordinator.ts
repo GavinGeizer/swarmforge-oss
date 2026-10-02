@@ -950,7 +950,17 @@ export class Coordinator {
     // Destroying a worker that never settled still records what happened to its workspace:
     // an absent or confirmed-missing guest settles immediately as a recorded failure.
     if (!this.store.get(id).finalization)
-      this.store.beginFinalization(id, this.store.dispatch(id)?.run_id ?? null);
+      // A worker that has already settled has no active dispatch, so its newest one is the run
+      // whose answer its workspace holds. Attributing the record to that run keeps the preserved
+      // result file from being read as an earlier run's bytes. This only names the record: the
+      // handoff gate above still judges the newest dispatch on its own state, so a cancelled or
+      // unverified latest run never becomes an authorised destruction.
+      this.store.beginFinalization(
+        id,
+        this.store.dispatch(id)?.run_id ??
+          this.store.dispatches(id).at(-1)?.run_id ??
+          null,
+      );
     await this.finalize(id);
     return this.preservationSettled(this.store.get(id));
   }
