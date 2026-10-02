@@ -210,6 +210,7 @@ test("stale history from an earlier dispatch cannot block a finished follow-up",
     assistant("msg-1", first.message_id),
     user("msg-next"),
   ];
+  await w.coordinator.finalize(id);
   w.coordinator.message(id, "next");
   await toRunning(w, id);
   const second = w.store.dispatch(id)!;

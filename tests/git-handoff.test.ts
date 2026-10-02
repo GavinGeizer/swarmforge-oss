@@ -119,11 +119,16 @@ test("coordinator verifies push before completing and returns canonical branch m
     summary: "done",
     git: { persisted: true, branch: "made-up" },
   });
+  const run = store.dispatch(w.worker_id)!.run_id;
   provider.pushFailure = true;
   await coordinator.tick();
   expect(store.get(w.worker_id).state).not.toBe("completed");
   expect(store.get(w.worker_id).error).toContain("Git branch push");
-  expect(store.result(w.worker_id)).toBeNull();
+  // The validated result is already durable for its own run, still carrying the model's own
+  // claimed branch metadata because no handoff has been verified for it.
+  expect(store.result(w.worker_id, run)?.summary).toBe("done");
+  expect(store.result(w.worker_id, run)?.git?.branch).toBe("made-up");
+  expect(store.dispatch(w.worker_id)?.state).not.toBe("completed");
   provider.pushFailure = false;
   await coordinator.tick();
   expect(store.get(w.worker_id).state).toBe("completed");
@@ -147,6 +152,32 @@ test("automatic handoff refuses normal VM destruction until a branch is verified
   await coordinator.control(w.worker_id, "destroy");
   expect(store.get(w.worker_id).state).toBe("recovery_required");
   expect(store.get(w.worker_id).error).toContain("verified branch");
+  expect(provider.vms.size).toBe(1);
+  store.close();
+});
+
+test("the handoff gate judges the current run, not an earlier verified one", async () => {
+  const store = new Store(":memory:");
+  const provider = new FakeProvider();
+  const agent = new FakeAgent();
+  const c = { ...config, SWARMFORGE_GIT_PUSH_MODE: "ssh" as const };
+  const coordinator = new Coordinator(c, store, provider, agent);
+  const w = coordinator.spawn(task);
+  const harnessLike = { store, provider, agent, coordinator };
+  await runToRunning(harnessLike, w.worker_id);
+  agent.complete(store.get(w.worker_id));
+  await coordinator.tick();
+  // The first run handed off successfully.
+  expect(store.get(w.worker_id).state).toBe("completed");
+  expect(store.result(w.worker_id)?.git?.persisted).toBe(true);
+  coordinator.message(w.worker_id, "second task");
+  await coordinator.control(w.worker_id, "cancel");
+  expect(store.dispatches(w.worker_id)).toHaveLength(2);
+  expect(store.dispatches(w.worker_id).at(-1)?.state).toBe("cancelled");
+  // The newest run never handed off, so the older verified result cannot authorise destruction.
+  const refused = await coordinator.control(w.worker_id, "destroy");
+  expect(refused.state).toBe("recovery_required");
+  expect(refused.error).toContain("verified branch");
   expect(provider.vms.size).toBe(1);
   store.close();
 });

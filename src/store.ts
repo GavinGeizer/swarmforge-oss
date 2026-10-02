@@ -5,12 +5,32 @@ import { dirname } from "node:path";
 import type {
   Dispatch,
   EventType,
-  Spawn,
+  SpawnRequest,
   Worker,
   WorkerEvent,
+  WorkerFinalization,
   WorkerResult,
   WorkerState,
 } from "./domain";
+
+// Object key order must not change a request fingerprint; array order still must.
+const canonicalKeys = (_key: string, value: unknown) =>
+  value && typeof value === "object" && !Array.isArray(value)
+    ? Object.fromEntries(
+        Object.entries(value as Record<string, unknown>).sort(([a], [b]) =>
+          a < b ? -1 : a > b ? 1 : 0,
+        ),
+      )
+    : value;
+const emptyFinalization = (): WorkerFinalization => ({
+  state: "pending",
+  run_id: null,
+  attempts: 0,
+  error: null,
+  next_retry_at: null,
+  started_at: null,
+  completed_at: null,
+});
 export class Store {
   readonly db: Database;
   private watchers = new Set<() => void>();
@@ -67,25 +87,59 @@ export class Store {
       } | null
     )?.value;
   }
-  create(input: Spawn & { timeout_seconds: number }): Worker {
+  create(input: SpawnRequest & { timeout_seconds: number }): Worker {
     return this.db.transaction(() => {
+      // Fingerprinted over the normalized request with canonical key order, so a retry that
+      // spells out the artifact defaults (or reorders keys) still matches the original.
+      const request = {
+        team_id: input.team_id,
+        task_id: input.task_id,
+        role: input.role,
+        prompt: input.prompt,
+        timeout_seconds: input.timeout_seconds,
+        request_id: input.request_id,
+        artifacts: input.artifacts ?? [],
+        snapshot_on_failure: input.snapshot_on_failure ?? false,
+      };
       const fingerprint = createHash("sha256")
-        .update(JSON.stringify(input))
+        .update(JSON.stringify(request, canonicalKeys))
         .digest("hex");
+      // A row written before artifact declarations existed carries the digest of its request as
+      // it was hashed then: the raw object for a direct create, and the parsed request without the
+      // two new fields for one that came through spawnSchema. Retrying either must still resolve
+      // to the same worker instead of reporting a conflict.
+      const legacyFingerprints = [
+        createHash("sha256").update(JSON.stringify(input)).digest("hex"),
+        createHash("sha256")
+          .update(
+            JSON.stringify({
+              team_id: request.team_id,
+              task_id: request.task_id,
+              role: request.role,
+              prompt: request.prompt,
+              timeout_seconds: request.timeout_seconds,
+              request_id: request.request_id,
+            }),
+          )
+          .digest("hex"),
+      ];
       if (input.request_id) {
         const old = this.db
           .query("SELECT body FROM workers WHERE team_id=? AND request_id=?")
           .get(input.team_id, input.request_id) as { body: string } | null;
         if (old) {
           const w = JSON.parse(old.body) as Worker;
-          if (w.request_fingerprint !== fingerprint)
+          if (
+            w.request_fingerprint !== fingerprint &&
+            !legacyFingerprints.includes(w.request_fingerprint)
+          )
             throw new Error("request_id already used with different arguments");
           return w;
         }
       }
       const now = Date.now();
       const w: Worker = {
-        ...input,
+        ...request,
         worker_id: `w-${randomUUID()}`,
         request_fingerprint: fingerprint,
         state: "queued",
@@ -259,8 +313,116 @@ export class Store {
         // The idle clock starts at claim so a zero-token turn is still bounded.
         token_progress_at: Date.now(),
         token_progress_total: this.tokens({ worker_id: w.worker_id }).total,
+        // The previous run's preservation settled before this dispatch was allowed, so its
+        // record is retired here. Attempt and outcome history stays in the event log.
+        finalization: undefined,
       });
     })();
+  }
+  // The preservation record for a settled outcome is written in the same transaction as that
+  // outcome: a crash can never leave a finished run without a preservation intent, and a
+  // preservation intent is never durable before the outcome it belongs to.
+  settle(
+    id: string,
+    state: WorkerState,
+    fields: Partial<Worker>,
+    run_id: string | null,
+  ): Worker {
+    return this.db.transaction(() => {
+      this.transition(id, state, fields);
+      this.beginFinalization(id, run_id);
+      return this.get(id);
+    })();
+  }
+  beginFinalization(id: string, run_id: string | null): Worker {
+    return this.db.transaction(() => {
+      const w = this.get(id);
+      // One record per run: a repeated settle for the same run never resets its attempts or
+      // reopens an exhausted or abandoned record.
+      if (w.finalization && w.finalization.run_id === run_id) return w;
+      // Record creation is not an attempt, so it announces nothing: only the attempt itself and
+      // the settled collection are durable events.
+      return this.setFinalization(id, {
+        state: "pending",
+        run_id,
+        attempts: 0,
+        error: null,
+        next_retry_at: null,
+        started_at: null,
+        completed_at: null,
+      });
+    })();
+  }
+  setFinalization(
+    id: string,
+    fields: Partial<WorkerFinalization>,
+    event?: EventType,
+  ): Worker {
+    const before = this.get(id);
+    const next = { ...emptyFinalization(), ...before.finalization, ...fields };
+    const updated = this.patch(id, { finalization: next });
+    const payload = {
+      run_id: next.run_id,
+      attempts: next.attempts,
+      ...(next.error ? { error: next.error } : {}),
+    };
+    if (event) this.event(id, event, payload);
+    // A settled collection is announced once; a scheduled retry is not a new outcome.
+    else if (
+      before.finalization?.state !== next.state &&
+      (next.state === "preserved" ||
+        next.state === "failed" ||
+        next.state === "abandoned")
+    )
+      this.event(id, `finalization.${next.state}`, payload);
+    return updated;
+  }
+  // Attempts are persisted before any side effect, so an interrupted collection is visible as
+  // an attempt that started and can never be replayed for free after a restart.
+  claimFinalization(
+    id: string,
+    maxAttempts: number,
+  ): { run_id: string | null; attempts: number } | null {
+    return this.db.transaction(() => {
+      const w = this.get(id);
+      const f = w.finalization;
+      if (!f || (f.state !== "pending" && f.state !== "collecting"))
+        return null;
+      if (
+        f.state === "pending" &&
+        f.next_retry_at &&
+        Date.now() < f.next_retry_at
+      )
+        return null;
+      if (f.attempts >= maxAttempts) return null;
+      const attempts = f.attempts + 1;
+      // Announced on every attempt, including a restart re-entering an interrupted collecting
+      // row, so the durable attempt count always matches the persisted attempts counter.
+      this.setFinalization(
+        id,
+        {
+          state: "collecting",
+          attempts,
+          started_at: f.started_at ?? Date.now(),
+          next_retry_at: null,
+          error: null,
+        },
+        "finalization.attempted",
+      );
+      return { run_id: f.run_id, attempts };
+    })();
+  }
+  finalizationUnsettled(id: string) {
+    const f = this.get(id).finalization;
+    return Boolean(f && (f.state === "pending" || f.state === "collecting"));
+  }
+  finalizing(): Worker[] {
+    return this.all().filter((w) =>
+      w.finalization
+        ? w.finalization.state === "pending" ||
+          w.finalization.state === "collecting"
+        : false,
+    );
   }
   // Recorded progress is durable per worker; a restart must not reset the idle clock.
   recordProgress(id: string, total: number): Worker {
@@ -293,9 +455,18 @@ export class Store {
         deadline_at: null,
         error: result.status === "failed" ? result.summary : null,
       });
+      this.beginFinalization(id, d.run_id);
       if (this.dispatch(id))
         this.transition(id, "ready", { completed_at: null });
     })();
+  }
+  // Persists a validated result against its own run without settling that run, so a Git
+  // handoff that fails or times out can never lose the worker's answer or its attribution.
+  recordResult(id: string, d: Dispatch, result: WorkerResult) {
+    const current = this.dispatches(id).find((x) => x.run_id === d.run_id);
+    if (!current) return null;
+    this.saveDispatch({ ...current, result });
+    return result;
   }
   result(id: string, run?: string) {
     return (
