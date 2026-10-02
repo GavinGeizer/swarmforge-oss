@@ -9,7 +9,8 @@
 //
 //   0. The ORIGINAL owner's newest dispatch is read from a read-only provenance
 //      snapshot and gated on BEFORE the first byte of guest mutation: exact target,
-//      owner finished, source verified, clean published branch, and a FRESH actual
+//      owner finished (the worker itself AND its newest dispatch), source verified,
+//      clean published branch, and a FRESH actual
 //      provider status. A plain `--execute` used to stop OpenCode and write the
 //      fixture with no snapshot at all, and only a destroy run read provenance, and
 //      only after those mutations.
@@ -524,6 +525,17 @@ export interface Provenance {
   latest_run_id: string | null;
   /** state of the NEWEST dispatch. Never an older dispatch's state. */
   latest_state: string | null;
+  /**
+   * The OWNER's own lifecycle state, from the worker record.
+   *
+   * This is not the dispatch's state and cannot be derived from it. A worker can
+   * hold a completed, verified dispatch and still be running, paused or in
+   * recovery, and deleting the guest of a worker that is still live is destroying
+   * something that may still be written to. The owner's state is reported
+   * separately so the gate can require BOTH: the run finished durably AND the
+   * worker that produced it is finished.
+   */
+  worker_state: string | null;
   /** git.persisted of the NEWEST dispatch, verbatim. Never upgraded. */
   latest_persisted: boolean;
   /** How many dispatch rows the snapshot holds for this worker. */
@@ -609,6 +621,7 @@ export function readProvenance(
       git: (result?.git as Record<string, unknown> | undefined) ?? null,
       latest_run_id: latest?.run_id ?? null,
       latest_state: latest?.state ?? null,
+      worker_state: worker.state,
       latest_persisted: result?.git?.persisted === true,
       dispatch_count: dispatchRows.length,
       vm_id: worker.vm_id,
@@ -668,6 +681,16 @@ export function ownerGate(provenance: Provenance): OwnerGate {
       ok: false,
       failed: "owner_finished",
       detail: `the owner's newest dispatch (${String(provenance.latest_run_id)}) is ${String(provenance.latest_state)}, not completed`,
+    };
+  }
+  // The dispatch being completed is necessary, not sufficient. The worker that
+  // produced it must itself be finished: a live, paused or recovery_required owner
+  // is still writing to this guest, and this runner will not delete it.
+  if (provenance.worker_state !== "completed") {
+    return {
+      ok: false,
+      failed: "owner_active",
+      detail: `the owner is ${String(provenance.worker_state)}, not completed; its guest is still live and is retained`,
     };
   }
   if (!provenance.latest_persisted) {
@@ -767,6 +790,7 @@ export function assertOwnerCopyUnchanged(
     "reported_branch",
     "latest_run_id",
     "latest_state",
+    "worker_state",
     "latest_persisted",
     "dispatch_count",
   ] as const) {
@@ -933,6 +957,7 @@ async function main(opts: Options) {
       reported_branch: provenance.reported_branch,
       latest_run_id: provenance.latest_run_id,
       latest_state: provenance.latest_state,
+      owner_state: provenance.worker_state,
       latest_persisted: provenance.latest_persisted,
       dispatch_count: provenance.dispatch_count,
     };
@@ -1282,7 +1307,7 @@ async function main(opts: Options) {
         "--execute",
         "--destroy-proven-fixture",
         "--provenance-db read-only snapshot",
-        "owner gate: exact target, newest dispatch completed, git.persisted true, clean published branch",
+        "owner gate: exact target, owner completed, newest dispatch completed, git.persisted true, clean published branch",
         "fresh provider status before the first mutation",
         "private copy re-verified against the approved provenance",
         "coordinator Git durability gate",

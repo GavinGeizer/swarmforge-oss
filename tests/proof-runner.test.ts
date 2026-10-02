@@ -451,6 +451,9 @@ describe("Git durability provenance is truthful, never fabricated", () => {
     expect(p.branch).toBe(BRANCH);
     expect(p.reported_branch).toBe(BRANCH);
     expect(p.latest_state).toBe("completed");
+    // The owner's own state is reported separately from its dispatch's, because
+    // the two are not the same fact and a gate needs both.
+    expect(p.worker_state).toBe("failed");
     expect(p.latest_persisted).toBe(true);
   });
 
@@ -710,6 +713,7 @@ describe("HIGH: the owner gate is a precondition, not a destroy extra", () => {
       git: { persisted: true, branch: BRANCH },
       latest_run_id: "run-1",
       latest_state: "completed",
+      worker_state: "completed",
       latest_persisted: true,
       dispatch_count: 1,
       vm_id: VM,
@@ -740,6 +744,19 @@ describe("HIGH: the owner gate is a precondition, not a destroy extra", () => {
     expect(ownerGate(good({ latest_persisted: false })).failed).toBe(
       "source_unverified",
     );
+    // The OWNER ITSELF must be finished. A completed, verified dispatch inside a
+    // worker that is still running, paused or in recovery is not a finished owner,
+    // and its guest is still live.
+    for (const state of ["running", "ready", "paused", "recovery_required"])
+      expect(ownerGate(good({ worker_state: state })).failed).toBe(
+        "owner_active",
+      );
+    // A failed or cancelled owner is finished but did not finish successfully, so
+    // it is not a durability proof either.
+    for (const state of ["failed", "cancelled", "destroyed"])
+      expect(ownerGate(good({ worker_state: state })).failed).toBe(
+        "owner_active",
+      );
     // The branch must be the published one.
     expect(ownerGate(good({ reported_branch: null })).failed).toBe(
       "branch_mismatch",
@@ -822,6 +839,7 @@ describe("HIGH: destruction runs on a private copy of the owner's real record", 
       git: { persisted: true, branch: BRANCH },
       latest_run_id: "run-1",
       latest_state: "completed",
+      worker_state: "completed",
       latest_persisted: true,
       dispatch_count: 1,
       vm_id: VM,
