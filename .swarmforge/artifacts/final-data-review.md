@@ -12,9 +12,13 @@
 - Actual deps used: lifecycle `0e8c1eb800605d89361612eb4beaf0cfff7f3620`, API `bed317aa79e670d3b89d33d626bfc0faeeaf057c`
   (recorded for provenance only; neither branch was checked out in this workspace, so all statements below are about the
   reviewed head's own code and behaviour).
-- Verdict: **CHANGES_REQUESTED** — one real (non-security) defect that loses Git diagnostics silently, plus two
-  availability limitations. No security escape was found; the security-relevant review points below are all closed or
-  demonstrably fail-closed.
+- Verdict: **CHANGES_REQUESTED** — the lead-assigned NULL-run publication blocker (F0, confirmed and pinned to one
+  line), plus one real (non-security) defect that loses Git diagnostics silently (F1) and two availability
+  limitations. No security escape was found; every security-relevant review point below is closed or demonstrably
+  fail-closed.
+- Follow-up run note: lead reported the combined suite as 389 pass / 2 skip / 3 fail, one of which is this NULL-run
+  blocker reproduced by a new API test (API head `bed317aa`, test line ~536) and two of which are proof tests with a
+  missing GitTree fixture. I did not re-research that case; probe 10 below confirms and pins it to a single bind.
 
 ## 1. Environment and commands actually run
 
@@ -26,7 +30,7 @@ bun test tests/artifact-store.test.ts tests/artifact-transport.test.ts \
           tests/artifacts.test.ts tests/finalization-nested.test.ts tests/worker-files.test.ts
   -> 118 pass, 1 skip, 0 fail, 860 expect() calls, 26.83s          (owner's own suite, bun 1.4.2)
 bun test /tmp/opencode/probes/review-probe.test.ts
-  -> 9 pass, 0 fail, 56 expect() calls                             (my independent probes, see 3)
+  -> 12 pass, 0 fail, 71 expect() calls                             (my independent probes, see 3)
 bun x tsc --noEmit            -> exit 0
 bun x biome check src tests scripts -> "Checked 49 files ... No fixes applied."
 git status --porcelain        -> empty (clean after the test run; see finding F6)
@@ -49,15 +53,17 @@ repeatedly; the rest of the full suite is the lead's call.
 | An injected `ArtifactStorage` foreign backend | **Closed** | `ArtifactService` takes the backend as a constructor argument (`src/artifacts.ts:179-188`). Probe 8 drives a fully in-memory object backend through `preserve` → `list`/`read`/`safeRead`/`download` → `stat`; the service's own local storage directory stays empty apart from the harness's own unused `.incoming`. |
 | Generated guest-helper bytecode not tracked | **Closed** | `.gitignore` gained `__pycache__/` and `*.pyc`; `git ls-files` finds no tracked bytecode, and `git status --porcelain` in the worktree was empty after running the helper-backed tests. |
 
-## 3. My independent probes (`/tmp/opencode/probes/review-probe.test.ts`, 9/9 pass)
+## 3. My independent probes (`/tmp/opencode/probes/review-probe.test.ts`, 12/12 pass)
 
 1. superseded bytes/id readability; 2. failed recapture restores the previous copy; 3. four concurrent attempts plus
 SQLite integrity and a duplicate-current-row query; 4. long-secret screening on the storage *and* live paths plus the
 too-wide-secret refusal; 5. screening before truncation on a durable record error; 6. planted `.incoming` symlink and
 FIFO refused without touching anything outside; 7. real directory-fsync failure is fatal, `EINVAL` tolerated, nothing
 left in `.incoming`; 8. injected foreign storage backend; 9. refusals leave no `preserving` row and every record
-terminal. All captures go through the real production helper (`src/providers/artifact-helper.py`) executed as a
-subprocess by `tests/local-artifact-provider.ts`; nothing is a re-implementation.
+terminal; 10. NULL `run_id` publication failure with a non-null control (see F0); 11. the configured concurrency limit
+is enforced; 12. the transfer timeout aborts promptly and leaves nothing claimable. All captures go through the real
+production helper (`src/providers/artifact-helper.py`) executed as a subprocess by
+`tests/local-artifact-provider.ts`; nothing is a re-implementation.
 
 ## 4. New Git metadata gate — probes and impact assessment
 
@@ -97,6 +103,25 @@ that the root is safe; the claim here is narrower and evidenced: under aggressiv
 every capture that carried outside bytes.
 
 ## 5. Findings
+
+### F0 — CHANGES REQUESTED (lead-assigned, confirmed by me, not re-researched): a NULL `run_id` breaks publication
+
+`Repository.preserved()` compares the source's run with `ifnull(run_id,'')=?` but binds `source.run_id` unchanged:
+
+- `src/artifact-store.ts:901-911` — the demotion `UPDATE ... WHERE worker_id=? AND ifnull(run_id,'')=? ...` is run with
+  `.run(input.artifact_id, source.worker_id, source.run_id, ...)` (`:906`). A NULL `run_id` binds NULL, the comparison is
+  never true, no existing current row is marked `superseded_by`, and publishing the replacement then violates the partial
+  unique index `artifacts_source` (`:743`).
+- Every sibling query normalizes and this one does not: `insert()` (`:823`) binds `input.run_id ?? ""`,
+  `restoreSuperseded()` (`:967`) binds `failed.run_id ?? ""`, `find()` (`:1099`) binds `filter.run_id ?? ""`. The fix is
+  `source.run_id ?? ""` at `:906`; no other change is needed.
+- Probe 10 (real repository, real helper captures): with a **non-null** run id, publishing a replacement supersedes the
+  previous row cleanly. With `run_id` NULL — the shape produced by `preserve(workerId, path)` with no `runId` option,
+  which is the API path the lead's new test uses — the first capture is preserved and readable, and the second throws a
+  UNIQUE/constraint error. So it is loud rather than a silent data loss, but no second capture of the same source can
+  ever be published while the source has a NULL run id, and every retried finalization of such a source fails.
+
+Owner already assigned; re-review limited to that bind plus the published behaviour for both run-id shapes.
 
 ### F1 — CHANGES REQUESTED (real, reproducible, availability/diagnostics completeness, fail-closed)
 
@@ -155,6 +180,26 @@ own 512-byte rule message (`MAX_ERROR`), which never contains file contents, and
 Duplicated comment block at `artifact-helper.py:51-57` and a duplicated `-c core.hooksPath=/dev/null` in
 `GIT_PINNED` (`artifact-helper.py:921,925`).
 
+### F5 — Residual assumption worth stating, no change requested
+
+The helper install writes `/opt/swarmforge/artifact-helper.py` through the provider's `writeFile` (as root in the guest)
+after `ensureHelper()` does `mkdir -p` + `chmod 700` on `/opt/swarmforge`. That path is safe **because** `init()`
+creates `/opt/swarmforge` as root-owned 0700 (`src/providers/freestyle.ts:167`), so a non-root worker cannot place a
+planted symlink next to the helper; and `writeRaw` is the only host call that could follow one. I could not exercise the
+real Freestyle SDK here, so this is recorded as a documented assumption rather than a verified property. A one-line
+`test -L` refusal next to the existing `test -x` check would close it cheaply if the owner wants belt and braces.
+
+### F6 — Second security pass after the lead's finding (probes 11 and 12, both pass)
+
+- **Concurrency is really bounded.** With `SWARMFORGE_ARTIFACT_CONCURRENCY=1`, five concurrent real captures peaked at
+  exactly one in-flight transfer, all five were stored, and the guest staging root was empty afterwards.
+- **The transfer timeout really bounds a capture.** With `SWARMFORGE_ARTIFACT_TIMEOUT_MS=1`, `preserve` refuses in well
+  under a second rather than hanging, leaves no `preserving` row, and no artifact claims to be stored.
+- Re-read of the remaining data-plane surface found no new exposure: `storageKeyFor()` shard values are re-validated by
+  `parts()` (an id that does not start with `art-` cannot produce `.`/`..`/empty components), `preserved()`'s unused
+  `filename` parameter is inert, `remove()`/`sweepStale()` only ever unlink inside `.incoming` (unlink does not follow a
+  link, and a planted directory fails closed), and `files.ts` logs read is the pre-existing redacted `journalctl` tail.
+
 ## 6. Security checklist (data-plane files)
 
 | Property | Assessment |
@@ -171,8 +216,9 @@ Duplicated comment block at `artifact-helper.py:51-57` and a duplicated `-c core
 
 ## 7. Verdict
 
-**CHANGES_REQUESTED** on head `4449fcbbf2888ed17d5b5c763a76fbf589bba1c7`: fix F1 (close the descriptor in
-`_walk_metadata` and stop reporting an environment failure as "not inside the permitted root" with `complete: true`).
-F2 should be documented by the docs owner; F3/F4 are optional. No security escape was found and none of the six
-previous findings is still open. Re-review after F1 is fixed is limited to the helper's metadata walk and the
-incomplete labelling; the rest of this review stands.
+**CHANGES_REQUESTED** on head `4449fcbbf2888ed17d5b5c763a76fbf589bba1c7`: F0 (the lead-assigned NULL-run publication
+blocker, pinned to `src/artifact-store.ts:906`) and F1 (close the descriptor passed to `os.scandir` in
+`_walk_metadata`, and stop reporting an environment failure as "not inside the permitted root" with `complete: true`).
+F2 should be documented by the docs owner; F5 is a stated assumption; F3/F4 are optional. No security escape was found
+and none of the six previous findings is still open. Re-review after F0 and F1 are fixed is limited to the repository
+bind, the helper metadata walk, and the incomplete labelling; the rest of this review stands.

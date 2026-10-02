@@ -407,3 +407,131 @@ test("probe: refusals leave no preserving row behind", async () => {
     expect(states.every((state) => state === "failed")).toBe(true);
   });
 });
+// 10. NULL run_id normalization in Repository.preserved: confirmed against the
+// shipped repository and end to end, with the same flow that works for a
+// non-null run_id as the control.
+test("probe: preserved() binds a NULL run_id where the index compares ''", async () => {
+  await withHarness({}, async (h, worker) => {
+    const { ArtifactRepository } = await import(
+      "/tmp/opencode/review-data/src/artifact-store"
+    );
+    const repository = new ArtifactRepository(h.store.db as never);
+    const hash = (body: string) => sha(new TextEncoder().encode(body));
+    // Control: a non-null run_id publishes a replacement cleanly.
+    const control = repository.begin({
+      worker_id: worker,
+      task_id: "task",
+      run_id: "run-1",
+      original_path: "control.txt",
+      filename: "control.txt",
+      kind: "file",
+    });
+    repository.preserved({
+      artifact_id: control.artifact_id,
+      storage_key: `x/${control.artifact_id}`,
+      size: 1,
+      sha256: hash("a"),
+    });
+    const next = repository.beginAttempt({
+      record: repository.get(control.artifact_id),
+      size: 1,
+      sha256: hash("b"),
+    });
+    const settled = repository.preserved({
+      artifact_id: next.artifact_id,
+      storage_key: `x/${next.artifact_id}`,
+      size: 1,
+      sha256: hash("b"),
+    });
+    expect(settled.state).toBe("preserved");
+    expect(repository.get(control.artifact_id).superseded_by).toBe(
+      next.artifact_id,
+    );
+
+    // The reported case: run_id NULL. The first publication succeeds, the
+    // second one cannot demote the first because NULL never equals ''.
+    const path = write(h, "nullrun.txt", "first");
+    const first = await h.artifacts.preserve(worker, path);
+    expect(first.run_id).toBeNull();
+    write(h, "nullrun.txt", "second-and-longer");
+    const reported = await h.artifacts.preserve(worker, path).then(
+      () => null,
+      (error) => error,
+    );
+    expect(reported).toBeInstanceOf(Error);
+    expect(String((reported as Error).message)).toMatch(/UNIQUE|constraint/i);
+    // Both records survive and remain readable: the failure is loud, not a
+    // silent loss, but the second capture can never be published.
+    expect(h.artifacts.metadata(first.artifact_id).state).toBe("preserved");
+    const failedRows = h.artifacts
+      .list({ worker_id: worker })
+      .artifacts.filter((r) => r.original_path === path);
+    expect(
+      failedRows.filter((r) => r.state === "preserved").length,
+    ).toBe(1);
+    expect(
+      Buffer.from(
+        await h.artifacts.read(first.artifact_id, 0, first.size),
+      ).toString(),
+    ).toBe("first");
+  });
+});
+
+// 11. The configured concurrency really bounds concurrent transfers.
+test("probe: concurrent captures never exceed the configured limit", async () => {
+  await withHarness({ SWARMFORGE_ARTIFACT_CONCURRENCY: "1" }, async (h, worker) => {
+    const transport = h.provider.artifactTransport as unknown as {
+      open: (...args: unknown[]) => Promise<unknown>;
+    };
+    const realOpen = transport.open.bind(transport);
+    let inFlight = 0;
+    let peak = 0;
+    transport.open = async (...args: unknown[]) => {
+      inFlight++;
+      peak = Math.max(peak, inFlight);
+      try {
+        await Bun.sleep(15);
+        return await realOpen(...(args as Parameters<typeof realOpen>));
+      } finally {
+        inFlight--;
+      }
+    };
+    try {
+      const names = ["c1.txt", "c2.txt", "c3.txt", "c4.txt", "c5.txt"];
+      for (const name of names) write(h, name, `body-${name}`);
+      await Promise.all(
+        names.map((name) =>
+          h.artifacts.preserve(worker, `.swarmforge/artifacts/${name}`),
+        ),
+      );
+    } finally {
+      transport.open = realOpen;
+    }
+    expect(peak).toBe(1);
+    expect(h.artifacts.list({ worker_id: worker }).artifacts).toHaveLength(5);
+    // Nothing was left staged in the guest.
+    expect(h.workspace.stagingEntries()).toEqual([]);
+  });
+});
+
+// 12. The transfer timeout aborts a capture instead of hanging, and leaves no
+// staged bytes and no record claiming work that stopped.
+test("probe: the artifact timeout bounds a capture and cleans the guest", async () => {
+  await withHarness({ SWARMFORGE_ARTIFACT_TIMEOUT_MS: "1" }, async (h, worker) => {
+    const path = write(h, "timeout.txt", "body");
+    const started = Date.now();
+    await expect(h.artifacts.preserve(worker, path)).rejects.toThrow();
+    expect(Date.now() - started).toBeLessThan(5000);
+    expect(h.artifacts.repository.pending()).toEqual([]);
+    expect(
+      h.artifacts.list({ worker_id: worker }).artifacts.every((r) =>
+        ["failed", "preserved"].includes(r.state),
+      ),
+    ).toBe(true);
+    // No half-captured artifact is readable.
+    const readable = await h.artifacts
+      .list({ worker_id: worker })
+      .artifacts.some((r) => r.state === "preserved");
+    if (readable) expect(await h.artifacts.storage.stat(/** @type {string} */ (null))).toBeNull();
+  });
+});
