@@ -1,6 +1,14 @@
 import type { WorkerFinalization } from "../domain";
 import { duration, retainsVm, retentionSummary } from "./cleanup";
 import type { WorkerDetail } from "./client";
+import {
+  filterDescription,
+  filterShortcuts,
+  filterWorkers,
+  sortWorkers,
+  type WorkerFilters,
+  type WorkerSort,
+} from "./filters";
 import { safeTerminalText } from "./terminal";
 
 export { safeTerminalText } from "./terminal";
@@ -44,17 +52,20 @@ const activeStates = new Set([
 const recentStates = new Set(["completed", "failed", "cancelled", "destroyed"]);
 const settledStates = new Set([...recentStates, "recovery_required"]);
 
-export function groupWorkers(workers: WorkerSummary[]) {
+export function groupWorkers(workers: WorkerSummary[], order?: WorkerSort) {
+  const active = workers.filter((worker) => activeStates.has(worker.state));
+  const queued = workers.filter((worker) => worker.state === "queued");
+  const recent = workers.filter((worker) => recentStates.has(worker.state));
   return {
-    active: workers
-      .filter((worker) => activeStates.has(worker.state))
-      .sort((a, b) => b.last_activity_at - a.last_activity_at),
-    queued: workers
-      .filter((worker) => worker.state === "queued")
-      .sort((a, b) => a.created_at - b.created_at),
-    recent: workers
-      .filter((worker) => recentStates.has(worker.state))
-      .sort((a, b) => b.last_activity_at - a.last_activity_at),
+    active: order
+      ? sortWorkers(active, order)
+      : active.sort((a, b) => b.last_activity_at - a.last_activity_at),
+    queued: order
+      ? sortWorkers(queued, order)
+      : queued.sort((a, b) => a.created_at - b.created_at),
+    recent: order
+      ? sortWorkers(recent, order)
+      : recent.sort((a, b) => b.last_activity_at - a.last_activity_at),
   };
 }
 
@@ -104,8 +115,8 @@ function symbolFor(state: string) {
   return "●";
 }
 
-export function visibleWorkers(workers: WorkerSummary[]) {
-  const groups = groupWorkers(workers);
+export function visibleWorkers(workers: WorkerSummary[], order?: WorkerSort) {
+  const groups = groupWorkers(workers, order);
   return [...groups.active, ...groups.queued, ...groups.recent];
 }
 
@@ -118,6 +129,8 @@ export function renderOverview(
     height?: number;
     selectedId?: string;
     interactive?: boolean;
+    filters?: WorkerFilters;
+    sort?: WorkerSort;
   } = {},
 ) {
   const now = options.now ?? Date.now();
@@ -128,15 +141,32 @@ export function renderOverview(
       : (options.height ?? 40) < 30
         ? ([3, 2, 2] as const)
         : ([8, 8, 5] as const);
-  const groups = groupWorkers(data.workers);
+  const matching = options.filters
+    ? filterWorkers(data.workers, options.filters)
+    : data.workers;
+  const rowLimits: number[] = [...limits];
+  if (options.filters) {
+    const rowBudget = Math.max(3, (options.height ?? 40) - 23);
+    while (rowLimits.reduce((sum, limit) => sum + limit, 0) > rowBudget) {
+      const largest = Math.max(...rowLimits);
+      rowLimits[rowLimits.indexOf(largest)] = largest - 1;
+    }
+  }
+  const groups = groupWorkers(matching, options.sort);
   const retention = retentionSummary(data.workers, now);
   const lines = [
     "SwarmForge  ● connected",
     `MCP  ${data.url}     Metrics  ${data.metrics.enabled ? `enabled :${data.metrics.port}` : "disabled"}`,
     `Retained VMs  ${retention.count} · ${retention.candidates} cleanup candidates · oldest worker ${retention.oldest}`,
     `Preservation  ${data.workers.filter((w) => ["pending", "collecting", "failed"].includes(w.finalization?.state ?? "")).length} need attention`,
-    `Workers  ${count(data.states, activeStates)} active · ${data.states.queued ?? 0} queued · ${data.states.completed ?? 0} completed     Tokens  ${compactNumber(data.tokens.total)}`,
+    `Workers${options.filters ? " (all)" : ""}  ${count(data.states, activeStates)} active · ${data.states.queued ?? 0} queued · ${data.states.completed ?? 0} completed     Tokens  ${compactNumber(data.tokens.total)}`,
   ];
+  if (options.filters)
+    lines.push(
+      `VIEW  ${matching.length}/${data.workers.length} workers · ${filterDescription(options.filters, options.sort ?? "recent")}`,
+    );
+  if (options.filters && !matching.length)
+    lines.push("No matching workers · z resets filters");
   const section = (name: string, workers: WorkerSummary[], limit: number) => {
     lines.push("", name);
     if (!workers.length) {
@@ -185,13 +215,14 @@ export function renderOverview(
     if (workers.length > start + limit)
       lines.push(`  … ${workers.length - start - limit} more`);
   };
-  section("ACTIVE", groups.active, limits[0]);
-  section("QUEUED", groups.queued, limits[1]);
-  section("RECENT", groups.recent, limits[2]);
+  section("ACTIVE", groups.active, rowLimits[0]!);
+  section("QUEUED", groups.queued, rowLimits[1]!);
+  section("RECENT", groups.recent, rowLimits[2]!);
   if (options.interactive)
     lines.push(
       "",
       "↑/↓ select · Enter inspect · x cleanup · r refresh · q quit",
+      filterShortcuts,
     );
   return lines
     .map((line) => (line.includes("\u001b[") ? line : clipped(line, width)))

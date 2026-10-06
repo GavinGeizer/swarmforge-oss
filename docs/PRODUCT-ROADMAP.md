@@ -32,9 +32,11 @@ Prioritized opportunities from a read-through of the implementation and operator
 - Pricing estimates still need configured rates or provider billing data.
 - Consider configurable cleanup reminders or retention policies after preserving work.
 
-## 3. Task-first dashboard
+## 3. Task-first dashboard — search, filtering, and sorting implemented
 
-- Add search and filters for team, task, worker state, and age.
+- Search worker/task IDs; filter exact team/task, worker state, preservation state, and retained VMs.
+- Sort by recent activity, longest idle time, or oldest worker.
+- Active filters apply to cleanup selection and preview; hidden and ineligible selections are cleared.
 - Show queue time, current progress, last activity, errors, and useful result summaries.
 - Improve artifact browsing and expose safe lifecycle actions in the detail view.
 

@@ -13,6 +13,7 @@ The global `swarmforge` executable provides `init`, `doctor`, `serve`, and `stat
 - [Check setup and start the server](#check-setup-and-start-the-server)
 - [Connect an MCP client](#connect-an-mcp-client)
 - [Run a first task and collect the result](#run-a-first-task-and-collect-the-result)
+- [Dashboard search and filters](#search-filter-and-sort-the-dashboard)
 - [Retained VMs and cleanup](#review-retained-vms-and-clean-up)
 - [Troubleshooting](#troubleshooting)
 - [Build and packaged installation](#build-and-packaged-installation)
@@ -200,9 +201,30 @@ In `swarmforge status`, select a worker and press Enter. The detail view shows p
 
 Preserved files survive VM deletion and coordinator restarts. Back up **both** the SQLite database and the artifact storage directory. Storage defaults to `artifacts` beside the database; configure `SWARMFORGE_ARTIFACT_DIR` or `[artifacts].dir` for another volume. The standalone binary embeds its capture helper; the guest snapshot needs Python 3.
 
+## Search, filter, and sort the dashboard
+
+The interactive `swarmforge status` view supports these controls in both the overview and cleanup screens:
+
+| Key | Action |
+| --- | --- |
+| `/` | Search worker or task IDs by case-insensitive substring. |
+| `t` | Enter an exact team ID. |
+| `k` | Enter an exact task ID. |
+| `s` | Cycle task states present in the worker history, then all states. |
+| `p` | Cycle preservation: all, none, pending, collecting, preserved, failed, abandoned. |
+| `v` | Toggle retained VMs only. |
+| `o` | Cycle recent activity first, longest idle first, and oldest worker first. |
+| `z` | Clear all filters and restore recent-activity sorting. |
+
+In a text editor, press Enter to apply, Escape to cancel, Backspace to edit, or Ctrl+U to clear. A blank value matches all workers. Filters combine, persist across refreshes and detail navigation for the current dashboard session, and appear in the `VIEW` line with the match count. Overview totals still describe **all** workers; its active/queued/recent sections display only matches, sorted within each section. Cleanup sorts the matching retained workers together.
+
+Opening cleanup with `x` carries the active filters and sorting. `a` selects only matching eligible workers. Changing a filter clears selected workers that become hidden; refresh also clears selections that become ineligible. The confirmation preview contains exactly the remaining selected matches, and its identities stay frozen until confirmed or cancelled. No filter key changes the batch while that preview is open.
+
+These controls filter the paginated worker history already loaded by the dashboard. Server-side summaries and incremental refreshes remain a separate performance improvement. Noninteractive snapshots and `status --json` continue to return the complete overview.
+
 ## Review retained VMs and clean up
 
-The overview shows retained VM count, cleanup candidate count, and the oldest retained worker. Press `x` to open cleanup. Workers are ordered by longest idle time; each row shows worker age, idle time, task state, preservation state, and any cleanup refusal. Age starts when the worker record was created; it is not a provider billing measurement. Idle time starts at the latest recorded worker activity. Paused VMs are included in retained counts, and confirmed missing or destroyed VMs are excluded.
+The overview shows retained VM count, cleanup candidate count, and the oldest retained worker. Press `x` to open cleanup. Workers follow the active dashboard sort order; each row shows worker age, idle time, task state, preservation state, and any cleanup refusal. Age starts when the worker record was created; it is not a provider billing measurement. Idle time starts at the latest recorded worker activity. Paused VMs are included in retained counts, and confirmed missing or destroyed VMs are excluded.
 
 1. Use ↑/↓ to browse and Space to select a candidate. `a` selects all eligible workers; `n` clears selection. `i` opens details, including preservation errors and artifact downloads.
 2. Press Enter to review exactly the selected worker and VM identities. Browse the preview with ↑/↓. Press Escape or `n` to return without deleting anything.

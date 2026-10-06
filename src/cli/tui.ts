@@ -7,6 +7,13 @@ import {
 } from "./cleanup";
 import type { connectSwarmForge, WorkerDetail } from "./client";
 import {
+  emptyFilters,
+  filterDescription,
+  filterWorkers,
+  sortOrders,
+  type WorkerSort,
+} from "./filters";
+import {
   availableActions,
   canRetryPreservation,
   type OverviewData,
@@ -26,7 +33,11 @@ export async function runDashboard(
   pollIntervalMs = 5_000,
 ) {
   let data = initial;
-  let selected = visibleWorkers(data.workers)[0]?.worker_id;
+  let filters = emptyFilters();
+  let order: WorkerSort = "recent";
+  let editing: { field: "query" | "team" | "task"; draft: string } | null =
+    null;
+  let selected = visibleWorkers(data.workers, order)[0]?.worker_id;
   let detail: WorkerDetail | null = null;
   let mode: "overview" | "detail" | "cleanup" | "cleanup-preview" = "overview";
   let detailReturn: "overview" | "cleanup" = "overview";
@@ -41,37 +52,66 @@ export async function runDashboard(
   let stopped = false;
   const width = () => output.columns || 100;
   const reviewingCleanup = () => mode === "cleanup-preview";
+  const matchingWorkers = () => filterWorkers(data.workers, filters);
+  const cleanupRows = () => retainedWorkers(matchingWorkers(), order);
+  const reconcileView = () => {
+    const retained = cleanupRows();
+    const eligible = new Set(
+      retained
+        .filter((worker) => cleanupReadiness(worker).eligible)
+        .map((worker) => worker.worker_id),
+    );
+    for (const id of cleanupSelected)
+      if (!eligible.has(id)) cleanupSelected.delete(id);
+    if (!retained.some((worker) => worker.worker_id === cleanupCursor))
+      cleanupCursor = retained[0]?.worker_id;
+    const visible = visibleWorkers(matchingWorkers(), order);
+    if (!visible.some((worker) => worker.worker_id === selected))
+      selected = visible[0]?.worker_id;
+  };
   const render = () => {
     if (stopped) return;
     const body =
       mode === "overview"
         ? renderOverview(data, {
             width: width(),
-            height: output.rows || 40,
+            height: Math.max(
+              10,
+              (output.rows || 40) - (editing ? 4 : message ? 3 : 0),
+            ),
             color: !process.env.NO_COLOR && process.env.TERM !== "dumb",
             selectedId: selected,
             interactive: true,
+            filters,
+            sort: order,
           })
         : mode === "cleanup" || mode === "cleanup-preview"
           ? renderCleanup(
-              mode === "cleanup-preview" ? cleanupPreview : data.workers,
+              mode === "cleanup-preview" ? cleanupPreview : matchingWorkers(),
               cleanupSelected,
               {
                 cursor: cleanupCursor,
                 width: width(),
-                height: output.rows || 40,
+                height: Math.max(
+                  10,
+                  (output.rows || 40) - (editing ? 4 : message ? 3 : 0),
+                ),
                 preview: mode === "cleanup-preview",
                 outcomes: cleanupOutcomes,
+                sort: order,
+                filterLabel: filterDescription(filters, order),
               },
             )
           : detail
             ? renderWorkerDetail(detail, { width: width() })
             : "Loading worker…";
-    const prompt = confirmation
-      ? `\n\nDestroy this worker? Preservation: ${detail?.worker.finalization?.state ?? "not yet collected"}. Normal destruction checks preservation first. Press y to confirm or n to keep it.`
-      : message
-        ? `\n\n${safeTerminalText(message)}`
-        : "";
+    const prompt = editing
+      ? `\n\n${editing.field === "query" ? "Search worker/task IDs" : `${editing.field === "team" ? "Team" : "Task"} ID (exact)`}: ${safeTerminalText(editing.draft)}▏\nEnter apply · Esc cancel · Ctrl+U clear · blank matches all`
+      : confirmation
+        ? `\n\nDestroy this worker? Preservation: ${detail?.worker.finalization?.state ?? "not yet collected"}. Normal destruction checks preservation first. Press y to confirm or n to keep it.`
+        : message
+          ? `\n\n${safeTerminalText(message)}`
+          : "";
     output.write(`\u001b[H\u001b[2J${body}${prompt}\n`);
   };
   const refresh = async () => {
@@ -81,19 +121,7 @@ export async function runDashboard(
       const next = await client.overview();
       if (stopped || reviewingCleanup()) return;
       data = next;
-      const retained = retainedWorkers(data.workers);
-      const eligible = new Set(
-        retained
-          .filter((worker) => cleanupReadiness(worker).eligible)
-          .map((worker) => worker.worker_id),
-      );
-      for (const id of cleanupSelected)
-        if (!eligible.has(id)) cleanupSelected.delete(id);
-      if (!retained.some((worker) => worker.worker_id === cleanupCursor))
-        cleanupCursor = retained[0]?.worker_id;
-      const visible = visibleWorkers(data.workers);
-      if (!visible.some((worker) => worker.worker_id === selected))
-        selected = visible[0]?.worker_id;
+      reconcileView();
       if (mode === "detail" && detail && !busy) {
         const id = detail.worker.worker_id;
         const prior = detail.worker.state;
@@ -192,15 +220,12 @@ export async function runDashboard(
     mode = "cleanup";
     detail = null;
     confirmation = false;
-    cleanupCursor ??= retainedWorkers(data.workers)[0]?.worker_id;
+    reconcileView();
     message = "";
     render();
   };
   const moveCleanupCursor = (direction: number) => {
-    const rows =
-      mode === "cleanup-preview"
-        ? cleanupPreview
-        : retainedWorkers(data.workers);
+    const rows = mode === "cleanup-preview" ? cleanupPreview : cleanupRows();
     const current = rows.findIndex(
       (worker) => worker.worker_id === cleanupCursor,
     );
@@ -210,7 +235,8 @@ export async function runDashboard(
     render();
   };
   const previewCleanup = () => {
-    cleanupPreview = retainedWorkers(data.workers).filter(
+    reconcileView();
+    cleanupPreview = cleanupRows().filter(
       (worker) =>
         cleanupSelected.has(worker.worker_id) &&
         cleanupReadiness(worker).eligible,
@@ -299,6 +325,60 @@ export async function runDashboard(
     }
   };
 
+  const changeFilters = () => {
+    const priorSelection = cleanupSelected.size;
+    reconcileView();
+    message =
+      cleanupSelected.size < priorSelection
+        ? "Hidden or ineligible cleanup selections cleared."
+        : "";
+    render();
+  };
+  const filterKey = (text: string, name?: string) => {
+    if (text === "/" || name === "slash")
+      editing = { field: "query", draft: filters.query };
+    else if (name === "t" || name === "k") {
+      const field = name === "t" ? "team" : "task";
+      editing = { field, draft: filters[field] };
+    } else if (name === "s") {
+      const values = [
+        "",
+        ...new Set(data.workers.map((worker) => worker.state).sort()),
+      ];
+      filters = {
+        ...filters,
+        state: values[(values.indexOf(filters.state) + 1) % values.length]!,
+      };
+    } else if (name === "p") {
+      const values = [
+        "",
+        "none",
+        "pending",
+        "collecting",
+        "preserved",
+        "failed",
+        "abandoned",
+      ];
+      filters = {
+        ...filters,
+        preservation:
+          values[(values.indexOf(filters.preservation) + 1) % values.length]!,
+      };
+    } else if (name === "v")
+      filters = { ...filters, retainedOnly: !filters.retainedOnly };
+    else if (name === "o")
+      order = sortOrders[(sortOrders.indexOf(order) + 1) % sortOrders.length]!;
+    else if (name === "z") {
+      filters = emptyFilters();
+      order = "recent";
+    } else return false;
+    if (editing) {
+      message = "";
+      render();
+    } else changeFilters();
+    return true;
+  };
+
   emitKeypressEvents(input);
   input.setRawMode(true);
   input.resume();
@@ -320,8 +400,43 @@ export async function runDashboard(
       output.write("\u001b[?25h\u001b[?1049l");
       resolve();
     };
-    const onKey = (_text: string, key: { name?: string; ctrl?: boolean }) => {
-      if ((key.ctrl && key.name === "c") || key.name === "q") {
+    const onKey = (
+      _text: string,
+      key: { name?: string; ctrl?: boolean; meta?: boolean },
+    ) => {
+      if (key.ctrl && key.name === "c") {
+        stop();
+        return;
+      }
+      if (editing) {
+        if (key.name === "escape") {
+          editing = null;
+          message = "";
+          render();
+        } else if (key.name === "return" || key.name === "enter") {
+          filters = { ...filters, [editing.field]: editing.draft.trim() };
+          editing = null;
+          changeFilters();
+        } else if (key.ctrl && key.name === "u") {
+          editing.draft = "";
+          render();
+        } else if (key.name === "backspace") {
+          editing.draft = Array.from(editing.draft).slice(0, -1).join("");
+          render();
+        } else if (
+          !key.ctrl &&
+          !key.meta &&
+          _text &&
+          !["up", "down", "left", "right", "tab"].includes(key.name ?? "")
+        ) {
+          editing.draft = Array.from(editing.draft + safeTerminalText(_text))
+            .slice(0, 128)
+            .join("");
+          render();
+        }
+        return;
+      }
+      if (key.name === "q") {
         stop();
         return;
       }
@@ -344,6 +459,13 @@ export async function runDashboard(
           moveCleanupCursor(key.name === "up" ? -1 : 1);
         return;
       }
+      if (
+        (mode === "overview" || mode === "cleanup") &&
+        !key.ctrl &&
+        !key.meta &&
+        filterKey(_text, key.name)
+      )
+        return;
       if (mode === "cleanup") {
         if (key.name === "escape") {
           mode = "overview";
@@ -352,7 +474,7 @@ export async function runDashboard(
         } else if (key.name === "up" || key.name === "down")
           moveCleanupCursor(key.name === "up" ? -1 : 1);
         else if (key.name === "space" && cleanupCursor) {
-          const worker = data.workers.find(
+          const worker = cleanupRows().find(
             (worker) => worker.worker_id === cleanupCursor,
           );
           if (worker && cleanupReadiness(worker).eligible) {
@@ -366,7 +488,7 @@ export async function runDashboard(
               : "Refresh to update retained workers.";
           render();
         } else if (key.name === "a") {
-          for (const worker of retainedWorkers(data.workers))
+          for (const worker of cleanupRows())
             if (cleanupReadiness(worker).eligible)
               cleanupSelected.add(worker.worker_id);
           render();
@@ -379,7 +501,7 @@ export async function runDashboard(
         return;
       }
       if (mode === "overview") {
-        const visible = visibleWorkers(data.workers);
+        const visible = visibleWorkers(matchingWorkers(), order);
         const current = visible.findIndex(
           (worker) => worker.worker_id === selected,
         );

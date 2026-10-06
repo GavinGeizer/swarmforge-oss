@@ -1,17 +1,14 @@
 import { cleanupReadiness, retainsVm } from "../cleanup";
+import { filterShortcuts, sortWorkers, type WorkerSort } from "./filters";
 import type { WorkerSummary } from "./overview";
 import { safeTerminalText } from "./terminal";
 
 export { cleanupReadiness, retainsVm } from "../cleanup";
-export function retainedWorkers(workers: WorkerSummary[]) {
-  return workers
-    .filter(retainsVm)
-    .sort(
-      (a, b) =>
-        a.last_activity_at - b.last_activity_at ||
-        a.created_at - b.created_at ||
-        a.worker_id.localeCompare(b.worker_id),
-    );
+export function retainedWorkers(
+  workers: WorkerSummary[],
+  order: WorkerSort = "idle",
+) {
+  return sortWorkers(workers.filter(retainsVm), order);
 }
 
 export function duration(milliseconds: number) {
@@ -56,14 +53,18 @@ export function renderCleanup(
     now?: number;
     preview?: boolean;
     outcomes?: CleanupOutcome[];
+    sort?: WorkerSort;
+    filterLabel?: string;
   } = {},
 ) {
   const now = options.now ?? Date.now();
   const width = Math.max(30, options.width ?? 100);
-  const rows = options.preview ? workers : retainedWorkers(workers);
+  const rows = options.preview
+    ? workers
+    : retainedWorkers(workers, options.sort);
   const pageSize = Math.max(
     1,
-    Math.floor(((options.height ?? 40) - 14) / (options.preview ? 4 : 3)),
+    Math.floor(((options.height ?? 40) - 17) / (options.preview ? 4 : 3)),
   );
   const cursor = Math.max(
     0,
@@ -79,7 +80,13 @@ export function renderCleanup(
     "Only settled workers with preserved outputs can be selected. Git safety is checked on destruction.",
     "",
   ];
-  if (!rows.length) lines.push("  No retained VMs");
+  if (!options.preview && options.filterLabel)
+    lines.splice(
+      1,
+      0,
+      `VIEW  ${rows.length} retained workers match · ${options.filterLabel}`,
+    );
+  if (!rows.length) lines.push("  No matching retained VMs");
   for (const worker of rows.slice(start, start + pageSize)) {
     const readiness = cleanupReadiness(worker);
     lines.push(
@@ -110,7 +117,9 @@ export function renderCleanup(
     options.preview
       ? "y confirm normal destruction · Esc/n return to selection"
       : "↑/↓ browse · Space select · a select eligible · n clear · Enter preview",
-    ...(options.preview ? [] : ["i inspect · r refresh · Esc back · q quit"]),
+    ...(options.preview
+      ? []
+      : ["i inspect · r refresh · Esc back · q quit", filterShortcuts]),
   );
   return lines
     .map((line) => {
