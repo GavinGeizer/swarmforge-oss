@@ -2,6 +2,20 @@
 
 Prioritized opportunities from a read-through of the implementation and operator documentation.
 
+## Credential and Git handoff audit pass — implemented
+
+- Prevent credential reconstruction after excerpt/diagnostic character cleanup.
+- Retain client credential redaction across dashboard refreshes and error banners.
+- Size artifact screening overlap for all known credential variants in bytes.
+- Refuse Git handoff when the workspace status cannot be read successfully.
+- Regression details: [architecture review](ARCHITECTURE-REVIEW.md).
+
+## Next: durable artifact preservation
+
+- Review and integrate the existing `artifact-salvage-20261001` implementation with the global CLI and onboarding changes.
+- Verify preservation and artifact access through the compiled executable, including VM destruction and coordinator restarts.
+- Revalidate the remaining lifecycle audit findings around pause/resume races, pending controls, deadlines, and result fallback.
+
 ## 1. Setup readiness checks — implemented
 
 `bun run doctor` checks local configuration, Bun, database-directory access, and configured Git handoff files. It does not make network requests. Remote model compatibility and the contents of a Freestyle snapshot (including guest Git availability) still need an optional, explicitly invoked live check.

@@ -299,17 +299,26 @@ test("worker checkout gets a task branch and local Git author identity", async (
   }
 });
 
-test("push command publishes a real commit to a branch and verifies its remote SHA", async () => {
+async function realHandoffFixture() {
   const dir = mkdtempSync(join(tmpdir(), "sf-push-"));
   const repo = join(dir, "repo");
   const remote = join(dir, "remote.git");
   const control = join(dir, ".swarmforge");
+  const store = new Store(":memory:");
+  const commands: string[] = [];
   const run = async (...args: string[]) => {
     const p = Bun.spawn(args, { stdout: "pipe", stderr: "pipe" });
-    const output = await new Response(p.stdout).text();
-    const error = await new Response(p.stderr).text();
-    if ((await p.exited) !== 0) throw new Error(error);
+    const [output, error, code] = await Promise.all([
+      new Response(p.stdout).text(),
+      new Response(p.stderr).text(),
+      p.exited,
+    ]);
+    if (code !== 0) throw new Error(error);
     return output.trim();
+  };
+  const cleanup = () => {
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
   };
   try {
     mkdirSync(control);
@@ -322,7 +331,6 @@ test("push command publishes a real commit to a branch and verifies its remote S
     await run("git", "-C", repo, "commit", "-m", "base");
     const base = await run("git", "-C", repo, "rev-parse", "HEAD");
     writeFileSync(join(control, "git-base"), `${base}\n`);
-    const store = new Store(":memory:");
     const w = {
       ...store.create({ ...task, timeout_seconds: 60 }),
       vm_id: "vm-1",
@@ -338,15 +346,20 @@ test("push command publishes a real commit to a branch and verifies its remote S
     const vm = {
       fs: { writeTextFile: async () => undefined },
       exec: async ({ command }: { command: string }) => {
+        commands.push(command);
+        // Credential writes are injected; cleanup never touches the host /opt.
         if (command.startsWith("rm -f"))
           return { statusCode: 0, stdout: "", stderr: "" };
         const p = Bun.spawn(["bash", "-c", command], {
           stdout: "pipe",
           stderr: "pipe",
         });
-        const stdout = await new Response(p.stdout).text();
-        const stderr = await new Response(p.stderr).text();
-        return { statusCode: await p.exited, stdout, stderr };
+        const [stdout, stderr, statusCode] = await Promise.all([
+          new Response(p.stdout).text(),
+          new Response(p.stderr).text(),
+          p.exited,
+        ]);
+        return { statusCode, stdout, stderr };
       },
     };
     const c = loadConfig({
@@ -365,23 +378,90 @@ test("push command publishes a real commit to a branch and verifies its remote S
     const provider = new FreestyleProvider(c, {
       vms: { ref: () => vm },
     } as unknown as Freestyle);
-    const pushed = await provider.pushBranch(w);
+    return { repo, remote, run, base, w, provider, commands, cleanup };
+  } catch (error) {
+    cleanup();
+    throw error;
+  }
+}
+
+test("push command publishes a real commit to a branch and verifies its remote SHA", async () => {
+  const f = await realHandoffFixture();
+  try {
+    const pushed = await f.provider.pushBranch(f.w);
     expect(pushed).toEqual({
-      branch: branchFor(w),
-      base_commit: base,
-      commit: await run("git", "-C", repo, "rev-parse", "HEAD"),
+      branch: branchFor(f.w),
+      base_commit: f.base,
+      commit: await f.run("git", "-C", f.repo, "rev-parse", "HEAD"),
     });
     expect(
-      await run(
+      await f.run(
         "git",
         "--git-dir",
-        remote,
+        f.remote,
         "rev-parse",
-        `refs/heads/${branchFor(w)}`,
+        `refs/heads/${branchFor(f.w)}`,
       ),
     ).toBe(pushed.commit);
-    store.close();
   } finally {
-    rmSync(dir, { recursive: true, force: true });
+    f.cleanup();
+  }
+});
+
+test("Git handoff refuses uncommitted changes without publishing a branch", async () => {
+  const f = await realHandoffFixture();
+  try {
+    writeFileSync(join(f.repo, "uncommitted.txt"), "work to preserve");
+    await expect(f.provider.pushBranch(f.w)).rejects.toThrow(
+      "Git push or remote commit verification failed",
+    );
+    expect(
+      await f.run(
+        "git",
+        "--git-dir",
+        f.remote,
+        "for-each-ref",
+        "--format=%(refname)",
+      ),
+    ).toBe("");
+    expect(f.commands.at(-1)).toContain("rm -f");
+  } finally {
+    f.cleanup();
+  }
+});
+
+test("Git handoff rejects a failed status check rather than reporting unreadable work as persisted", async () => {
+  const f = await realHandoffFixture();
+  try {
+    writeFileSync(join(f.repo, "uncommitted.txt"), "staged work to preserve");
+    await f.run("git", "-C", f.repo, "add", "uncommitted.txt");
+    writeFileSync(join(f.repo, ".git", "index"), "corrupt-index");
+    const status = Bun.spawn(["git", "-C", f.repo, "status", "--porcelain"], {
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [stdout, stderr, code] = await Promise.all([
+      new Response(status.stdout).text(),
+      new Response(status.stderr).text(),
+      status.exited,
+    ]);
+    expect(code).toBe(128);
+    expect(stdout).toBe("");
+    expect(stderr).toContain("index");
+    await expect(f.provider.pushBranch(f.w)).rejects.toThrow(
+      "Git push or remote commit verification failed",
+    );
+    expect(
+      await f.run(
+        "git",
+        "--git-dir",
+        f.remote,
+        "for-each-ref",
+        "--format=%(refname)",
+      ),
+    ).toBe("");
+    expect(f.commands.at(-1)).toContain("rm -f");
+  } finally {
+    f.cleanup();
   }
 });

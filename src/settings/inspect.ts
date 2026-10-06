@@ -79,6 +79,11 @@ function resultRedactor(
   ]);
 }
 
+/** Control removal must not assemble a credential after the final redaction. */
+function plainRedacted(redactor: Redactor, text: string) {
+  return redactor.text(plain(redactor.text(text)));
+}
+
 /**
  * Removes credential material and control characters from text, using the
  * credential context recorded for a resolved result.
@@ -93,10 +98,9 @@ export function redactedText(
   settings: ResolvedSettings<Config> | ResolvedSettings<ClientSettings>,
   text: string,
 ): string {
-  return plain(
-    resultRedactor(settings, settings.value as Record<string, unknown>).text(
-      text,
-    ),
+  return plainRedacted(
+    resultRedactor(settings, settings.value as Record<string, unknown>),
+    text,
   );
 }
 
@@ -124,12 +128,15 @@ export function redactedSettings(
     if (entry === undefined) continue;
     values[key] = secretKeys.has(key)
       ? "[REDACTED]"
-      : plain(redactor.text(String(entry)));
-    sources[key] = plain(redactor.text(settings.provenance[key] ?? "default"));
+      : plainRedacted(redactor, String(entry));
+    sources[key] = plainRedacted(
+      redactor,
+      settings.provenance[key] ?? "default",
+    );
   }
   return {
     config_path: settings.configPath
-      ? plain(redactor.text(settings.configPath))
+      ? plainRedacted(redactor, settings.configPath)
       : null,
     values,
     sources,
@@ -143,5 +150,6 @@ export function redactedSettings(
  * of a diagnostic that over-redacts ordinary text.
  */
 export function redact(text: string, secrets: Iterable<string>): string {
-  return new Redactor(() => [...secrets].filter(Boolean)).text(text);
+  const known = [...secrets].filter(Boolean);
+  return plainRedacted(new Redactor(() => known), text);
 }

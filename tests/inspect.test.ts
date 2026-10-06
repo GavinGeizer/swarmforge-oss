@@ -35,6 +35,17 @@ const serverEnvironment = (home: string) => ({
   SWARMFORGE_GIT_TREE: "opaque-tree",
 });
 
+test("plain diagnostics cannot reconstruct a credential after stripping control characters", async () => {
+  const token = "synthetic-diagnostic-token";
+  const settings = await resolveClientSettings({
+    env: { HOME: sandbox(), SWARMFORGE_API_TOKEN: token },
+  });
+  const split = `${token.slice(0, 10)}\u0001${token.slice(10)}`;
+  expect(redactedText(settings, `Failure ${split}`)).toBe("Failure [REDACTED]");
+  settings.provenance.url = `config:${split}`;
+  expect(redactedSettings(settings).sources.url).toBe("config:[REDACTED]");
+});
+
 test("removes credential material from every layer of a client result", async () => {
   const dir = sandbox({
     "client.toml": `schema_version = 1

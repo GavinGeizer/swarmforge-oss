@@ -1,5 +1,6 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { redact } from "../settings/inspect";
 import type { OverviewData, WorkerSummary } from "./overview";
 
 interface SwarmStatus {
@@ -49,16 +50,37 @@ function structured<T>(result: Awaited<ReturnType<Client["callTool"]>>): T {
   return result.structuredContent as T;
 }
 
-export async function connectSwarmForge(url: string, token?: string) {
+export async function connectSwarmForge(
+  url: string,
+  token?: string,
+  scrubText: (text: string) => string = (text) => redact(text, [token ?? ""]),
+) {
   const client = new Client({ name: "swarmforge-cli", version: "0.1.0" });
   const headers = token ? { authorization: `Bearer ${token}` } : undefined;
-  await client.connect(
-    new StreamableHTTPClientTransport(new URL(url), {
-      requestInit: headers ? { headers } : undefined,
-    }),
+  const attempt = async <T>(operation: () => Promise<T>): Promise<T> => {
+    try {
+      return await operation();
+    } catch (error) {
+      throw new Error(
+        scrubText(
+          error instanceof Error ? error.message : "MCP request failed",
+        ),
+      );
+    }
+  };
+  // The raw URL is used only by the transport. Every display and error surface,
+  // including dashboard refresh/control calls, retains the credential context.
+  await attempt(() =>
+    client.connect(
+      new StreamableHTTPClientTransport(new URL(url), {
+        requestInit: headers ? { headers } : undefined,
+      }),
+    ),
   );
   const call = async <T>(name: string, args: Record<string, unknown>) =>
-    structured<T>(await client.callTool({ name, arguments: args }));
+    attempt(async () =>
+      structured<T>(await client.callTool({ name, arguments: args })),
+    );
   return {
     worker: (workerId: string) =>
       call<WorkerDetail["worker"]>("get_worker", { worker_id: workerId }),
@@ -85,7 +107,7 @@ export async function connectSwarmForge(url: string, token?: string) {
         offset = page.next_offset;
       }
       return {
-        url,
+        url: scrubText(url),
         metrics: status.metrics,
         states: status.states,
         tokens: status.tokens,
@@ -119,6 +141,6 @@ export async function connectSwarmForge(url: string, token?: string) {
         ...(action === "destroy" ? { force: false } : {}),
       });
     },
-    close: () => client.close(),
+    close: () => attempt(() => client.close()),
   };
 }

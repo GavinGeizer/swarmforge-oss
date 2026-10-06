@@ -1,5 +1,19 @@
 # Final architecture review
 
+## Credential and source handoff corrections — 2026-10-06
+
+This follow-up covers credential handling and the Git clean-state predicate. Each issue was reproduced with a failing regression before applying its correction:
+
+- Excerpt sanitization now redacts both intact credentials and credentials reconstructed by deleting invisible characters, before truncating the display. Tests cover controls, zero-width/BOM/bidi characters, model keys, and guest passwords.
+- Plain configuration diagnostics and provenance use redaction before and after control removal, preventing the same reconstruction bug in settings output.
+- The CLI client now retains its resolved credential context for every endpoint display, tool error, connection error, and close error. Dashboard refreshes and internally handled errors receive sanitized text without relying on the first frame's redaction.
+- Artifact screening derives its overlap from every known credential and its raw, URL-encoded, and base64 forms in bytes. Long bearer tokens and multibyte/encoded keys can no longer evade the screen merely by crossing a requested chunk boundary.
+- Git handoff requires `git status` to exit successfully before checking for an empty status. A real corrupt-index regression confirms no branch is published and temporary credentials are cleaned up; clean and dirty repository cases remain covered.
+
+Regression evidence is in `tests/excerpt.test.ts`, `tests/inspect.test.ts`, `tests/cli-redaction.test.ts`, `tests/api.test.ts`, and `tests/git-handoff.test.ts`. Tests use synthetic credentials, disposable local Git repositories, and an isolated loopback MCP server. No real Freestyle VM or configured model/control-plane endpoint is contacted. This is a scoped follow-up, not closure of every earlier lifecycle or scalability finding.
+
+## Original implementation review
+
 Reviewed the implementation against the requested control-plane boundary and failure cases. The independent reviewer concentrated on lifecycle, SQLite and provider adapters; local review also exercised MCP, HTTP, artifact paths, secrets and real Git safety checks.
 
 Material issues found and fixed:

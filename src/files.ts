@@ -91,16 +91,13 @@ export class WorkerFiles {
       throw new Error("Invalid artifact byte range");
     const { w, full } = await this.checked(id, path);
     // Inspect an overlap so credentials split across chunk boundaries still block retrieval.
-    const pad = Math.max(
-      4096,
-      this.c.config.SWARMFORGE_MODEL_API_KEY.length,
-      this.c.config.FREESTYLE_API_TOKEN.length,
-    );
+    const redactor = redactorFor(this.c);
+    const pad = Math.max(4096, redactor.credentialOverlapBytes());
     const start = Math.max(0, offset - pad);
     const bytes = await this.c.bounded(
       this.c.provider.readFile(w.vm_id!, full, start, length + 2 * pad),
     );
-    if (redactorFor(this.c).contains(bytes))
+    if (redactor.contains(bytes))
       throw new Error(
         "Artifact contains credentials; remove them inside the worker before retrieval",
       );

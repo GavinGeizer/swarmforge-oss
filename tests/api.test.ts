@@ -125,6 +125,65 @@ test("artifact handles are bounded and path traversal and secret contents are bl
   ).rejects.toThrow();
   h.store.close();
 });
+
+for (const sample of [
+  {
+    name: "long MCP bearer",
+    field: "SWARMFORGE_API_TOKEN",
+    secret: `bearer-${"a".repeat(5000)}`,
+    variant: "raw",
+  },
+  {
+    name: "multibyte provider key",
+    field: "FREESTYLE_API_TOKEN",
+    secret: "界".repeat(2500),
+    variant: "raw",
+  },
+  {
+    name: "URL-encoded model key",
+    field: "SWARMFORGE_MODEL_API_KEY",
+    secret: "界".repeat(2000),
+    variant: "url",
+  },
+  {
+    name: "base64 provider key",
+    field: "FREESTYLE_API_TOKEN",
+    secret: `provider-${"b".repeat(5000)}`,
+    variant: "base64",
+  },
+] as const) {
+  test(`artifact chunk screening includes the full ${sample.name}`, async () => {
+    const h = harness();
+    try {
+      h.coordinator.config[sample.field] = sample.secret;
+      const w = h.coordinator.spawn(task);
+      await runToRunning(h, w.worker_id);
+      const secret =
+        sample.variant === "url"
+          ? encodeURIComponent(sample.secret)
+          : sample.variant === "base64"
+            ? Buffer.from(sample.secret).toString("base64")
+            : sample.secret;
+      const prefix = "artifact begins here ";
+      await h.provider.writeFile(
+        h.store.get(w.worker_id).vm_id!,
+        "/workspace/.swarmforge/artifacts/credential.txt",
+        `${prefix}${secret} harmless suffix`,
+      );
+      const offset = Buffer.byteLength(prefix + secret) - 64;
+      await expect(
+        new WorkerFiles(h.coordinator).readArtifact(
+          w.worker_id,
+          "credential.txt",
+          offset,
+          32,
+        ),
+      ).rejects.toThrow("Artifact contains credentials");
+    } finally {
+      h.store.close();
+    }
+  });
+}
 test("metrics aggregate durable tokens and never label by worker/task identifiers", async () => {
   const h = harness();
   const w = h.coordinator.spawn(task);

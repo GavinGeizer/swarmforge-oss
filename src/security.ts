@@ -2,18 +2,30 @@ import type { Coordinator } from "./coordinator";
 import { excerptLimit } from "./domain";
 export class Redactor {
   constructor(readonly secrets: () => string[]) {}
+  private variants() {
+    return [
+      ...new Set(
+        this.secrets()
+          .filter(Boolean)
+          .flatMap((secret) => [
+            secret,
+            encodeURIComponent(secret),
+            Buffer.from(secret).toString("base64"),
+          ]),
+      ),
+    ].sort((a, b) => b.length - a.length);
+  }
+  /** Artifact ranges need a complete credential, including its encoded forms. */
+  credentialOverlapBytes() {
+    return this.variants().reduce(
+      (maximum, value) => Math.max(maximum, Buffer.byteLength(value)),
+      0,
+    );
+  }
   text(value: string) {
     let text = value;
-    for (const secret of this.secrets()
-      .filter(Boolean)
-      .sort((a, b) => b.length - a.length)) {
-      for (const variant of new Set([
-        secret,
-        encodeURIComponent(secret),
-        Buffer.from(secret).toString("base64"),
-      ]))
-        text = text.replaceAll(variant, "[REDACTED]");
-    }
+    for (const variant of this.variants())
+      text = text.replaceAll(variant, "[REDACTED]");
     return text
       .replace(/(https?:\/\/)[^\s/@]+:[^\s/@]+@/g, "$1[REDACTED]@")
       .replace(
@@ -92,7 +104,8 @@ function escapeLength(chars: string[], index: number) {
   }
   return Math.min(chars.length, index + 2);
 }
-// Model output is untrusted: redact before trimming so a secret split by truncation is never partially revealed.
+// Protect intact credentials first, then redact anything reconstructed by cleanup.
+// Both passes happen before truncation, which could otherwise expose a secret fragment.
 export function excerptText(value: string, redact: (text: string) => string) {
   const chars = [...redact(value)];
   let out = "";
@@ -107,7 +120,7 @@ export function excerptText(value: string, redact: (text: string) => string) {
     out += isSpace(code) ? " " : isInvisible(code) ? "" : chars[index];
     index++;
   }
-  const clean = out.replace(/\s+/g, " ").trim();
+  const clean = redact(out.replace(/\s+/g, " ").trim());
   if (!clean) return "";
   const tail = [...clean];
   if (tail.length <= excerptLimit) return clean;

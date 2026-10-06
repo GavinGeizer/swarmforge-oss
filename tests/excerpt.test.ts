@@ -110,6 +110,65 @@ test("excerpts collapse to one safe bounded line with secrets redacted", () => {
   expect(bounded.endsWith("final words here")).toBe(true);
 });
 
+test("excerpt cleanup cannot reconstruct credentials split by invisible characters", () => {
+  const secret = "synthetic-excerpt-credential";
+  const redact = (text: string) => new Redactor(() => [secret]).text(text);
+  for (const separator of [
+    "\u200b",
+    "\u200c",
+    "\u200d",
+    "\ufeff",
+    "\u00ad",
+    "\u0001",
+    "\u0007",
+    "\u001f",
+    "\u0085",
+    "\u0091",
+    "\u2028",
+    "\u202e",
+    "\u2060",
+  ]) {
+    const split = `${secret.slice(0, 10)}${separator}${secret.slice(10)}`;
+    expect(excerptText(`Working with ${split}`, redact)).toBe(
+      "Working with [REDACTED]",
+    );
+  }
+  const invisibleSecret = "synthetic-\u200bcredential";
+  expect(
+    excerptText(invisibleSecret, (text) =>
+      new Redactor(() => [invisibleSecret]).text(text),
+    ),
+  ).toBe("[REDACTED]");
+});
+
+test("focused worker excerpts do not expose normalized model keys or guest passwords", async () => {
+  const h = harness();
+  try {
+    const w = h.coordinator.spawn(task);
+    await runToRunning(h, w.worker_id);
+    const dispatch = h.store.dispatch(w.worker_id)!;
+    const password = h.store.get(w.worker_id).server_password;
+    const obscure = (secret: string) =>
+      `${secret.slice(0, 5)}\u200b${secret.slice(5)}`;
+    h.agent.snapshots.set(w.worker_id, {
+      status: "busy",
+      inference_active: 1,
+      messages: [
+        message({
+          parent_id: dispatch.message_id,
+          text: `Keys ${obscure(h.coordinator.config.SWARMFORGE_MODEL_API_KEY)} ${obscure(password)}`,
+        }),
+      ],
+    });
+    await h.coordinator.tick();
+    const focused = publicWorker(h.coordinator, w.worker_id, true);
+    expect(focused.excerpt).toBe("Keys [REDACTED] [REDACTED]");
+    expect(focused.excerpt).not.toContain(password);
+  } finally {
+    h.store.close();
+  }
+});
+
 test("an active turn publishes a bounded excerpt only on the focused worker view", async () => {
   const h = harness();
   const w = h.coordinator.spawn(task);

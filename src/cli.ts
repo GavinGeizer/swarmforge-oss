@@ -157,12 +157,13 @@ async function showStatus(
   });
   const endpoint = mcpEndpoint(settings.value.url);
   try {
-    const client = await connectSwarmForge(endpoint, settings.value.token);
+    const client = await connectSwarmForge(
+      endpoint,
+      settings.value.token,
+      (text) => scrub(settings, text),
+    );
     try {
       const data = await client.overview();
-      // The endpoint is reported as resolved, not as typed: an operator can put a
-      // credential in a query string or in the user information of a URL.
-      data.url = scrub(settings, endpoint);
       if (command.json) write(JSON.stringify(data));
       else if (
         command.interactive &&
