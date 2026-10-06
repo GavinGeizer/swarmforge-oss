@@ -11,7 +11,7 @@ Streamable HTTP: `POST /mcp`. Supply the configured bearer token. Standard MCP S
 | `pause_worker` | `worker_id` | State/metadata after pause or pending intent. |
 | `resume_worker` | `worker_id` | Resume paused worker and suspended timeout budget. |
 | `cancel_worker` | `worker_id` | Stops execution, cancels queued turns, retains VM. |
-| `destroy_worker` | `worker_id`, optional `force=false` | Permanent deletion or recovery-required refusal; provider failures retain retryable intent. |
+| `destroy_worker` | `worker_id`, optional `force=false`, `settled_only=false` | Permanent deletion or recovery-required refusal; provider failures retain retryable intent. `settled_only=true` requires a retained VM, a settled task, preserved outputs, and no pending work/control before admitting normal destruction; it cannot be combined with force. |
 | `get_worker_result` | `worker_id`, optional `run_id` | Latest matching persisted result, or null. Survives destruction. |
 | `get_worker_logs` | `worker_id`, optional `after=0`, `limit=50` | Events plus bounded OpenCode service log tail. |
 | `list_worker_artifacts` | `worker_id`, optional `directory=""`, `offset=0`, `limit=20` | Relative directory entries of `.swarmforge/artifacts` without file contents. |

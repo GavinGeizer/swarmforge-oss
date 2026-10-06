@@ -24,10 +24,12 @@ Prioritized opportunities from a read-through of the implementation and operator
 
 `bun run doctor` checks local configuration, Bun, database-directory access, and configured Git handoff files. It does not make network requests. Remote model compatibility and the contents of a Freestyle snapshot (including guest Git availability) still need an optional, explicitly invoked live check.
 
-## 2. Worker cost and cleanup visibility
+## 2. Worker cost and cleanup visibility — retained visibility and cleanup implemented
 
-- Show retained VM count, age, and estimated spend in the status view.
-- Make artifact collection and safe cleanup easy to find before destroying a VM.
+- Overview shows retained VM and cleanup candidate counts, with worker age and idle time in cleanup/details.
+- Cleanup supports selection, a frozen preview, explicit confirmation, sequential normal destruction, and individual refusals.
+- The server rechecks settled state, preservation, and pending work atomically before accepting batch cleanup; existing Git and artifact gates remain in force.
+- Pricing estimates still need configured rates or provider billing data.
 - Consider configurable cleanup reminders or retention policies after preserving work.
 
 ## 3. Task-first dashboard

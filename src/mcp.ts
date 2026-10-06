@@ -234,10 +234,14 @@ export function createMcpServer(c: Coordinator, signal?: AbortSignal) {
     );
   register(
     "destroy_worker",
-    "Permanently destroy a worker after persistence checks. force=true explicitly permits losing local work.",
-    { ...worker, force: z.boolean().default(false) },
+    "Permanently destroy a worker after persistence checks. settled_only=true also requires a settled task, preserved outputs and no pending work/control. force=true explicitly permits losing local work.",
+    {
+      ...worker,
+      force: z.boolean().default(false),
+      settled_only: z.boolean().default(false),
+    },
     async (a) => {
-      await c.control(a.worker_id, "destroy", a.force);
+      await c.control(a.worker_id, "destroy", a.force, a.settled_only);
       return publicWorker(c, a.worker_id);
     },
   );

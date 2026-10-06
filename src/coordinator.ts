@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { ArtifactService } from "./artifacts";
+import { cleanupReadiness } from "./cleanup";
 import type { Config } from "./config";
 import {
   type AgentSnapshot,
@@ -928,20 +929,37 @@ export class Coordinator {
     id: string,
     intent: "pause" | "resume" | "cancel" | "destroy",
     force = false,
+    settledOnly = false,
   ) {
     if (this.stopped) throw new Error("Coordinator is stopping");
-    await this.track(this.runControl(id, intent, force));
+    await this.track(this.runControl(id, intent, force, settledOnly));
     return this.store.get(id);
   }
   private async runControl(
     id: string,
     intent: "pause" | "resume" | "cancel" | "destroy",
     force: boolean,
+    settledOnly: boolean,
   ) {
+    if (settledOnly && (intent !== "destroy" || force))
+      throw new Error("Settled cleanup requires normal destruction");
     const w = this.store.get(id);
     if (w.state === "destroyed") {
       if (intent === "destroy") return w;
       throw new Error("Worker destroyed");
+    }
+    if (settledOnly) {
+      const readiness = cleanupReadiness({
+        ...w,
+        pending_control: w.intent,
+        pending_messages: this.store
+          .dispatches(id)
+          .filter((dispatch) =>
+            ["pending", "sending", "sent"].includes(dispatch.state),
+          ).length,
+      });
+      if (!readiness.eligible)
+        throw new Error(`Cleanup refused: ${readiness.reason}`);
     }
     if (w.vm_missing && intent !== "destroy")
       throw new Error("Worker VM is missing");

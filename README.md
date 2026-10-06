@@ -13,6 +13,7 @@ The global `swarmforge` executable provides `init`, `doctor`, `serve`, and `stat
 - [Check setup and start the server](#check-setup-and-start-the-server)
 - [Connect an MCP client](#connect-an-mcp-client)
 - [Run a first task and collect the result](#run-a-first-task-and-collect-the-result)
+- [Retained VMs and cleanup](#review-retained-vms-and-clean-up)
 - [Troubleshooting](#troubleshooting)
 - [Build and packaged installation](#build-and-packaged-installation)
 
@@ -136,7 +137,7 @@ swarmforge serve
 swarmforge status
 ```
 
-Use ↑/↓ to select a worker, Enter for details, `r` to refresh, and `q` to leave the dashboard. The detail view offers pause, resume, cancel, and destroy when available. `swarmforge status --json` or `--no-interactive` prints a snapshot.
+Use ↑/↓ to select a worker, Enter for details, `x` for retained-VM cleanup, `r` to refresh, and `q` to leave the dashboard. The detail view offers pause, resume, cancel, and destroy when available. `swarmforge status --json` or `--no-interactive` prints a snapshot.
 
 | Surface | Default address |
 | --- | --- |
@@ -198,6 +199,18 @@ Add `"artifacts": [{"path": "results/findings.json", "required": true}]` to a ta
 In `swarmforge status`, select a worker and press Enter. The detail view shows preservation state, attempts, errors, artifact IDs, sizes, checksums, and download paths. Press `f` to retry a failed or pending collection on a retained VM, or call `retry_worker_finalization` through MCP. Task completion and preservation are separate states; failed collection retains the VM. Normal destruction refuses unsafe cleanup. Forced destruction explicitly abandons preservation and can lose files.
 
 Preserved files survive VM deletion and coordinator restarts. Back up **both** the SQLite database and the artifact storage directory. Storage defaults to `artifacts` beside the database; configure `SWARMFORGE_ARTIFACT_DIR` or `[artifacts].dir` for another volume. The standalone binary embeds its capture helper; the guest snapshot needs Python 3.
+
+## Review retained VMs and clean up
+
+The overview shows retained VM count, cleanup candidate count, and the oldest retained worker. Press `x` to open cleanup. Workers are ordered by longest idle time; each row shows worker age, idle time, task state, preservation state, and any cleanup refusal. Age starts when the worker record was created; it is not a provider billing measurement. Idle time starts at the latest recorded worker activity. Paused VMs are included in retained counts, and confirmed missing or destroyed VMs are excluded.
+
+1. Use ↑/↓ to browse and Space to select a candidate. `a` selects all eligible workers; `n` clears selection. `i` opens details, including preservation errors and artifact downloads.
+2. Press Enter to review exactly the selected worker and VM identities. Browse the preview with ↑/↓. Press Escape or `n` to return without deleting anything.
+3. Press `y` to request normal destruction, one worker at a time. The client refreshes each worker and the server atomically refuses cleanup if it is active/paused, has pending work/control, or lacks preserved outputs. Git and artifact safety checks still run before deletion. The dashboard reports destroyed, blocked, skipped, and failed requests; failures do not trigger forced deletion.
+
+Cleanup candidates must be completed, failed, cancelled, or recovery-required, have an available retained VM, have preserved outputs, and have no pending messages or control action. A candidate is **not** a guarantee that Git safety will pass. Use details to resolve refusals, then select and preview again. Quitting stops new batch requests after the current request. This flow requires an updated server; restart `swarmforge serve` and reopen the dashboard after installing the new binary.
+
+Cleanup is an operator action. Stored artifacts and results survive normal VM destruction. Pricing estimates and automatic retention policies remain future work.
 
 ## Move the workers to another repository
 

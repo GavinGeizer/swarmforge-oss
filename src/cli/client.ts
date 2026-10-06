@@ -95,6 +95,7 @@ export async function connectSwarmForge(
       "list_artifacts",
       { worker_id: workerId, limit: 3 },
     );
+  let settledCleanupSupported: Promise<boolean> | undefined;
   return {
     artifacts,
     retryPreservation: (workerId: string) =>
@@ -155,10 +156,41 @@ export async function connectSwarmForge(
     async control(
       workerId: string,
       action: "pause" | "resume" | "cancel" | "destroy",
+      options: { settledOnly?: boolean } = {},
     ) {
+      if (options.settledOnly) {
+        if (action !== "destroy")
+          throw new Error("Settled cleanup only supports destruction");
+        settledCleanupSupported ??= attempt(async () => {
+          const tools = await client.listTools();
+          const destroy = tools.tools.find(
+            (tool) => tool.name === "destroy_worker",
+          );
+          return (
+            !!destroy?.inputSchema.properties &&
+            Object.hasOwn(destroy.inputSchema.properties, "settled_only")
+          );
+        });
+        let supported: boolean;
+        try {
+          supported = await settledCleanupSupported;
+        } catch (error) {
+          settledCleanupSupported = undefined;
+          throw error;
+        }
+        if (!supported)
+          throw new Error(
+            "This server does not support settled cleanup. Update/restart the server and reopen the dashboard.",
+          );
+      }
       return call<WorkerDetail["worker"]>(`${action}_worker`, {
         worker_id: workerId,
-        ...(action === "destroy" ? { force: false } : {}),
+        ...(action === "destroy"
+          ? {
+              force: false,
+              ...(options.settledOnly ? { settled_only: true } : {}),
+            }
+          : {}),
       });
     },
     close: () => attempt(() => client.close()),

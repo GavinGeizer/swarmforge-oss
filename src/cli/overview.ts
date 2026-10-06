@@ -1,5 +1,9 @@
 import type { WorkerFinalization } from "../domain";
+import { duration, retainsVm, retentionSummary } from "./cleanup";
 import type { WorkerDetail } from "./client";
+import { safeTerminalText } from "./terminal";
+
+export { safeTerminalText } from "./terminal";
 
 export interface WorkerSummary {
   worker_id: string;
@@ -16,6 +20,8 @@ export interface WorkerSummary {
   finalization?: WorkerFinalization | null;
   vm_id?: string | null;
   vm_missing?: boolean;
+  pending_control?: string | null;
+  pending_messages?: number;
 }
 
 export interface OverviewData {
@@ -82,38 +88,6 @@ function clipped(text: string, width: number) {
     : text;
 }
 
-export function safeTerminalText(text: string) {
-  let result = "";
-  let index = 0;
-  while (index < text.length) {
-    const code = text.charCodeAt(index);
-    if (code === 27) {
-      const marker = text[index + 1];
-      index += 2;
-      if (marker === "[") {
-        while (index < text.length) {
-          const part = text.charCodeAt(index++);
-          if (part >= 64 && part <= 126) break;
-        }
-      } else if (marker === "]") {
-        while (index < text.length) {
-          const part = text.charCodeAt(index++);
-          if (part === 7) break;
-          if (part === 27 && text[index] === "\\") {
-            index++;
-            break;
-          }
-        }
-      }
-      continue;
-    }
-    if (code >= 32 && code !== 127 && (code < 128 || code > 159))
-      result += text[index];
-    index++;
-  }
-  return result;
-}
-
 function colorFor(state: string) {
   if (["failed", "recovery_required"].includes(state)) return 31;
   if (["completed", "destroyed"].includes(state)) return 32;
@@ -155,9 +129,11 @@ export function renderOverview(
         ? ([3, 2, 2] as const)
         : ([8, 8, 5] as const);
   const groups = groupWorkers(data.workers);
+  const retention = retentionSummary(data.workers, now);
   const lines = [
     "SwarmForge  ● connected",
     `MCP  ${data.url}     Metrics  ${data.metrics.enabled ? `enabled :${data.metrics.port}` : "disabled"}`,
+    `Retained VMs  ${retention.count} · ${retention.candidates} cleanup candidates · oldest worker ${retention.oldest}`,
     `Preservation  ${data.workers.filter((w) => ["pending", "collecting", "failed"].includes(w.finalization?.state ?? "")).length} need attention`,
     `Workers  ${count(data.states, activeStates)} active · ${data.states.queued ?? 0} queued · ${data.states.completed ?? 0} completed     Tokens  ${compactNumber(data.tokens.total)}`,
   ];
@@ -213,7 +189,10 @@ export function renderOverview(
   section("QUEUED", groups.queued, limits[1]);
   section("RECENT", groups.recent, limits[2]);
   if (options.interactive)
-    lines.push("", "↑/↓ select · Enter inspect · r refresh · q quit");
+    lines.push(
+      "",
+      "↑/↓ select · Enter inspect · x cleanup · r refresh · q quit",
+    );
   return lines
     .map((line) => (line.includes("\u001b[") ? line : clipped(line, width)))
     .join("\n");
@@ -232,7 +211,14 @@ export function renderWorkerDetail(
     `${worker.team_id} / ${worker.task_id}     ${worker.state.toUpperCase()}     ${elapsed(now - started)}`,
     `Role  ${worker.role}     Tokens  ${compactNumber(worker.tokens.total)}     Pending messages  ${worker.pending_messages ?? 0}`,
   ];
-  if (worker.vm_id) lines.push(`VM  ${worker.vm_id}`);
+  if (worker.vm_id)
+    lines.push(
+      `VM  ${worker.vm_id}${retainsVm(worker) ? " · retained" : worker.vm_missing ? " · missing" : " · destroyed"}`,
+    );
+  if (retainsVm(worker))
+    lines.push(
+      `Worker age  ${duration(now - worker.created_at)} · Idle  ${duration(now - worker.last_activity_at)}`,
+    );
   if (worker.opencode_session_id)
     lines.push(`Session  ${worker.opencode_session_id}`);
   if (worker.finalization) {
