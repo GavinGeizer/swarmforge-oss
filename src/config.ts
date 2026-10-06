@@ -150,6 +150,16 @@ const schema = z
       });
   });
 export type Config = z.infer<typeof schema>;
+/** Validate one prompted field with the same rules used by server startup. */
+export function configFieldError(
+  key: keyof Config,
+  value: string,
+): string | null {
+  const result = schema.shape[key].safeParse(value);
+  return result.success
+    ? null
+    : result.error.issues.map((issue) => issue.message).join("; ");
+}
 export function loadConfig(
   env: Record<string, string | undefined> = process.env,
 ): Config {

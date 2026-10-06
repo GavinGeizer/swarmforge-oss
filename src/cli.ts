@@ -3,6 +3,7 @@
 import { existsSync } from "node:fs";
 import { type ParsedCommand, parseArguments } from "./cli/arguments";
 import { connectSwarmForge } from "./cli/client";
+import { runDoctor } from "./cli/doctor";
 import { renderOverview } from "./cli/overview";
 import { runDashboard } from "./cli/tui";
 import {
@@ -30,6 +31,8 @@ import { COMMIT, VERSION } from "./version";
 const usage = `SwarmForge control plane
 
 Usage:
+  swarmforge init [--config PATH]
+  swarmforge doctor [--config PATH] [--env-file PATH] [--json]
   swarmforge [status] [--url URL] [--json] [--no-interactive]
               [--config PATH] [--env-file PATH]
   swarmforge serve [--config PATH] [--env-file PATH] [--check-config]
@@ -38,6 +41,8 @@ Usage:
   swarmforge --help
 
 Commands:
+  init      Ask for required settings and create .env in the current directory.
+  doctor    Check local setup without contacting any endpoint or creating VMs.
   status    Show the swarm overview from a running server. Used when no command
             is given.
   serve     Run the API, metrics listener, coordinator and event log.
@@ -302,6 +307,23 @@ async function run(command: ParsedCommand): Promise<number> {
     case "version":
       write(VERSION);
       return 0;
+    case "init": {
+      const { initialize } = await import("./cli/init");
+      const { terminalPrompt } = await import("./cli/prompt");
+      const prompt = terminalPrompt();
+      try {
+        await initialize({
+          configPath: command.configPath,
+          ask: prompt.ask,
+          write,
+        });
+        return 0;
+      } finally {
+        prompt.close();
+      }
+    }
+    case "doctor":
+      return runDoctor(selection(command), command.json);
     case "status":
       return showStatus(command);
     case "serve":

@@ -6,6 +6,7 @@
  * own binary with different flags would prove nothing about the shipped one.
  */
 import { createHash } from "node:crypto";
+import { existsSync } from "node:fs";
 import { chmod, mkdir, readFile, stat } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 
@@ -156,7 +157,13 @@ export async function compileCli(
   } = {},
 ): Promise<CompiledBinary> {
   const version = options.version ?? (await packageVersion(options.root));
-  const commit = options.commit ?? (await repositoryCommit(options.root));
+  // Source ZIP downloads have no .git metadata. Local builds still work; release
+  // packaging separately requires a verified repositoryCommit.
+  const commit =
+    options.commit ??
+    (existsSync(join(options.root ?? repositoryRoot, ".git"))
+      ? await repositoryCommit(options.root)
+      : "unknown");
   const outfile = resolve(options.outfile ?? binaryPath);
   await mkdir(dirname(outfile), { recursive: true });
   const result = await Bun.build(buildConfig({ version, commit, outfile }));

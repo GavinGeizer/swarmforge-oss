@@ -15,6 +15,8 @@ export type ConfigAction = "path" | "show" | "validate";
 export type ParsedCommand =
   | { kind: "help" }
   | { kind: "version" }
+  | { kind: "init"; configPath?: string }
+  | { kind: "doctor"; json: boolean; configPath?: string; envFiles: string[] }
   | {
       kind: "status";
       /** Highest-precedence client values, so their source is reported as an override. */
@@ -123,6 +125,34 @@ function configuration(rest: readonly string[]): ParsedCommand {
   return { kind: "config", action, configPath, envFiles };
 }
 
+function initialization(rest: readonly string[]): ParsedCommand {
+  const iterator = rest[Symbol.iterator]();
+  let configPath: string | undefined;
+  for (const arg of iterator) {
+    if (isHelp(arg)) return { kind: "help" };
+    if (arg === "--config") configPath = value(iterator, "--config", "a path");
+    else throw new UsageError(`Unknown argument: ${arg}`);
+  }
+  return { kind: "init", configPath };
+}
+
+function doctor(rest: readonly string[]): ParsedCommand {
+  const iterator = rest[Symbol.iterator]();
+  let json = false;
+  let configPath: string | undefined;
+  const envFiles: string[] = [];
+  for (const arg of iterator) {
+    if (isHelp(arg)) return { kind: "help" };
+    if (arg === "--json") json = true;
+    else if (arg === "--config")
+      configPath = value(iterator, "--config", "a path");
+    else if (arg === "--env-file")
+      envFiles.push(value(iterator, "--env-file", "a path"));
+    else throw new UsageError(`Unknown argument: ${arg}`);
+  }
+  return { kind: "doctor", json, configPath, envFiles };
+}
+
 /**
  * Parses a command line into one command.
  *
@@ -145,6 +175,8 @@ export function parseArguments(args: readonly string[]): ParsedCommand {
   if (head === "--version" || head === "-V") return { kind: "version" };
   if (head === "status") return status(rest);
   if (head === "serve") return serve(rest);
+  if (head === "init") return initialization(rest);
+  if (head === "doctor") return doctor(rest);
   if (head === "config") return configuration(rest);
   // A leading flag keeps the implicit status invocation working.
   if (head.startsWith("-")) return status(args);

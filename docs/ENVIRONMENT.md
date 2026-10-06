@@ -1,6 +1,6 @@
 # Environment configuration
 
-Bun loads `.env`. Empty optional entries use their defaults. Required configuration is validated before reconciliation or listening. Never commit credentials.
+Configuration files are explicit: use `swarmforge init` to create `.env` and register it in the global configuration, or pass `--env-file .env` to `serve`, `doctor`, or `status`. Checkout scripts and the compiled binary do not automatically load files from the current directory. Empty optional entries use their defaults. Required configuration is validated before reconciliation or listening. Never commit credentials.
 
 | Variable | Default / requirement | Purpose |
 | --- | --- | --- |
@@ -28,7 +28,7 @@ Bun loads `.env`. Empty optional entries use their defaults. Required configurat
 | `SWARMFORGE_WORKSPACE` | `/workspace` | Absolute guest directory; safe path characters only. Snapshot/mount provider prepares it. |
 | `OPENCODE_PORT` | `4096` | Guest server port, 1–65535. |
 | `OPENCODE_START_COMMAND` | `opencode serve --hostname 0.0.0.0 --port "$OPENCODE_PORT"` | Administrator-supplied command run by the guest systemd service. Keep it compatible with the configured port. |
-| `SWARMFORGE_DB_PATH` | `./data/swarmforge.sqlite` | Persistent local SQLite file. Server disallows `:memory:`. Parent directory is created. |
+| `SWARMFORGE_DB_PATH` | `$XDG_DATA_HOME/swarmforge/swarmforge.sqlite`, otherwise `~/.local/share/swarmforge/swarmforge.sqlite` | Persistent local SQLite file. `init` sets an absolute path to `data/swarmforge.sqlite` in the initialization directory. Existing explicit paths stay in effect; no database is migrated. Server disallows `:memory:`. Parent directory is created. |
 | `SWARMFORGE_HOST` | `127.0.0.1` | MCP and metrics listen interface. |
 | `SWARMFORGE_ALLOWED_HOSTS` | Empty | Comma-separated public hostnames/IPs accepted in addition to loopback and the bind address. Set for a reverse proxy or wildcard bind; host validation prevents DNS rebinding. Any non-loopback entry here also requires `SWARMFORGE_API_TOKEN`, even when `SWARMFORGE_HOST` stays on loopback. |
 | `SWARMFORGE_PORT` | `8787` | MCP HTTP port. |

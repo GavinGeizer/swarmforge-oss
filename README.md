@@ -1,45 +1,207 @@
 # SwarmForge
 
-A small MCP worker control plane for trusted AI team leads. It provisions isolated Freestyle VMs, controls OpenCode sessions using an external Qwen-compatible endpoint, persists lifecycle/results in SQLite, and exposes worker visibility through MCP and Prometheus.
+SwarmForge lets an AI lead launch isolated coding workers, follow their progress, send follow-up tasks, and collect their results through MCP. Each worker runs OpenCode in a Freestyle VM against your model endpoint and Git repository. Worker state and results are stored in SQLite; the terminal dashboard shows current activity.
 
-SwarmForge owns worker coordination. Freestyle owns VMs, OpenCode owns coding sessions, the external Git tree owns source durability, and the external inference service owns model serving. No Git hosting, pull requests, GPU deployment, or lead-management system is included.
+The global `swarmforge` executable provides `init`, `doctor`, `serve`, and `status`, plus configuration inspection. You supply the VM snapshot, model service, and Git access. SwarmForge does not host Git, serve models, or create pull requests.
 
-## Run
+## Before you start
 
-Use Linux x64 (glibc) with Bun 1.4.2 or newer. Install dependencies with `bun install --frozen-lockfile`, copy `.env.example` to `.env`, and fill the six required infrastructure values described in [ENVIRONMENT.md](docs/ENVIRONMENT.md).
+The supported host is **Linux x64 with glibc**. Building from a checkout requires **Bun 1.4.2 or newer** and Git. The installed executable includes its runtime and does not require Bun or `node_modules`.
+
+Have these infrastructure details ready before initialization:
+
+| Required value | What to provide |
+| --- | --- |
+| `FREESTYLE_API_TOKEN` | A Freestyle account API token used to manage worker VMs. |
+| `FREESTYLE_SNAPSHOT_ID` | An existing snapshot ID or slug, prepared with the worker tools below. |
+| `SWARMFORGE_MODEL_BASE_URL` | An OpenAI-compatible chat-completions API base URL, usually ending in `/v1`, reachable from the VMs. |
+| `SWARMFORGE_MODEL_API_KEY` | A worker-scoped inference key. For an unauthenticated endpoint, use a nonempty placeholder. |
+| `SWARMFORGE_MODEL_NAME` | The exact model ID accepted by the endpoint. The model must support tool calls. |
+| `SWARMFORGE_GIT_TREE` | A cloneable Git URL or path available to the worker. Use `none` or `none:/prepared/path` to use a prepared workspace instead of cloning. |
+
+The **worker snapshot** must contain OpenCode compatible with SDK 1.18.31, Python 3, Git, Bash, systemd, and the tools needed for your tasks. OpenCode must be on the service PATH and the guest workspace must be writable. Repository credentials, mounts, and networking are prepared externally. These guest prerequisites are separate from the control-plane host.
+
+Installing and initializing create no worker VMs. Spawning a worker provisions a billable VM; completed workers retain their VMs until explicitly destroyed.
+
+## Download, build, and install
+
+From a fresh checkout:
 
 ```sh
-bun run dev
-bun test
-bun run check
+git clone https://github.com/GavinGeizer/swarmforge-oss.git
+cd swarmforge-oss
+bun install --frozen-lockfile
+bun run setup
 ```
 
-`dev`, `start`, `status` and `serve` all run the same `swarmforge` CLI with `--no-env-file --config=/dev/null`, so a `.env` or `bunfig.toml` in the directory you happen to be in cannot change how the command is configured. `start` and `dev` run `serve` under the hood and take the same flags as the packaged binary, so every option documented below works identically from a checkout. Configuration is explicit: a `config.toml` from [CONFIGURATION.md](docs/CONFIGURATION.md), its `env_file`, and any `--env-file` you pass. Pass one when you keep credentials in a file:
+`setup` compiles the standalone command, installs it at `~/.local/bin/swarmforge`, and starts the interactive initialization questions. It installs for your user without `sudo`. Secret inputs are hidden. Enter all six required values from the table above; invalid values are explained and requested again.
+
+For a source ZIP download, extract it, open a terminal in its directory, and run the same `bun install --frozen-lockfile` and `bun run setup` commands. A ZIP build reports an unknown Git commit because the download contains no repository metadata.
+
+To build and install without starting initialization, or to update an existing installation:
 
 ```sh
-bun run start -- --env-file .env   # the flags reach the CLI, not the script
+bun run install:local
+```
+
+The installer replaces the executable atomically. An already running server continues using its old executable until you stop and start it again. The `dist/swarmforge` build also remains in the checkout.
+
+### Make the command available in your terminal and workspace
+
+The installer prints instructions for your shell. If `~/.local/bin` is already on PATH, the command is immediately available. Otherwise, for Bash:
+
+```sh
+printf '%s\n' 'export PATH="$HOME/.local/bin:$PATH"' >> "$HOME/.bashrc"
+. "$HOME/.bashrc"
+hash -r
+swarmforge --help
+```
+
+For Zsh, use `~/.zshrc` instead of `~/.bashrc`. For Fish, run `fish_add_path ~/.local/bin`.
+
+After changing PATH, open a new terminal. In VS Code or a compatible editor, run **Developer: Reload Window** from the command palette, then open a new workspace terminal. Until PATH is refreshed, you can invoke `~/.local/bin/swarmforge` directly.
+
+## Initialize a deployment
+
+Once the command is installed, initialize from the directory where you want the environment file and deployment data:
+
+```sh
+mkdir -p ~/my-swarmforge
+cd ~/my-swarmforge
+swarmforge init
+```
+
+`init` creates `.env` in the **current directory** with permissions `0600`. It records your required settings, an absolute database path under that directory's `data/`, and a unique stable instance ID. Keep the instance ID and database path when upgrading an existing deployment.
+
+When the global configuration is absent, `init` also creates `~/.config/swarmforge/config.toml` pointing to that environment file by its absolute path. An absolute `XDG_CONFIG_HOME` changes the configuration location. After initialization, the global command can find this deployment from any directory.
+
+Existing `.env` files are refused before credentials are requested. Existing global configuration is preserved; in that case `init` prints commands using `--env-file` to select the newly created file explicitly. To create a separately selected configuration, use `swarmforge init --config /absolute/path/config.toml`, then pass that same `--config` to subsequent commands.
+
+The environment file is parsed as data. Do not source it as a shell script, and do not commit it. Optional settings and verified Git branch handoff are described in [ENVIRONMENT.md](docs/ENVIRONMENT.md) and [.env.example](.env.example).
+
+### If you already have an environment file
+
+Keep it and skip `init`:
+
+```sh
+swarmforge doctor --env-file .env
 swarmforge serve --env-file .env
 ```
 
-Bun forwards everything after `--` to the script, so `--env-file .env` is parsed by the `serve` command. A configuration error is reported without a stack trace and the process exits 1.
+Configuration is explicit. The binary and checkout scripts do **not** automatically load a `.env` in the working directory. Use the registered global configuration, its `env_file`, or a `--env-file` argument. Use an absolute environment-file path when invoking from another directory.
 
-Production starts with `bun start`. The MCP endpoint is `http://127.0.0.1:8787/mcp`, using Streamable HTTP. If configured, clients must send `Authorization: Bearer <SWARMFORGE_API_TOKEN>`. The server is stateless at the MCP transport layer; worker/session state is durable in SQLite. Multiple leads share the same process. Use a persistent local volume, one server process per database, and a unique instance ID per independent deployment.
+For an existing deployment, retain the original database, for example `SWARMFORGE_DB_PATH=/absolute/path/to/swarmforge.sqlite`, and its existing instance ID. No command moves or migrates a database. Inspect the selected settings with `swarmforge config show` before switching configurations. See [CONFIGURATION.md](docs/CONFIGURATION.md) for precedence, path resolution, and redacted diagnostics.
 
-Run `bun run status` to see the worker overview. In a terminal it refreshes live: use ↑/↓ to select a worker, Enter to inspect its result and timeline, `r` to refresh, and `q` to quit. Worker inspection offers pause, resume, cancel, and destroy when available; destroy asks for confirmation and still performs the normal Git safety check. Piped output prints a static snapshot; `bun run status --json` prints structured data. Set `SWARMFORGE_URL` for a remote MCP endpoint and `SWARMFORGE_API_TOKEN` when bearer authentication is enabled. The package also provides a `swarmforge status` executable when linked or installed.
+## Check setup and start the server
 
-The supplied snapshot must already contain `opencode` (compatible with SDK 1.18.31), Python 3, Git, Bash, systemd, and the tools needed by workers. `opencode` must be on the service's PATH. The workspace must be writable. Git access/mounts and repository credentials are externally prepared. The endpoint must support OpenAI-compatible chat completions and tool calls. No real cloud credentials are included.
-
-## Installing the standalone executable
-
-`bun run package` compiles `src/cli.ts` into one Linux x64 executable and writes a versioned archive under `dist/`:
+After a new initialization:
 
 ```sh
-bun run build                       # dist/swarmforge
-bun run package                     # dist/swarmforge, metadata JSON, SHA256SUMS, .tar.gz
-bun run package:verify              # re-check the checksums and run the packaged binary
+swarmforge doctor
+swarmforge serve
 ```
 
-Install it manually into your own home directory. Nothing is installed system-wide and no service is created. Set `VERSION` to the version in the archive name you downloaded (for example `0.1.0`); quoting it matters, an unquoted `<version>` would be read by the shell as a redirection:
+`doctor` checks local configuration, runtime compatibility, database access, and any configured Git handoff files. It makes no network requests and starts nothing. It exits `1` when a local check fails. Snapshot contents and model compatibility are reported as unverified; a successful local check does not prove those remote systems work. `swarmforge doctor --json` prints structured results.
+
+`serve` runs in the foreground and reconciles persisted workers before accepting normal work. Keep that terminal running. In another terminal:
+
+```sh
+swarmforge status
+```
+
+Use ↑/↓ to select a worker, Enter for details, `r` to refresh, and `q` to leave the dashboard. The detail view offers pause, resume, cancel, and destroy when available. `swarmforge status --json` or `--no-interactive` prints a snapshot.
+
+| Surface | Default address |
+| --- | --- |
+| MCP, Streamable HTTP | `http://127.0.0.1:8787/mcp` |
+| Liveness | `http://127.0.0.1:8787/health` |
+| Prometheus metrics | `http://127.0.0.1:9090/metrics` |
+
+Defaults bind to loopback. To use a remote MCP server, pass `swarmforge status --url https://your-host/mcp` or configure `SWARMFORGE_URL`. Non-loopback server access requires a bearer token of at least 24 characters, accepted host configuration, and externally supplied TLS/network policy. Configure `SWARMFORGE_API_TOKEN` for the clients as well. Teams share trusted access; they are labels, not security tenants.
+
+Stop the foreground server with Ctrl+C. This drains the coordinator and releases the database lock; it does not destroy retained worker VMs. Run one server process per database on persistent local storage.
+
+## Connect an MCP client
+
+Point your AI lead's MCP client at `http://127.0.0.1:8787/mcp` using Streamable HTTP. For OpenCode, add this to its configuration:
+
+```json
+{
+  "mcp": {
+    "swarmforge": {
+      "type": "remote",
+      "url": "http://127.0.0.1:8787/mcp"
+    }
+  }
+}
+```
+
+If server authentication is enabled, add `"headers": {"Authorization": "Bearer {env:SWARMFORGE_API_TOKEN}"}` to that remote entry and make the token available in the client's environment. Restart or reload the client so it reconnects and discovers the tools. Other MCP clients need the same URL, transport, and optional bearer header.
+
+## Run a first task and collect the result
+
+Ask your connected AI lead to call `spawn_worker`. Start with a small task to confirm the worker snapshot, model tools, and repository access:
+
+```json
+{
+  "name": "spawn_worker",
+  "arguments": {
+    "team_id": "default",
+    "task_id": "first-task",
+    "prompt": "Read the repository README and return a short summary of the project. Do not change files. Follow the structured result protocol.",
+    "request_id": "first-task-attempt-1"
+  }
+}
+```
+
+1. Keep the returned `worker_id`. Creation returns immediately in `queued`; VM provisioning and OpenCode startup happen asynchronously. Snapshot preparation and repository cloning can take tens of seconds or longer.
+2. Use `get_worker`, the dashboard, or `wait_for_state_change` to follow progress. If a worker fails, read its error and `get_worker_logs` before retrying. Reuse the same `request_id` and arguments for a creation retry.
+3. Call `get_worker_result` when the task finishes. Results persist in SQLite and survive VM destruction. Use `send_worker_message` for a follow-up in the same OpenCode session; follow-ups wait for the active turn to finish.
+4. Collect any artifacts before cleanup. `list_worker_artifacts` paths are relative to `.swarmforge/artifacts`, and `get_worker_artifact` returns a resource link. Read it through MCP `resources/read`, following `next_offset` for files larger than 32 KiB.
+5. Call `destroy_worker` when you have preserved the work. Normal destruction checks Git persistence; a refusal reports `recovery_required`. Investigate and persist the source before explicitly considering a forced deletion.
+
+Completed, failed, cancelled, and paused workers can retain billable VMs and consume capacity. Check `get_swarm_status` for leftovers before leaving. All 17 tools are described in [MCP-API.md](docs/MCP-API.md).
+
+For coding tasks, configure `SWARMFORGE_GIT_PUSH_MODE=github-app` or `ssh` to push and verify each worker branch automatically. `get_worker_result.git` then records the branch and commit, with a GitHub compare URL where supported. The default `none` uses your external Git workflow. See [Git handoff configuration](docs/ENVIRONMENT.md).
+
+## Troubleshooting
+
+| Symptom | Next step |
+| --- | --- |
+| `swarmforge: command not found` | Follow the printed PATH instructions; reload the workspace or use `~/.local/bin/swarmforge`. |
+| `init` says `.env` exists | Keep the file and use `doctor --env-file .env`; initialization does not overwrite it. |
+| Required settings are missing | Run `swarmforge config path` and `config show`, or explicitly pass `--env-file .env`. |
+| The server reports a different persisted owner | Restore the existing instance ID and database path. |
+| A bind fails | Check whether another server owns port 8787 or metrics port 9090. |
+| Worker provisioning or execution fails | Read `get_worker_logs`; check snapshot tools, Git access, and endpoint/model tool-calling support. |
+| Cleanup is refused | Inspect and persist the worker's local Git work and collect artifacts. |
+
+`swarmforge serve --check-config` validates and prints redacted settings without opening a database or contacting a provider. `swarmforge config path|show|validate` offers further diagnostics.
+
+## Build and packaged installation
+
+For development in the checkout:
+
+```sh
+bun run init
+bun run doctor
+bun run serve
+# For an existing .env that is not globally registered:
+bun run serve -- --env-file .env
+bun run status -- --env-file .env
+bun run check
+bun test
+```
+
+Source scripts use the same explicit configuration as the installed command. `bun run dev` starts `serve` with file watching. Build and archive commands are:
+
+```sh
+bun run build
+bun run package
+bun run package:verify
+```
+
+If you have downloaded a release archive, place it under `dist/` and set `VERSION` to its version. Verify its checksum before installing:
 
 ```sh
 (
@@ -55,69 +217,22 @@ Install it manually into your own home directory. Nothing is installed system-wi
 )
 ```
 
-The whole block runs in a subshell with `set -e`, so a checksum that does not
-verify stops it there: the shell does not carry on to `install`, and a copy-paste
-fails with a nonzero status instead of reporting success. Running the subshell
-also leaves your own shell's `errexit` setting alone, and the trap removes the
-temporary directory whether the block succeeds or fails. The checksum is verified
-inside the extracted archive, where `SHA256SUMS` and the executable sit together,
-before anything is installed. Add `~/.local/bin` to `PATH` in the shell profile
-you already use, for example `export PATH="$HOME/.local/bin:$PATH"` in `~/.bashrc`,
-then open a new shell and `swarmforge` resolves by name. The executable needs no
-Bun, no `node_modules` and no checkout: it does not read `.env`, `bunfig.toml`,
-`tsconfig.json` or `package.json` from the directory it runs in, so a foreign
-directory cannot reconfigure it. Only Linux x64 with glibc is built and verified;
-`dist/` is ignored by Git.
+The installed executable needs no checkout or Bun runtime. Only Linux x64 with glibc is currently built and verified. `dist/` is ignored by Git.
 
-Check what you installed:
-
-```sh
-swarmforge --version          # prints the packaged version
-swarmforge --help
-swarmforge config path        # the config file in effect, and whether it exists
-swarmforge config show        # resolved values and sources, credentials redacted
-swarmforge config validate    # validates the server configuration and exits
-swarmforge serve --check-config
-swarmforge serve --env-file .env
-swarmforge status --json --url http://127.0.0.1:8787/mcp
-```
-
-### Configuration and diagnostics
-
-`swarmforge serve` needs `FREESTYLE_API_TOKEN`, `FREESTYLE_SNAPSHOT_ID`, `SWARMFORGE_MODEL_BASE_URL`, `SWARMFORGE_MODEL_API_KEY`, `SWARMFORGE_MODEL_NAME` and `SWARMFORGE_GIT_TREE`. Put the non-secret ones in `~/.config/swarmforge/config.toml` (`schema_version = 1`) and the credentials in `secrets.env` beside it with `env_file = "secrets.env"`, both created `chmod 600`. Then `swarmforge config show` prints every resolved value with its source, with credentials replaced by `[REDACTED]`, so a ticket can carry the output.
-
-For an existing deployment, name the database by its current absolute path before you cut over, for example `SWARMFORGE_DB_PATH=/absolute/path/to/swarmforge.sqlite` in `.env`. SwarmForge never moves, copies or relocates a database: a database path that is set is used exactly as written, so the same instance keeps the same file, the same instance ID and the same durable rows. Confirm with `swarmforge config show | grep -i db_path` before you delete anything.
-
-### Running under systemd
-
-SwarmForge does not install or edit a service; supply your own unit. `Type=exec` reports the main process directly (a shell wrapper type would report the wrong process and systemd could signal the wrong pid), and `TimeoutStopSec=90s` must exceed the command's own 60s shutdown deadline, so systemd waits for the drain before it kills the process:
+For unattended operation, supply your own systemd unit. Use explicit paths and a working directory:
 
 ```ini
 [Service]
 Type=exec
-ExecStart=/home/operator/.local/bin/swarmforge serve --env-file /home/operator/.config/swarmforge/secrets.env
+User=operator
+WorkingDirectory=/home/operator/my-swarmforge
+ExecStart=/home/operator/.local/bin/swarmforge serve --env-file /home/operator/my-swarmforge/.env
 TimeoutStopSec=90s
 Restart=on-failure
 ```
 
-`Type=exec` reports that the process was executed successfully; it says nothing about startup progress, and `/health` is a liveness endpoint that answers while the server is still starting. Startup readiness is a property of the MCP surface, not of the process: until recovery and the first provisioning pass finish, every mutating request is refused with `503` and a `Retry-After` header. A client or a readiness probe should therefore wait for startup to complete — retry the mutating call while it receives `503`, and treat any other response as ready — rather than treating `Type=exec` or a `200` from `/health` as "ready". `SIGTERM` starts the graceful drain; a second signal is not needed. `TimeoutStopSec` is only the outer bound — the command's own `SWARMFORGE_SHUTDOWN_TIMEOUT_MS` (default `60000`) reports the deadline and exits `70` with the database still open.
+`Type=exec` confirms execution, not readiness. `/health` reports liveness; mutating MCP requests receive `503` while startup is gated. `TimeoutStopSec` should exceed the application's default 60-second shutdown deadline. See [SERVE.md](docs/SERVE.md) for lifecycle and exit codes. Setup does not install a service.
 
-## Usage
+Tests use injected provider/agent doubles, real SQLite, MCP transports, and disposable Git repositories. The optional `SWARMFORGE_RUN_SMOKE=true bun run smoke` creates a billable VM using real infrastructure; ordinary tests do not.
 
-```json
-{"name":"spawn_worker","arguments":{"team_id":"backend","task_id":"auth-code","role":"coder","prompt":"Implement authentication. Test and persist changes in the supplied Git tree.","request_id":"auth-code-attempt-1"}}
-```
-
-Creation returns a worker ID immediately. Read `get_worker` or `list_workers`, or block on the next transition with `wait_for_state_change`, collect `get_worker_result`, and use `send_worker_message` for follow-ups in the same session. Active turns finish before queued messages are submitted. Completed workers remain available until explicitly destroyed. A refused cleanup reports `recovery_required`; inspect/persist the work, or explicitly authorize its loss with `destroy_worker(force=true)`.
-
-For source handoff without MCP artifact downloads, set `SWARMFORGE_GIT_PUSH_MODE=github-app` with a repository-scoped GitHub App, or `ssh` with a dedicated write key and reachable Git remote. Each worker starts on a unique branch, commits its changes, and SwarmForge pushes and verifies the remote commit before marking the run complete. `get_worker_result.git` then contains the branch, commit, base commit and (for GitHub) a review URL. See [environment configuration](docs/ENVIRONMENT.md) for setup.
-
-All 17 tools are documented in [MCP-API.md](docs/MCP-API.md). Artifact retrieval returns resource links to chunks of at most 32 KiB, not entire files in tool responses.
-
-## Verification and operations
-
-Tests use real SQLite and MCP transports with injected Freestyle/OpenCode doubles; Git safety tests execute real Git commands against disposable repositories. The optional `SWARMFORGE_RUN_SMOKE=true bun run smoke` creates one billable VM using the configured infrastructure. On success it destroys that smoke VM; on failure it retains evidence and prints identifiers. Ordinary tests do not create VMs.
-
-Read [ARCHITECTURE.md](docs/ARCHITECTURE.md), [WORKER-PROTOCOL.md](docs/WORKER-PROTOCOL.md), [OBSERVABILITY.md](docs/OBSERVABILITY.md), and the verified API decisions in [RESEARCH.md](docs/RESEARCH.md).
-
-Limitations: no distributed scheduler or HA replicas; Git checks cannot prove remote durability; artifacts remain on retained VMs; inference-active counts are estimates from OpenCode; snapshot compatibility and real endpoint behavior require the opt-in smoke test. Deploy TLS and network access policy externally when exposing the MCP server or metrics beyond localhost.
+Further references: [architecture](docs/ARCHITECTURE.md), [worker protocol](docs/WORKER-PROTOCOL.md), [observability](docs/OBSERVABILITY.md), [configuration](docs/CONFIGURATION.md), and [product improvement list](docs/PRODUCT-ROADMAP.md).
