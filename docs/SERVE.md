@@ -1,6 +1,6 @@
 # Server lifecycle
 
-`serve.ts` owns one SwarmForge server: it acquires resources, reserves listeners, reconciles durable state and releases everything in reverse order. `serve-command.ts` owns process concerns — signals, logging and exit policy. `main.ts` is a guarded wrapper that loads the environment and returns the command's exit code.
+`serve.ts` owns one SwarmForge server: it acquires resources, reserves listeners, reconciles durable state and releases everything in reverse order. `serve-command.ts` owns process concerns — signals, logging and exit policy. `swarmforge serve` runs through `src/cli.ts` and delegates to `runServe`; `src/main.ts` is a thin direct entrypoint that resolves server settings and then calls the same command layer.
 
 ## Interfaces
 

@@ -4,6 +4,18 @@ SwarmForge lets an AI lead launch isolated coding workers, follow their progress
 
 The global `swarmforge` executable provides `init`, `doctor`, `serve`, and `status`, plus configuration inspection. You supply the VM snapshot, model service, and Git access. SwarmForge does not host Git, serve models, or create pull requests.
 
+## Contents
+
+- [Before you start](#before-you-start)
+- [Quick start](#quick-start)
+- [Download, build, and install](#download-build-and-install)
+- [Initialize a deployment](#initialize-a-deployment)
+- [Check setup and start the server](#check-setup-and-start-the-server)
+- [Connect an MCP client](#connect-an-mcp-client)
+- [Run a first task and collect the result](#run-a-first-task-and-collect-the-result)
+- [Troubleshooting](#troubleshooting)
+- [Build and packaged installation](#build-and-packaged-installation)
+
 ## Before you start
 
 The supported host is **Linux x64 with glibc**. Building from a checkout requires **Bun 1.4.2 or newer** and Git. The installed executable includes its runtime and does not require Bun or `node_modules`.
@@ -22,6 +34,21 @@ Have these infrastructure details ready before initialization:
 The **worker snapshot** must contain OpenCode compatible with SDK 1.18.31, Python 3, Git, Bash, systemd, and the tools needed for your tasks. OpenCode must be on the service PATH and the guest workspace must be writable. Repository credentials, mounts, and networking are prepared externally. These guest prerequisites are separate from the control-plane host.
 
 Installing and initializing create no worker VMs. Spawning a worker provisions a billable VM; completed workers retain their VMs until explicitly destroyed.
+
+## Quick start
+
+If you already have the required infrastructure values, the shortest path is:
+
+```sh
+git clone https://github.com/GavinGeizer/swarmforge-oss.git
+cd swarmforge-oss
+bun install --frozen-lockfile
+bun run setup
+swarmforge doctor
+swarmforge serve
+```
+
+Then connect your MCP client to `http://127.0.0.1:8787/mcp` and run `swarmforge status` in another terminal.
 
 ## Download, build, and install
 
