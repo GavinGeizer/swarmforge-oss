@@ -40,11 +40,14 @@ Prioritized opportunities from a read-through of the implementation and operator
 - Show queue time, current progress, last activity, errors, and useful result summaries.
 - Improve artifact browsing and expose safe lifecycle actions in the detail view.
 
-## 4. Efficient status updates at scale
+## 4. Bounded dashboard reads and operator regression coverage — implemented
 
-- Add a server-side overview summary and filter/cursor support so clients do not fetch every retained worker.
-- Use lifecycle events to update active workers between less frequent full refreshes.
-- Keep historical worker listing available for explicit browsing.
+- SQLite filters/sorts worker pages and supplies cached global aggregates; the interactive view loads 50 workers at a time with explicit history navigation.
+- Revision polling skips unchanged transfers, applies changed-worker deltas, and resynchronizes after query changes, cache eviction, or coordinator replacement.
+- Credential catalogs and encoded variants are cached by database/configuration revision; rollbacks invalidate transactional cache state.
+- Local regressions cover cleanup selection, stale eligibility, duplicate confirmation, interrupted requests, quitting a batch, older servers, and 10,000-worker history.
+- Push/PR CI runs static checks, local regression/compiled tests, and a build.
+- Remaining scaling work: lifecycle reconciliation still reads full history; substring search, counts, and aggregate rebuilds still require SQLite scans as history grows. Historical `status --json` is intentionally a complete export.
 
 ## 5. First-worker onboarding and documentation — implemented
 

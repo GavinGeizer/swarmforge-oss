@@ -952,11 +952,7 @@ export class Coordinator {
       const readiness = cleanupReadiness({
         ...w,
         pending_control: w.intent,
-        pending_messages: this.store
-          .dispatches(id)
-          .filter((dispatch) =>
-            ["pending", "sending", "sent"].includes(dispatch.state),
-          ).length,
+        pending_messages: this.store.pendingMessages(id),
       });
       if (!readiness.eligible)
         throw new Error(`Cleanup refused: ${readiness.reason}`);

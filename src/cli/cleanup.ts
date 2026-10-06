@@ -55,6 +55,12 @@ export function renderCleanup(
     outcomes?: CleanupOutcome[];
     sort?: WorkerSort;
     filterLabel?: string;
+    page?: {
+      offset: number;
+      limit: number;
+      total: number;
+      next_offset: number | null;
+    };
   } = {},
 ) {
   const now = options.now ?? Date.now();
@@ -75,7 +81,7 @@ export function renderCleanup(
   const lines = [
     options.preview
       ? `CLEANUP PREVIEW  ${rows.length} selected workers`
-      : `RETAINED VMS  ${summary.count} · ${summary.candidates} cleanup candidates · ${selected.size} selected`,
+      : `${options.page ? "LOADED RETAINED VMS" : "RETAINED VMS"}  ${summary.count} · ${summary.candidates} cleanup candidates · ${selected.size} selected`,
     "Age is worker age; idle is time since its latest recorded activity.",
     "Only settled workers with preserved outputs can be selected. Git safety is checked on destruction.",
     "",
@@ -84,7 +90,11 @@ export function renderCleanup(
     lines.splice(
       1,
       0,
-      `VIEW  ${rows.length} retained workers match · ${options.filterLabel}`,
+      `VIEW  ${options.page?.total ?? rows.length} retained workers match${options.page ? ` · ${rows.length} loaded` : ""} · ${options.filterLabel}`,
+    );
+  if (!options.preview && options.page)
+    lines.push(
+      `HISTORY PAGE ${Math.floor(options.page.offset / options.page.limit) + 1}/${Math.max(1, Math.ceil(options.page.total / options.page.limit))} · [ previous · ] next · selection covers this loaded page only`,
     );
   if (!rows.length) lines.push("  No matching retained VMs");
   for (const worker of rows.slice(start, start + pageSize)) {

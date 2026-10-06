@@ -4,6 +4,7 @@ import { existsSync } from "node:fs";
 import { type ParsedCommand, parseArguments } from "./cli/arguments";
 import { connectSwarmForge } from "./cli/client";
 import { runDoctor } from "./cli/doctor";
+import { emptyFilters } from "./cli/filters";
 import { renderOverview } from "./cli/overview";
 import { runDashboard } from "./cli/tui";
 import {
@@ -163,7 +164,15 @@ async function showStatus(
       (text) => scrub(settings, text),
     );
     try {
-      const data = await client.overview();
+      const interactive =
+        command.interactive &&
+        !command.json &&
+        process.stdin.isTTY &&
+        process.stdout.isTTY;
+      const data = interactive
+        ? await client.dashboard(emptyFilters(), "recent")
+        : await client.overview();
+      if (!data) throw new Error("Dashboard returned no initial snapshot");
       if (command.json) write(JSON.stringify(data));
       else if (
         command.interactive &&

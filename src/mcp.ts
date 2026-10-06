@@ -41,6 +41,10 @@ type PublicArtifact = Pick<
   | "created_at"
   | "retrieved_at"
 >;
+const dashboardSnapshots = new WeakMap<
+  Coordinator,
+  Map<string, { revision: string; workers: ReturnType<typeof publicWorker>[] }>
+>();
 export function createMcpServer(c: Coordinator, signal?: AbortSignal) {
   const server = new McpServer({ name: "swarmforge", version: "0.1.0" });
   const files = new WorkerFiles(c);
@@ -193,21 +197,10 @@ export function createMcpServer(c: Coordinator, signal?: AbortSignal) {
       state: z.enum(states).optional(),
     },
     (a) => {
-      const all = c.store
-        .all()
-        .filter(
-          (w) =>
-            (!a.team_id || w.team_id === a.team_id) &&
-            (!a.task_id || w.task_id === a.task_id) &&
-            (!a.state || w.state === a.state),
-        );
+      const listed = c.store.queryWorkers(a);
       return {
-        workers: all
-          .slice(a.offset, a.offset + a.limit)
-          .map((w) => publicWorker(c, w.worker_id)),
-        total: all.length,
-        next_offset:
-          a.offset + a.limit < all.length ? a.offset + a.limit : null,
+        ...listed,
+        workers: listed.workers.map((w) => publicWorker(c, w.worker_id)),
       };
     },
     true,
@@ -244,6 +237,85 @@ export function createMcpServer(c: Coordinator, signal?: AbortSignal) {
       await c.control(a.worker_id, "destroy", a.force, a.settled_only);
       return publicWorker(c, a.worker_id);
     },
+  );
+  register(
+    "get_dashboard_view",
+    "Bounded dashboard snapshot. Filters/sorting run in SQLite. Send revision from the same query/page for an unchanged reply; a new process always has a new revision. Global totals remain independent of filters.",
+    {
+      ...page,
+      query: z.string().max(128).optional(),
+      team_id: idSchema.optional(),
+      task_id: idSchema.optional(),
+      state: z.enum(states).optional(),
+      preservation: z
+        .enum([
+          "none",
+          "pending",
+          "collecting",
+          "preserved",
+          "failed",
+          "abandoned",
+        ])
+        .optional(),
+      retained_only: z.boolean().default(false),
+      sort: z.enum(["recent", "idle", "age"]).default("recent"),
+      revision: z.string().max(200).optional(),
+    },
+    (a) => {
+      const revision = c.store.revision();
+      const { revision: previousRevision, ...query } = a;
+      const key = JSON.stringify(query);
+      let snapshots = dashboardSnapshots.get(c);
+      if (!snapshots) {
+        snapshots = new Map();
+        dashboardSnapshots.set(c, snapshots);
+      }
+      const previous = snapshots.get(key);
+      if (a.revision === revision && previous?.revision === revision)
+        return { unchanged: true, revision };
+      const listed = c.store.queryWorkers(a);
+      const summary = c.store.summary();
+      const workers = listed.workers.map((w) => publicWorker(c, w.worker_id));
+      const delta =
+        !!previousRevision && previous?.revision === previousRevision;
+      const prior = new Map(
+        previous?.workers.map((w) => [w.worker_id, JSON.stringify(w)]),
+      );
+      const currentIds = new Set(workers.map((w) => w.worker_id));
+      const payload = delta
+        ? {
+            delta: true,
+            changed_workers: workers.filter(
+              (w) => prior.get(w.worker_id) !== JSON.stringify(w),
+            ),
+            worker_ids: workers.map((w) => w.worker_id),
+            removed_ids: previous!.workers
+              .filter((w) => !currentIds.has(w.worker_id))
+              .map((w) => w.worker_id),
+          }
+        : { delta: false, workers };
+      snapshots.delete(key);
+      snapshots.set(key, { revision, workers });
+      while (snapshots.size > 64)
+        snapshots.delete(snapshots.keys().next().value!);
+      return {
+        unchanged: false,
+        revision,
+        ...summary,
+        metrics: {
+          enabled: c.config.SWARMFORGE_METRICS_ENABLED,
+          port: c.config.SWARMFORGE_METRICS_PORT,
+        },
+        ...payload,
+        page: {
+          offset: a.offset,
+          limit: a.limit,
+          total: listed.total,
+          next_offset: listed.next_offset,
+        },
+      };
+    },
+    true,
   );
   register(
     "get_worker_result",
@@ -531,8 +603,8 @@ export function createMcpServer(c: Coordinator, signal?: AbortSignal) {
     "Get aggregate lifecycle counts, capacity and token usage across all teams.",
     {},
     () => ({
-      states: counts(c.store.all().map((w) => w.state)),
-      tokens: c.store.tokens(),
+      states: c.store.summary().states,
+      tokens: c.store.summary().tokens,
       limits: {
         workers: c.config.SWARMFORGE_MAX_WORKERS,
         provisioning: c.config.SWARMFORGE_MAX_PROVISIONING,

@@ -1,6 +1,7 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { redact } from "../settings/inspect";
+import type { WorkerFilters, WorkerSort } from "./filters";
 import type { OverviewData, WorkerSummary } from "./overview";
 
 interface SwarmStatus {
@@ -96,6 +97,9 @@ export async function connectSwarmForge(
       { worker_id: workerId, limit: 3 },
     );
   let settledCleanupSupported: Promise<boolean> | undefined;
+  let dashboardSupported: Promise<boolean> | undefined;
+  let priorDashboardKey: string | undefined;
+  let priorDashboard: OverviewData | undefined;
   return {
     artifacts,
     retryPreservation: (workerId: string) =>
@@ -108,6 +112,67 @@ export async function connectSwarmForge(
         { worker_id: workerId },
       );
       return response.result;
+    },
+    async dashboard(
+      filters: WorkerFilters,
+      sort: WorkerSort,
+      offset = 0,
+      revision?: string,
+    ): Promise<OverviewData | null> {
+      dashboardSupported ??= attempt(async () =>
+        (await client.listTools()).tools.some(
+          (tool) => tool.name === "get_dashboard_view",
+        ),
+      );
+      if (!(await dashboardSupported))
+        throw new Error(
+          "Update/restart the server to support bounded dashboard reads.",
+        );
+      const args = {
+        query: filters.query || undefined,
+        team_id: filters.team || undefined,
+        task_id: filters.task || undefined,
+        state: filters.state || undefined,
+        preservation: filters.preservation || undefined,
+        retained_only: filters.retainedOnly,
+        sort,
+        offset,
+        limit: 50,
+      };
+      const key = JSON.stringify(args);
+      const result = await call<
+        OverviewData & {
+          unchanged: boolean;
+          delta?: boolean;
+          changed_workers?: WorkerSummary[];
+          worker_ids?: string[];
+          removed_ids?: string[];
+        }
+      >("get_dashboard_view", {
+        ...args,
+        ...(key === priorDashboardKey && revision ? { revision } : {}),
+      });
+      priorDashboardKey = key;
+      if (result.unchanged) return null;
+      if (result.delta) {
+        const records = new Map(
+          priorDashboard?.workers.map((worker) => [worker.worker_id, worker]),
+        );
+        for (const id of result.removed_ids ?? []) records.delete(id);
+        for (const worker of result.changed_workers ?? [])
+          records.set(worker.worker_id, worker);
+        const workers = (result.worker_ids ?? []).map((id) => records.get(id));
+        if (workers.some((worker) => !worker)) {
+          priorDashboardKey = undefined;
+          return this.dashboard(filters, sort, offset);
+        }
+        priorDashboard = {
+          ...result,
+          workers: workers as WorkerSummary[],
+          url: scrubText(url),
+        };
+      } else priorDashboard = { ...result, url: scrubText(url) };
+      return priorDashboard;
     },
     async overview(): Promise<OverviewData> {
       const status = await call<SwarmStatus>("get_swarm_status", {});
@@ -174,6 +239,7 @@ export async function connectSwarmForge(
         let supported: boolean;
         try {
           supported = await settledCleanupSupported;
+          settledCleanupSupported = undefined;
         } catch (error) {
           settledCleanupSupported = undefined;
           throw error;

@@ -38,6 +38,20 @@ export interface OverviewData {
   states: Record<string, number>;
   tokens: { total: number };
   workers: WorkerSummary[];
+  revision?: string;
+  total?: number;
+  retention?: {
+    count: number;
+    candidates: number;
+    oldest_created_at: number | null;
+  };
+  preservation_attention?: number;
+  page?: {
+    offset: number;
+    limit: number;
+    total: number;
+    next_offset: number | null;
+  };
 }
 
 const activeStates = new Set([
@@ -153,20 +167,33 @@ export function renderOverview(
     }
   }
   const groups = groupWorkers(matching, options.sort);
-  const retention = retentionSummary(data.workers, now);
+  const retention = data.retention
+    ? {
+        count: data.retention.count,
+        candidates: data.retention.candidates,
+        oldest:
+          data.retention.oldest_created_at === null
+            ? "—"
+            : duration(now - data.retention.oldest_created_at),
+      }
+    : retentionSummary(data.workers, now);
   const lines = [
     "SwarmForge  ● connected",
     `MCP  ${data.url}     Metrics  ${data.metrics.enabled ? `enabled :${data.metrics.port}` : "disabled"}`,
     `Retained VMs  ${retention.count} · ${retention.candidates} cleanup candidates · oldest worker ${retention.oldest}`,
-    `Preservation  ${data.workers.filter((w) => ["pending", "collecting", "failed"].includes(w.finalization?.state ?? "")).length} need attention`,
+    `Preservation  ${data.preservation_attention ?? data.workers.filter((w) => ["pending", "collecting", "failed"].includes(w.finalization?.state ?? "")).length} need attention`,
     `Workers${options.filters ? " (all)" : ""}  ${count(data.states, activeStates)} active · ${data.states.queued ?? 0} queued · ${data.states.completed ?? 0} completed     Tokens  ${compactNumber(data.tokens.total)}`,
   ];
   if (options.filters)
     lines.push(
-      `VIEW  ${matching.length}/${data.workers.length} workers · ${filterDescription(options.filters, options.sort ?? "recent")}`,
+      `VIEW  ${data.page?.total ?? matching.length}/${data.total ?? data.workers.length} workers · ${filterDescription(options.filters, options.sort ?? "recent")}`,
     );
   if (options.filters && !matching.length)
     lines.push("No matching workers · z resets filters");
+  if (data.page)
+    lines.push(
+      `PAGE ${Math.floor(data.page.offset / data.page.limit) + 1}/${Math.max(1, Math.ceil(data.page.total / data.page.limit))} · ${data.workers.length} loaded · [ previous · ] next`,
+    );
   const section = (name: string, workers: WorkerSummary[], limit: number) => {
     lines.push("", name);
     if (!workers.length) {

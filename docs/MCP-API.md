@@ -6,6 +6,7 @@ Streamable HTTP: `POST /mcp`. Supply the configured bearer token. Standard MCP S
 | --- | --- | --- |
 | `spawn_worker` | `task_id`, `prompt`; optional `team_id="default"`, `role="coder"`, `timeout_seconds`, `request_id` | Worker ID, ownership, initial queued state; provisioning is asynchronous. |
 | `get_worker` | `worker_id` | State, IDs, timestamps, error, pending control/messages, token usage. While a turn is active, a bounded single-line excerpt of the latest assistant text plus `excerpt_partial` and `excerpt_at`; absent once the worker settles. |
+| `get_dashboard_view` | Optional `query`, `team_id`, `task_id`, `state`, `preservation`, `retained_only=false`, `sort="recent"`, `offset=0`, `limit=20` (max 100), `revision` | SQLite-filtered page, global state/token/retention counts, page metadata and revision. An unchanged revision from the same query/page returns `unchanged=true`. A retained previous revision returns `delta=true`, `changed_workers`, ordered `worker_ids`, and `removed_ids`; otherwise `workers` is a full page. Process restart or cache eviction resynchronizes with a full page. |
 | `list_workers` | Optional `team_id`, `task_id`, `state`, `offset=0`, `limit=20` | Paginated metadata; total and next offset. |
 | `send_worker_message` | `worker_id`, `message` | Durable queued run ID; same OpenCode context. |
 | `pause_worker` | `worker_id` | State/metadata after pause or pending intent. |

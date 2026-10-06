@@ -33,6 +33,10 @@ export async function runDashboard(
   pollIntervalMs = 5_000,
 ) {
   let data = initial;
+  const bounded = !!initial.page;
+  let pageOffset = initial.page?.offset ?? 0;
+  let viewGeneration = 0;
+  let refreshQueued = false;
   let filters = emptyFilters();
   let order: WorkerSort = "recent";
   let editing: { field: "query" | "team" | "task"; draft: string } | null =
@@ -100,6 +104,7 @@ export async function runDashboard(
                 outcomes: cleanupOutcomes,
                 sort: order,
                 filterLabel: filterDescription(filters, order),
+                page: data.page,
               },
             )
           : detail
@@ -114,13 +119,43 @@ export async function runDashboard(
           : "";
     output.write(`\u001b[H\u001b[2J${body}${prompt}\n`);
   };
-  const refresh = async () => {
-    if (refreshing || stopped || reviewingCleanup()) return;
+  const refresh = async (force = false) => {
+    if (refreshing) {
+      if (force) refreshQueued = true;
+      return;
+    }
+    if (stopped || reviewingCleanup()) return;
+    const generation = viewGeneration;
     refreshing = true;
     try {
-      const next = await client.overview();
-      if (stopped || reviewingCleanup()) return;
-      data = next;
+      const query = {
+        ...filters,
+        retainedOnly:
+          filters.retainedOnly ||
+          mode === "cleanup" ||
+          (mode === "detail" && detailReturn === "cleanup"),
+      };
+      const next = bounded
+        ? await client.dashboard(
+            query,
+            order,
+            pageOffset,
+            force ? undefined : data.revision,
+          )
+        : await client.overview();
+      if (stopped || reviewingCleanup() || generation !== viewGeneration)
+        return;
+      if (next) data = next;
+      if (data.page && pageOffset > 0 && pageOffset >= data.page.total) {
+        pageOffset =
+          data.page.total > 0
+            ? Math.floor((data.page.total - 1) / data.page.limit) *
+              data.page.limit
+            : 0;
+        viewGeneration++;
+        refreshQueued = true;
+        return;
+      }
       reconcileView();
       if (mode === "detail" && detail && !busy) {
         const id = detail.worker.worker_id;
@@ -156,6 +191,10 @@ export async function runDashboard(
     } finally {
       refreshing = false;
       render();
+      if (refreshQueued && !stopped && !reviewingCleanup()) {
+        refreshQueued = false;
+        void refresh(true);
+      }
     }
   };
   const inspect = async (id = selected) => {
@@ -220,6 +259,13 @@ export async function runDashboard(
     mode = "cleanup";
     detail = null;
     confirmation = false;
+    if (bounded) {
+      pageOffset = 0;
+      viewGeneration++;
+      data = { ...data, workers: [], revision: undefined, page: undefined };
+      cleanupSelected.clear();
+      void refresh(true);
+    }
     reconcileView();
     message = "";
     render();
@@ -327,12 +373,18 @@ export async function runDashboard(
 
   const changeFilters = () => {
     const priorSelection = cleanupSelected.size;
+    if (bounded) {
+      pageOffset = 0;
+      viewGeneration++;
+      data = { ...data, workers: [], revision: undefined, page: undefined };
+    }
     reconcileView();
     message =
       cleanupSelected.size < priorSelection
         ? "Hidden or ineligible cleanup selections cleared."
         : "";
     render();
+    if (bounded) void refresh(true);
   };
   const filterKey = (text: string, name?: string) => {
     if (text === "/" || name === "slash")
@@ -341,10 +393,7 @@ export async function runDashboard(
       const field = name === "t" ? "team" : "task";
       editing = { field, draft: filters[field] };
     } else if (name === "s") {
-      const values = [
-        "",
-        ...new Set(data.workers.map((worker) => worker.state).sort()),
-      ];
+      const values = ["", ...Object.keys(data.states).sort()];
       filters = {
         ...filters,
         state: values[(values.indexOf(filters.state) + 1) % values.length]!,
@@ -466,9 +515,48 @@ export async function runDashboard(
         filterKey(_text, key.name)
       )
         return;
+      if (
+        bounded &&
+        (mode === "overview" || mode === "cleanup") &&
+        (_text === "[" || _text === "]")
+      ) {
+        const page = data.page;
+        if (page) {
+          const offset =
+            _text === "["
+              ? Math.max(0, page.offset - page.limit)
+              : page.next_offset;
+          if (offset !== null && offset !== pageOffset) {
+            pageOffset = offset;
+            viewGeneration++;
+            cleanupSelected.clear();
+            data = {
+              ...data,
+              workers: [],
+              revision: undefined,
+              page: undefined,
+            };
+            render();
+            void refresh(true);
+          }
+        }
+        return;
+      }
       if (mode === "cleanup") {
         if (key.name === "escape") {
           mode = "overview";
+          if (bounded) {
+            pageOffset = 0;
+            viewGeneration++;
+            cleanupSelected.clear();
+            data = {
+              ...data,
+              workers: [],
+              revision: undefined,
+              page: undefined,
+            };
+            void refresh(true);
+          }
           message = "";
           render();
         } else if (key.name === "up" || key.name === "down")

@@ -12,6 +12,7 @@ import type {
   WorkerResult,
   WorkerState,
 } from "./domain";
+import { retainedSql, type WorkerQuery, workerWhere } from "./worker-query";
 
 // Object key order must not change a request fingerprint; array order still must.
 const canonicalKeys = (_key: string, value: unknown) =>
@@ -34,6 +35,11 @@ const emptyFinalization = (): WorkerFinalization => ({
 export class Store {
   readonly db: Database;
   private watchers = new Set<() => void>();
+  private readonly epoch = randomUUID();
+  private cachedPasswords: { revision: string; values: string[] } | undefined;
+  private cachedSummary:
+    | { revision: string; value: ReturnType<Store["computeSummary"]> }
+    | undefined;
   constructor(path: string) {
     if (path !== ":memory:")
       mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
@@ -50,6 +56,120 @@ export class Store {
       CREATE TABLE IF NOT EXISTS usage(worker_id TEXT NOT NULL,message_id TEXT NOT NULL,model TEXT NOT NULL,input INTEGER NOT NULL,output INTEGER NOT NULL,reasoning INTEGER NOT NULL,cache_read INTEGER NOT NULL,cache_write INTEGER NOT NULL,PRIMARY KEY(worker_id,message_id));
       CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY,value TEXT NOT NULL);
     `);
+    this.db.exec(`CREATE INDEX IF NOT EXISTS workers_team_task ON workers(team_id,task_id);
+      CREATE INDEX IF NOT EXISTS workers_activity ON workers(json_extract(body,'$.last_activity_at'),worker_id);
+      CREATE INDEX IF NOT EXISTS workers_age ON workers(json_extract(body,'$.created_at'),worker_id);
+      CREATE INDEX IF NOT EXISTS workers_preservation ON workers(json_extract(body,'$.finalization.state'));
+      CREATE INDEX IF NOT EXISTS dispatch_worker_state ON dispatches(worker_id,state);`);
+  }
+  revision() {
+    const row = this.db.query("SELECT total_changes() changes").get() as {
+      changes: number;
+    };
+    const external = this.db.query("PRAGMA data_version").get() as {
+      data_version: number;
+    };
+    return `${this.epoch}:${row.changes}:${external.data_version}:${this.db.inTransaction ? "transaction" : "committed"}`;
+  }
+  credentials() {
+    const read = () =>
+      (
+        this.db
+          .query(
+            "SELECT json_extract(body,'$.server_password') password FROM workers",
+          )
+          .all() as { password: string | null }[]
+      )
+        .map((row) => row.password)
+        .filter((value): value is string => !!value);
+    if (this.db.inTransaction) return read();
+    const revision = this.revision();
+    if (this.cachedPasswords?.revision !== revision)
+      this.cachedPasswords = { revision, values: read() };
+    return this.cachedPasswords!.values;
+  }
+  pendingMessages(id: string) {
+    return (
+      this.db
+        .query(
+          "SELECT count(*) count FROM dispatches WHERE worker_id=? AND state IN ('pending','sending','sent')",
+        )
+        .get(id) as { count: number }
+    ).count;
+  }
+  queryWorkers(input: WorkerQuery = {}) {
+    const { sql, args } = workerWhere(input);
+    const limit = input.limit ?? 20;
+    const offset = input.offset ?? 0;
+    if (
+      !Number.isSafeInteger(limit) ||
+      limit < 1 ||
+      limit > 100 ||
+      !Number.isSafeInteger(offset) ||
+      offset < 0
+    )
+      throw new Error("Invalid worker page");
+    const total = (
+      this.db
+        .query(`SELECT count(*) total FROM workers WHERE ${sql}`)
+        .get(...args) as { total: number }
+    ).total;
+    const order =
+      input.sort === "age"
+        ? "json_extract(body,'$.created_at') ASC,worker_id ASC"
+        : input.sort === "idle"
+          ? "json_extract(body,'$.last_activity_at') ASC,worker_id ASC"
+          : input.sort === "recent"
+            ? "json_extract(body,'$.last_activity_at') DESC,worker_id ASC"
+            : "rowid ASC";
+    const rows = this.db
+      .query(
+        `SELECT body FROM workers WHERE ${sql} ORDER BY ${order} LIMIT ? OFFSET ?`,
+      )
+      .all(...args, limit, offset) as { body: string }[];
+    return {
+      workers: rows.map((row) => JSON.parse(row.body) as Worker),
+      total,
+      next_offset: offset + limit < total ? offset + limit : null,
+    };
+  }
+  private computeSummary() {
+    const grouped = this.db
+      .query("SELECT state,count(*) count FROM workers GROUP BY state")
+      .all() as { state: string; count: number }[];
+    const retention = this.db
+      .query(
+        `SELECT count(DISTINCT json_extract(body,'$.vm_id')) count,min(json_extract(body,'$.created_at')) oldest_created_at FROM workers WHERE ${retainedSql}`,
+      )
+      .get() as { count: number; oldest_created_at: number | null };
+    const candidates = (
+      this.db
+        .query(
+          `SELECT count(*) count FROM workers WHERE ${retainedSql} AND state IN ('completed','failed','cancelled','recovery_required') AND json_extract(body,'$.finalization.state')='preserved' AND json_extract(body,'$.intent') IS NULL AND NOT EXISTS (SELECT 1 FROM dispatches d WHERE d.worker_id=workers.worker_id AND d.state IN ('pending','sending','sent'))`,
+        )
+        .get() as { count: number }
+    ).count;
+    const attention = (
+      this.db
+        .query(
+          "SELECT count(*) count FROM workers WHERE json_extract(body,'$.finalization.state') IN ('pending','collecting','failed')",
+        )
+        .get() as { count: number }
+    ).count;
+    return {
+      states: Object.fromEntries(grouped.map((row) => [row.state, row.count])),
+      tokens: this.tokens(),
+      total: grouped.reduce((sum, row) => sum + row.count, 0),
+      retention: { ...retention, candidates },
+      preservation_attention: attention,
+    };
+  }
+  summary() {
+    if (this.db.inTransaction) return this.computeSummary();
+    const revision = this.revision();
+    if (this.cachedSummary?.revision !== revision)
+      this.cachedSummary = { revision, value: this.computeSummary() };
+    return this.cachedSummary!.value;
   }
   close() {
     this.watchers.clear();

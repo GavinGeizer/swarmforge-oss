@@ -1,9 +1,16 @@
 import type { Coordinator } from "./coordinator";
 import { excerptLimit } from "./domain";
 export class Redactor {
-  constructor(readonly secrets: () => string[]) {}
+  private cached: { version: unknown; values: string[] } | undefined;
+  constructor(
+    readonly secrets: () => string[],
+    private readonly version?: () => unknown,
+  ) {}
   private variants() {
-    return [
+    const version = this.version?.();
+    if (this.version && this.cached && this.cached.version === version)
+      return this.cached.values;
+    const values = [
       ...new Set(
         this.secrets()
           .filter(Boolean)
@@ -14,6 +21,8 @@ export class Redactor {
           ]),
       ),
     ].sort((a, b) => b.length - a.length);
+    if (this.version) this.cached = { version, values };
+    return values;
   }
   /** Artifact ranges need a complete credential, including its encoded forms. */
   credentialOverlapBytes() {
@@ -24,8 +33,17 @@ export class Redactor {
   }
   text(value: string) {
     let text = value;
-    for (const variant of this.variants())
-      text = text.replaceAll(variant, "[REDACTED]");
+    const variants = this.variants();
+    // The list is longest first. Skip credentials that cannot fit in this value.
+    let low = 0;
+    let high = variants.length;
+    while (low < high) {
+      const middle = Math.floor((low + high) / 2);
+      if (variants[middle]!.length > value.length) low = middle + 1;
+      else high = middle;
+    }
+    for (let index = low; index < variants.length; index++)
+      text = text.replaceAll(variants[index]!, "[REDACTED]");
     return text
       .replace(/(https?:\/\/)[^\s/@]+:[^\s/@]+@/g, "$1[REDACTED]@")
       .replace(
@@ -52,14 +70,39 @@ export class Redactor {
     return this.text(s) !== s;
   }
 }
+const redactors = new WeakMap<Coordinator, Redactor>();
 export function redactorFor(c: Coordinator) {
-  return new Redactor(() => [
-    c.config.FREESTYLE_API_TOKEN,
-    c.config.SWARMFORGE_MODEL_API_KEY,
-    c.config.SWARMFORGE_API_TOKEN ?? "",
-    ...c.store.all().map((w) => w.server_password),
-  ]);
+  let redactor = redactors.get(c);
+  if (!redactor) {
+    let cached: { version: unknown; values: string[] } | undefined;
+    const version = () =>
+      c.store.db.inTransaction
+        ? Symbol("transactional credentials")
+        : JSON.stringify([
+            c.store.revision(),
+            c.config.FREESTYLE_API_TOKEN,
+            c.config.SWARMFORGE_MODEL_API_KEY,
+            c.config.SWARMFORGE_API_TOKEN,
+          ]);
+    redactor = new Redactor(() => {
+      const current = version();
+      if (cached?.version !== current)
+        cached = {
+          version: current,
+          values: [
+            c.config.FREESTYLE_API_TOKEN,
+            c.config.SWARMFORGE_MODEL_API_KEY,
+            c.config.SWARMFORGE_API_TOKEN ?? "",
+            ...c.store.credentials(),
+          ],
+        };
+      return cached!.values;
+    }, version);
+    redactors.set(c, redactor);
+  }
+  return redactor;
 }
+
 function isSpace(code: number) {
   return (
     code === 32 ||
@@ -159,9 +202,7 @@ export function publicWorker(c: Coordinator, id: string, detail = false) {
     // meaning for clients, and an exhausted collection is visible with its attempts and error.
     finalization: w.finalization ?? null,
     tokens: c.store.tokens({ worker_id: id }),
-    pending_messages: c.store
-      .dispatches(id)
-      .filter((d) => ["pending", "sending", "sent"].includes(d.state)).length,
+    pending_messages: c.store.pendingMessages(id),
     // Ephemeral, bounded and only on the single-worker view; never listed or persisted.
     ...(excerpt
       ? {
