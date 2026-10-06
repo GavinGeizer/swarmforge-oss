@@ -352,6 +352,57 @@ const limitFields: Field[] = [
   },
 ];
 
+const artifactFields: Field[] = [
+  {
+    path: "artifacts.dir",
+    kind: "host_path",
+    key: "SWARMFORGE_ARTIFACT_DIR",
+    env: ["SWARMFORGE_ARTIFACT_DIR"],
+  },
+  {
+    path: "artifacts.max_bytes",
+    kind: "int",
+    key: "SWARMFORGE_ARTIFACT_MAX_BYTES",
+    env: ["SWARMFORGE_ARTIFACT_MAX_BYTES"],
+  },
+  {
+    path: "artifacts.max_entries",
+    kind: "int",
+    key: "SWARMFORGE_ARTIFACT_MAX_ENTRIES",
+    env: ["SWARMFORGE_ARTIFACT_MAX_ENTRIES"],
+  },
+  {
+    path: "artifacts.max_depth",
+    kind: "int",
+    key: "SWARMFORGE_ARTIFACT_MAX_DEPTH",
+    env: ["SWARMFORGE_ARTIFACT_MAX_DEPTH"],
+  },
+  {
+    path: "artifacts.timeout_ms",
+    kind: "int",
+    key: "SWARMFORGE_ARTIFACT_TIMEOUT_MS",
+    env: ["SWARMFORGE_ARTIFACT_TIMEOUT_MS"],
+  },
+  {
+    path: "artifacts.concurrency",
+    kind: "int",
+    key: "SWARMFORGE_ARTIFACT_CONCURRENCY",
+    env: ["SWARMFORGE_ARTIFACT_CONCURRENCY"],
+  },
+  {
+    path: "finalization.max_attempts",
+    kind: "int",
+    key: "SWARMFORGE_FINALIZATION_MAX_ATTEMPTS",
+    env: ["SWARMFORGE_FINALIZATION_MAX_ATTEMPTS"],
+  },
+  {
+    path: "finalization.retry_ms",
+    kind: "int",
+    key: "SWARMFORGE_FINALIZATION_RETRY_MS",
+    env: ["SWARMFORGE_FINALIZATION_RETRY_MS"],
+  },
+];
+
 // Every control-plane setting except the client endpoint, in one ordered list.
 const controlFields: Field[] = [
   ...providerFields,
@@ -362,6 +413,7 @@ const controlFields: Field[] = [
   ...workspaceFields,
   ...serverFields,
   ...limitFields,
+  ...artifactFields,
 ];
 
 const text = z.string();
@@ -407,6 +459,8 @@ const documentSchema = z.strictObject({
   workspace: table(workspaceFields, "workspace").optional(),
   server: table(serverFields, "server").optional(),
   limits: table(limitFields, "limits").optional(),
+  artifacts: table(artifactFields, "artifacts").optional(),
+  finalization: table(artifactFields, "finalization").optional(),
 });
 
 type Document = z.infer<typeof documentSchema>;

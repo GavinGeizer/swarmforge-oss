@@ -1438,3 +1438,23 @@ metrics_teams = "${clientCredential}"
     ]);
   }
 });
+
+test("artifact settings resolve from explicit TOML and env files with process precedence", async () => {
+  const dir = sandbox({
+    "config.toml":
+      'schema_version = 1\nenv_file = "secrets.env"\n[artifacts]\ndir = "stored"\nmax_bytes = 4096\nconcurrency = 2\n[finalization]\nmax_attempts = 5\nretry_ms = 50\n',
+    "secrets.env":
+      "SWARMFORGE_ARTIFACT_MAX_BYTES=8192\nSWARMFORGE_ARTIFACT_MAX_ENTRIES=12\n",
+  });
+  const s = await resolveServerSettings({
+    cwd: dir,
+    configPath: "config.toml",
+    env: { HOME: dir, ...validEnv(), SWARMFORGE_ARTIFACT_CONCURRENCY: "3" },
+  });
+  expect(s.value.SWARMFORGE_ARTIFACT_DIR).toBe(join(dir, "stored"));
+  expect(s.value.SWARMFORGE_ARTIFACT_MAX_BYTES).toBe(8192);
+  expect(s.value.SWARMFORGE_ARTIFACT_MAX_ENTRIES).toBe(12);
+  expect(s.value.SWARMFORGE_ARTIFACT_CONCURRENCY).toBe(3);
+  expect(s.value.SWARMFORGE_FINALIZATION_MAX_ATTEMPTS).toBe(5);
+  expect(s.value.SWARMFORGE_FINALIZATION_RETRY_MS).toBe(50);
+});

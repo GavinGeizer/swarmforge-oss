@@ -15,7 +15,16 @@ interface WorkerPage {
   next_offset: number | null;
 }
 
+export interface ArtifactSummary {
+  artifact_id: string;
+  filename: string;
+  state: string;
+  size: number | null;
+  sha256: string | null;
+}
 export interface WorkerDetail {
+  artifacts?: ArtifactSummary[];
+  artifactsNextOffset?: number | null;
   worker: WorkerSummary & {
     vm_id?: string | null;
     opencode_session_id?: string | null;
@@ -81,7 +90,15 @@ export async function connectSwarmForge(
     attempt(async () =>
       structured<T>(await client.callTool({ name, arguments: args })),
     );
+  const artifacts = (workerId: string) =>
+    call<{ artifacts: ArtifactSummary[]; next_offset: number | null }>(
+      "list_artifacts",
+      { worker_id: workerId, limit: 3 },
+    );
   return {
+    artifacts,
+    retryPreservation: (workerId: string) =>
+      call("retry_worker_finalization", { worker_id: workerId }),
     worker: (workerId: string) =>
       call<WorkerDetail["worker"]>("get_worker", { worker_id: workerId }),
     async result(workerId: string): Promise<WorkerDetail["result"]> {
@@ -115,7 +132,7 @@ export async function connectSwarmForge(
       };
     },
     async inspect(workerId: string): Promise<WorkerDetail> {
-      const [worker, result, logs] = await Promise.all([
+      const [worker, result, logs, preserved] = await Promise.all([
         call<WorkerDetail["worker"]>("get_worker", { worker_id: workerId }),
         call<{ result: WorkerDetail["result"] }>("get_worker_result", {
           worker_id: workerId,
@@ -124,12 +141,15 @@ export async function connectSwarmForge(
           "get_worker_logs",
           { worker_id: workerId, limit: 100 },
         ),
+        artifacts(workerId),
       ]);
       return {
         worker,
         result: result.result,
         events: logs.events,
         serviceLog: logs.opencode,
+        artifacts: preserved.artifacts,
+        artifactsNextOffset: preserved.next_offset,
       };
     },
     async control(

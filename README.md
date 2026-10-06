@@ -157,12 +157,24 @@ Ask your connected AI lead to call `spawn_worker`. Start with a small task to co
 1. Keep the returned `worker_id`. Creation returns immediately in `queued`; VM provisioning and OpenCode startup happen asynchronously. Snapshot preparation and repository cloning can take tens of seconds or longer.
 2. Use `get_worker`, the dashboard, or `wait_for_state_change` to follow progress. If a worker fails, read its error and `get_worker_logs` before retrying. Reuse the same `request_id` and arguments for a creation retry.
 3. Call `get_worker_result` when the task finishes. Results persist in SQLite and survive VM destruction. Use `send_worker_message` for a follow-up in the same OpenCode session; follow-ups wait for the active turn to finish.
-4. Collect any artifacts before cleanup. `list_worker_artifacts` paths are relative to `.swarmforge/artifacts`, and `get_worker_artifact` returns a resource link. Read it through MCP `resources/read`, following `next_offset` for files larger than 32 KiB.
-5. Call `destroy_worker` when you have preserved the work. Normal destruction checks Git persistence; a refusal reports `recovery_required`. Investigate and persist the source before explicitly considering a forced deletion.
+4. Collect outputs with `list_artifacts` and inspect `get_artifact_metadata`. Preservation runs automatically when a turn settles, using declared paths plus the standard artifact/log/result files. `read_artifact` returns a bounded, credential-screened excerpt; authenticated `GET /artifacts/<artifact_id>/download` returns exact file bytes. Verify the downloaded SHA-256 against metadata. See the [artifact quickstart](docs/ARTIFACT-QUICKSTART.md) for declarations and download commands.
+5. Call `destroy_worker` when you have preserved the work. Normal destruction checks Git persistence and artifact preservation; a refusal reports `recovery_required`. Investigate and persist the source before explicitly considering a forced deletion.
 
-Completed, failed, cancelled, and paused workers can retain billable VMs and consume capacity. Check `get_swarm_status` for leftovers before leaving. All 17 tools are described in [MCP-API.md](docs/MCP-API.md).
+Completed, failed, cancelled, and paused workers can retain billable VMs and consume capacity. Check `get_swarm_status` for leftovers before leaving. All 24 tools are described in [MCP-API.md](docs/MCP-API.md).
 
 For coding tasks, configure `SWARMFORGE_GIT_PUSH_MODE=github-app` or `ssh` to push and verify each worker branch automatically. `get_worker_result.git` then records the branch and commit, with a GitHub compare URL where supported. The default `none` uses your external Git workflow. See [Git handoff configuration](docs/ENVIRONMENT.md).
+
+## Preserve outputs and recover failed collection
+
+Add `"artifacts": [{"path": "results/findings.json", "required": true}]` to a task when that file must survive cleanup. Paths are relative to the worker repository. Standard `.swarmforge/artifacts/**`, logs, and result metadata are collected automatically; `snapshot_on_failure: true` also requests a bounded workspace snapshot on failure.
+
+In `swarmforge status`, select a worker and press Enter. The detail view shows preservation state, attempts, errors, artifact IDs, sizes, checksums, and download paths. Press `f` to retry a failed or pending collection on a retained VM, or call `retry_worker_finalization` through MCP. Task completion and preservation are separate states; failed collection retains the VM. Normal destruction refuses unsafe cleanup. Forced destruction explicitly abandons preservation and can lose files.
+
+Preserved files survive VM deletion and coordinator restarts. Back up **both** the SQLite database and the artifact storage directory. Storage defaults to `artifacts` beside the database; configure `SWARMFORGE_ARTIFACT_DIR` or `[artifacts].dir` for another volume. The standalone binary embeds its capture helper; the guest snapshot needs Python 3.
+
+## Move the workers to another repository
+
+The Git repository is coordinator configuration. Finish outstanding tasks, preserve their outputs, and safely destroy retained workers before switching. Stop `serve`, change `SWARMFORGE_GIT_TREE` and the matching Git handoff settings in your configured environment file or TOML file, run `swarmforge doctor`, then restart `swarmforge serve`. Use a separate configuration and database for independent repositories running concurrently.
 
 ## Troubleshooting
 

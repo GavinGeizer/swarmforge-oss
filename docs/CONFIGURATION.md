@@ -93,6 +93,14 @@ except `schema_version`.
 | `workspace.opencode_port` | int | `OPENCODE_PORT` | Guest server port. |
 | `workspace.opencode_start_command` | string | `OPENCODE_START_COMMAND` | Guest start command. |
 | `workspace.worker_domain_suffix` | string | `SWARMFORGE_WORKER_DOMAIN_SUFFIX` | Verified wildcard suffix. |
+| `artifacts.dir` | path | `SWARMFORGE_ARTIFACT_DIR` | Private storage, default beside the database. |
+| `artifacts.max_bytes` | int | `SWARMFORGE_ARTIFACT_MAX_BYTES` | Per-capture byte budget. |
+| `artifacts.max_entries` | int | `SWARMFORGE_ARTIFACT_MAX_ENTRIES` | Directory entry budget. |
+| `artifacts.max_depth` | int | `SWARMFORGE_ARTIFACT_MAX_DEPTH` | Directory depth budget. |
+| `artifacts.timeout_ms` | int | `SWARMFORGE_ARTIFACT_TIMEOUT_MS` | Capture timeout. |
+| `artifacts.concurrency` | int | `SWARMFORGE_ARTIFACT_CONCURRENCY` | Concurrent transfer limit. |
+| `finalization.max_attempts` | int | `SWARMFORGE_FINALIZATION_MAX_ATTEMPTS` | Automatic preservation attempts. |
+| `finalization.retry_ms` | int | `SWARMFORGE_FINALIZATION_RETRY_MS` | Retry backoff base. |
 | `limits.max_workers` | int | `SWARMFORGE_MAX_WORKERS` | Retained VMs plus reservations. |
 | `limits.max_provisioning` | int | `SWARMFORGE_MAX_PROVISIONING` | Concurrent provisioning. |
 | `limits.max_queue` | int | `SWARMFORGE_MAX_QUEUE` | Creation queue bound. |

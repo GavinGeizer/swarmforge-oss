@@ -108,6 +108,21 @@ export async function doctorChecks(
           : "The server requires a persistent database file; :memory: is unsupported.",
     });
 
+    const artifactDirectory = nearestExistingDirectory(
+      config.SWARMFORGE_ARTIFACT_DIR,
+    );
+    const artifactWritable =
+      !!artifactDirectory &&
+      pathIs(artifactDirectory, "directory") &&
+      hasPermission(artifactDirectory, constants.W_OK | constants.X_OK);
+    checks.push({
+      name: "Artifact storage",
+      status: artifactWritable ? "pass" : "fail",
+      message: artifactWritable
+        ? `Artifact storage can be created or written (${config.SWARMFORGE_ARTIFACT_DIR}).`
+        : `Artifact storage is not a writable directory: ${config.SWARMFORGE_ARTIFACT_DIR}.`,
+    });
+
     for (const [name, path] of [
       [
         "GitHub App private key",
@@ -145,7 +160,7 @@ export async function doctorChecks(
     checks.push({
       name: "Freestyle snapshot",
       status: "warn",
-      message: `Snapshot ${config.FREESTYLE_SNAPSHOT_ID} is configured; its required guest tools (including Git) and workspace cannot be checked locally.`,
+      message: `Snapshot ${config.FREESTYLE_SNAPSHOT_ID} is configured; its required guest tools (including Git and Python 3) and workspace cannot be checked locally.`,
     });
     checks.push({
       name: "Model endpoint",

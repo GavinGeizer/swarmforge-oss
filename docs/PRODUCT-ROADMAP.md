@@ -10,11 +10,15 @@ Prioritized opportunities from a read-through of the implementation and operator
 - Refuse Git handoff when the workspace status cannot be read successfully.
 - Regression details: [architecture review](ARCHITECTURE-REVIEW.md).
 
-## Next: durable artifact preservation
+## Durable artifact preservation — implemented
 
-- Review and integrate the existing `artifact-salvage-20261001` implementation with the global CLI and onboarding changes.
-- Verify preservation and artifact access through the compiled executable, including VM destruction and coordinator restarts.
-- Revalidate the remaining lifecycle audit findings around pause/resume races, pending controls, deadlines, and result fallback.
+- Integrated `artifact-salvage-20261001` with global configuration, initialization, and standalone packaging.
+- Added compiled local-guest coverage for preservation, safe destruction, restart, and authenticated artifact downloads.
+- Dashboard shows preservation state, metadata, checksums, and retry actions.
+
+## Next: lifecycle and operating-cost visibility
+
+- Revalidate remaining lifecycle audit findings around pause/resume races, pending controls, deadlines, and result fallback.
 
 ## 1. Setup readiness checks — implemented
 

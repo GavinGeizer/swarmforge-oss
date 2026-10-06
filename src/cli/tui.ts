@@ -2,6 +2,7 @@ import { emitKeypressEvents } from "node:readline";
 import type { connectSwarmForge, WorkerDetail } from "./client";
 import {
   availableActions,
+  canRetryPreservation,
   type OverviewData,
   renderOverview,
   renderWorkerDetail,
@@ -43,7 +44,7 @@ export async function runDashboard(
           ? renderWorkerDetail(detail, { width: width() })
           : "Loading worker…";
     const prompt = confirmation
-      ? "\n\nDestroy this worker? Press y to confirm or n to keep it."
+      ? `\n\nDestroy this worker? Preservation: ${detail?.worker.finalization?.state ?? "not yet collected"}. Normal destruction checks preservation first. Press y to confirm or n to keep it.`
       : message
         ? `\n\n${safeTerminalText(message)}`
         : "";
@@ -60,9 +61,19 @@ export async function runDashboard(
       if (mode === "detail" && detail && !busy) {
         const id = detail.worker.worker_id;
         const prior = detail.worker.state;
+        const priorFinalization = JSON.stringify(detail.worker.finalization);
         const worker = await client.worker(id);
         if (mode === "detail" && detail?.worker.worker_id === id && !busy) {
           detail = { ...detail, worker };
+          if (priorFinalization !== JSON.stringify(worker.finalization)) {
+            const page = await client.artifacts(id);
+            if (mode === "detail" && detail?.worker.worker_id === id && !busy)
+              detail = {
+                ...detail,
+                artifacts: page.artifacts,
+                artifactsNextOffset: page.next_offset,
+              };
+          }
           if (
             prior !== worker.state &&
             ["completed", "failed", "cancelled", "destroyed"].includes(
@@ -109,6 +120,24 @@ export async function runDashboard(
       message = `${action} completed`;
     } catch (error) {
       message = `${action} failed: ${error instanceof Error ? error.message : "unknown error"}`;
+    } finally {
+      busy = false;
+      render();
+    }
+  };
+
+  const retryPreservation = async () => {
+    if (!detail || busy || !canRetryPreservation(detail.worker)) return;
+    busy = true;
+    const id = detail.worker.worker_id;
+    message = "Retrying artifact preservation…";
+    render();
+    try {
+      await client.retryPreservation(id);
+      detail = await client.inspect(id);
+      message = `Preservation: ${detail.worker.finalization?.state ?? "unknown"}`;
+    } catch (error) {
+      message = `Preservation retry failed: ${error instanceof Error ? error.message : "unknown error"}`;
     } finally {
       busy = false;
       render();
@@ -175,6 +204,7 @@ export async function runDashboard(
       } else if (key.name === "r") void inspect();
       else if (detail) {
         const actions = availableActions(detail.worker.state);
+        if (key.name === "f") void retryPreservation();
         if (key.name === "p" && actions.includes("p pause"))
           void control("pause");
         if (key.name === "u" && actions.includes("u resume"))

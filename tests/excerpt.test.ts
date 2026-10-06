@@ -253,6 +253,8 @@ test("the excerpt is dropped on completion, failure and a new dispatch", async (
   await h.coordinator.tick();
   expect(h.store.get(w.worker_id).state).toBe("completed");
   expect(h.coordinator.excerpt(w.worker_id)).toBeNull();
+  // A new dispatch waits for the finished run's artifact preservation to settle.
+  await h.coordinator.finalize(w.worker_id);
   h.coordinator.message(w.worker_id, "follow-up");
   await h.coordinator.tick();
   await h.coordinator.tick();

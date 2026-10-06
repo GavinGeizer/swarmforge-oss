@@ -1,4 +1,13 @@
-import { loadConfig } from "../src/config";
+import { createHash } from "node:crypto";
+import {
+  ArtifactCaptureError,
+  type ArtifactEntry,
+  type ArtifactListing,
+  type ArtifactTransfer,
+  artifactErrorCodes,
+  type WorkerArtifactTransport,
+} from "../src/artifact-types";
+import { type Config, loadConfig } from "../src/config";
 import { Coordinator } from "../src/coordinator";
 import type {
   AgentSnapshot,
@@ -20,14 +29,305 @@ export const config = loadConfig({
   SWARMFORGE_MAX_WORKERS: "2",
   SWARMFORGE_MAX_PROVISIONING: "1",
 });
+export const sha256 = (value: string | Uint8Array) =>
+  createHash("sha256")
+    .update(typeof value === "string" ? Buffer.from(value, "utf8") : value)
+    .digest("hex");
+// Bounded streams with real source digests, so preservation assertions never depend on
+// contents passing through exec output or any encoding round trip.
 export class FakeProvider implements WorkerProvider {
   vms = new Map<string, VmInfo>();
   files = new Map<string, string>();
+  directories = new Set<string>();
   failure = false;
   dirty = false;
   destroyFailure = false;
   pushFailure = false;
   created = 0;
+  execCommands: string[] = [];
+  transportFailure = "";
+  // "fake": the double's own wording. "coded": the data plane's stable error codes, the way a
+  // production capture refuses. "helper": a vocabulary that conflates an absent path with a
+  // non-directory leaf, which only a listing can tell apart.
+  transportStyle: "fake" | "coded" | "helper" = "fake";
+  transportMissing = new Set<string>();
+  // Paths whose capture is refused as unsafe, as a symlinked component would be.
+  transportUnsafe = new Set<string>();
+  // Paths whose reported digest does not describe the staged bytes.
+  transportCorrupt = new Set<string>();
+  transportSlow = false;
+  transportAborted = 0;
+  // Resolves once a hanging transfer has actually started streaming.
+  slowStarted: (() => void) | null = null;
+  // Holds one transport call for a `${vm}:${path}` key until released, so a test can interleave
+  // two workers at a precise point instead of racing them.
+  transportHolds = new Map<string, Promise<void>>();
+  transportOpens: string[] = [];
+  transportLists: string[] = [];
+  transportSnapshots = 0;
+  transportDiagnostics = 0;
+  transportDelayMs = 0;
+  concurrent = 0;
+  maxConcurrent = 0;
+  // Distinct guests with a transfer in flight at the same moment.
+  activeGuests = new Set<string>();
+  maxActiveGuests = 0;
+  // Measures in-flight transport work, so the shared bounds are observable from a test.
+  private async tracked<T>(
+    guest: string,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    this.concurrent++;
+    this.maxConcurrent = Math.max(this.maxConcurrent, this.concurrent);
+    this.activeGuests.add(guest);
+    this.maxActiveGuests = Math.max(
+      this.maxActiveGuests,
+      this.activeGuests.size,
+    );
+    try {
+      if (this.transportDelayMs) await Bun.sleep(this.transportDelayMs);
+      return await operation();
+    } finally {
+      this.activeGuests.delete(guest);
+      this.concurrent--;
+    }
+  }
+  private async hold(id: string, path: string) {
+    const gate = this.transportHolds.get(this.key(id, path));
+    if (gate) await gate;
+  }
+  private key(id: string, path: string) {
+    return `${id}:${path.replace(/\/{2,}/g, "/")}`;
+  }
+  private join(root: string, path: string) {
+    const joined = `${root}/${path}`.replace(/\/{2,}/g, "/");
+    return joined.length > 1 ? joined.replace(/\/$/, "") : joined;
+  }
+  private fail() {
+    if (this.transportFailure) throw new Error(this.transportFailure);
+  }
+  private refuse(kind: "notFound" | "notDirectory", message: string) {
+    return this.transportStyle === "coded"
+      ? new ArtifactCaptureError(message, artifactErrorCodes[kind])
+      : new Error(message);
+  }
+  // A trusted guest helper resolves workspace paths descriptor-relatively and
+  // refuses a symlinked component, so the fake guest refuses one too instead of
+  // reporting a stat-then-read sequence the real capture never performs.
+  private async noSymlink(id: string, path: string) {
+    const seen = await this.stat(id, path).catch(() => null);
+    if (seen?.isSymlink)
+      throw new Error(`Symlink artifact paths are not allowed: ${path}`);
+  }
+  private absent(id: string, path: string) {
+    const key = this.key(id, path);
+    return this.transportMissing.has(key) || !this.files.has(key);
+  }
+  private directory(id: string, path: string) {
+    if (this.directories.has(this.key(id, path))) return true;
+    const prefix = `${this.key(id, path)}/`;
+    for (const key of this.files.keys())
+      if (key.startsWith(prefix)) return true;
+    for (const key of this.directories.keys())
+      if (key.startsWith(prefix)) return true;
+    return false;
+  }
+  private transfer(
+    id: string,
+    path: string,
+    bytes: Uint8Array,
+    options: { maxBytes?: number; signal?: AbortSignal } = {},
+  ): ArtifactTransfer {
+    if (options.maxBytes !== undefined && bytes.byteLength > options.maxBytes)
+      throw new Error("Artifact exceeds the configured byte bound");
+    if (options.signal?.aborted) throw new Error("Artifact transfer aborted");
+    const slow = this.transportSlow;
+    return {
+      size: bytes.byteLength,
+      // A corrupted staging digest is what a truncated or tampered capture looks like.
+      sha256: this.transportCorrupt.has(this.key(id, path))
+        ? "0".repeat(64)
+        : sha256(bytes),
+      filename: path.split("/").pop() ?? "artifact",
+      stream: new ReadableStream<Uint8Array>({
+        start: (controller) => {
+          const abort = () => {
+            this.transportAborted++;
+            controller.error(new Error("Artifact transfer aborted"));
+          };
+          if (options.signal?.aborted) return abort();
+          options.signal?.addEventListener("abort", abort, { once: true });
+          if (slow) {
+            this.slowStarted?.();
+            this.slowStarted = null;
+            return;
+          }
+          controller.enqueue(bytes);
+          controller.close();
+          options.signal?.removeEventListener("abort", abort);
+        },
+      }),
+      cleanup: async () => {},
+    };
+  }
+  // A real directory listing names every direct child, and a child that only exists as a
+  // prefix of a stored file is still a directory.
+  private children(id: string, root: string, path: string) {
+    const target = this.join(root, path);
+    const prefix = `${this.key(id, target)}/`;
+    const names = new Map<string, ArtifactEntry["kind"]>();
+    const add = (key: string, kind: ArtifactEntry["kind"]) => {
+      if (!key.startsWith(prefix) || this.transportMissing.has(key)) return;
+      const tail = key.slice(prefix.length);
+      const head = tail.split("/")[0];
+      if (!head) return;
+      names.set(head, tail.includes("/") ? "directory" : kind);
+    };
+    for (const key of this.files.keys()) add(key, "file");
+    for (const key of this.directories.keys()) add(key, "directory");
+    return [...names].sort((a, b) => a[0].localeCompare(b[0]));
+  }
+  artifactTransport: WorkerArtifactTransport = {
+    list: async (
+      id: string,
+      root: string,
+      path: string,
+      options = {},
+    ): Promise<ArtifactListing> =>
+      this.tracked(id, async () => {
+        this.fail();
+        const target = this.join(root, path);
+        await this.noSymlink(id, target);
+        if (this.transportUnsafe.has(this.key(id, target)))
+          throw new Error(`symlinked component refused: ${target}`);
+        if (!this.directory(id, target)) {
+          if (this.transportStyle === "helper")
+            throw new Error("path component is missing or not a directory");
+          if (this.exists(id, target))
+            throw this.refuse(
+              "notDirectory",
+              `ENOTDIR: not a directory, stat '${target}'`,
+            );
+          throw this.refuse(
+            "notFound",
+            `ENOENT: no such file or directory, stat '${target}'`,
+          );
+        }
+        this.transportLists.push(`${id}:${path}`);
+        const names = this.children(id, root, path);
+        const start = options.offset ?? 0;
+        const limit = options.limit ?? names.length;
+        const entries: ArtifactEntry[] = [];
+        for (const [name, kind] of names.slice(start, start + limit)) {
+          const bytes = this.files.get(this.key(id, `${target}/${name}`));
+          entries.push({
+            name,
+            kind,
+            ...(bytes === undefined ? {} : { size: Buffer.byteLength(bytes) }),
+          });
+        }
+        return {
+          entries,
+          next_offset: start + limit < names.length ? start + limit : null,
+        };
+      }),
+    open: async (id: string, root: string, path: string, options) =>
+      this.tracked(id, async () => {
+        this.fail();
+        const target = this.join(root, path);
+        await this.noSymlink(id, target);
+        if (this.transportUnsafe.has(this.key(id, target)))
+          throw new Error(`symlinked component refused: ${target}`);
+        if (this.transportUnsafe.has(this.key(id, target)))
+          throw new Error(`symlinked component refused: ${target}`);
+        if (!this.exists(id, target)) {
+          if (this.transportStyle === "helper")
+            throw new Error("artifact is missing or is not a regular file");
+          throw this.refuse(
+            "notFound",
+            `ENOENT: no such file or directory, open '${target}'`,
+          );
+        }
+        if (this.directory(id, target))
+          throw new Error(
+            `EISDIR: illegal operation on a directory, open '${target}'`,
+          );
+        this.transportOpens.push(path);
+        // A held capture parks this worker at a precise point while another one runs.
+        await this.hold(id, target);
+        // A windowed open stages only the requested bytes, exactly as the guest helper does.
+        const source = new TextEncoder().encode(
+          this.files.get(this.key(id, target)) ?? "",
+        );
+        const offset = options.offset ?? 0;
+        const window = options.length ?? source.byteLength;
+        return this.transfer(
+          id,
+          target,
+          source.slice(offset, offset + window),
+          {
+            ...options,
+            maxBytes: options.length === undefined ? options.maxBytes : window,
+          },
+        );
+      }),
+    snapshot: async (id, root, options) =>
+      this.tracked(id, async () => {
+        this.fail();
+        this.transportSnapshots++;
+        const prefix = `${this.key(id, root)}/`;
+        const wanted = new Set(options.paths ?? []);
+        const manifest: string[] = [];
+        for (const key of [...this.files.keys()].sort()) {
+          if (!key.startsWith(prefix)) continue;
+          if (this.transportMissing.has(key)) continue;
+          const relative = key.slice(prefix.length);
+          if (
+            wanted.size > 0 &&
+            ![...wanted].some(
+              (p) => p === relative || relative.startsWith(`${p}/`),
+            )
+          )
+            continue;
+          if (manifest.length >= options.maxEntries)
+            throw new Error("Snapshot entry bound exceeded");
+          manifest.push(
+            `${relative} ${Buffer.byteLength(this.files.get(key) ?? "")}`,
+          );
+        }
+        return this.transfer(
+          id,
+          `${root}/workspace.tar.gz`,
+          new Uint8Array(
+            Bun.gzipSync(Buffer.from(`${manifest.join("\n")}\n`, "utf8")),
+          ),
+          options,
+        );
+      }),
+    diagnostics: async (id, root, options) =>
+      this.tracked(id, async () => {
+        this.fail();
+        this.transportDiagnostics++;
+        const target = this.join(root, ".swarmforge/diagnostics");
+        if (this.absent(id, target)) return [];
+        return [
+          {
+            path: ".swarmforge/diagnostics",
+            transfer: this.transfer(
+              id,
+              target,
+              new TextEncoder().encode(
+                this.files.get(this.key(id, target)) ?? "",
+              ),
+              options,
+            ),
+          },
+        ];
+      }),
+  };
+  private exists(id: string, path: string) {
+    return !this.absent(id, path);
+  }
   async createWorker(w: Worker) {
     if (this.failure) throw new Error("provider unavailable");
     this.created++;
@@ -48,6 +348,17 @@ export class FakeProvider implements WorkerProvider {
   }
   async prepare(w: Worker) {
     if (this.failure) throw new Error("boot failure");
+    // The real guest bootstrap creates the standard swarmforge directories; the fake guest
+    // does the same so listings and collections see a prepared workspace.
+    if (w.vm_id)
+      for (const dir of [
+        ".swarmforge",
+        ".swarmforge/artifacts",
+        ".swarmforge/logs",
+      ])
+        this.directories.add(
+          `${w.vm_id}:${config.SWARMFORGE_WORKSPACE}/${dir}`,
+        );
     return `https://${w.vm_id}.example`;
   }
   async pushBranch(w: Worker) {
@@ -71,6 +382,7 @@ export class FakeProvider implements WorkerProvider {
     this.vms.delete(id);
   }
   async exec(_id: string, command: string) {
+    this.execCommands.push(command);
     if (command.includes("SWARMFORGE_GIT_CHECK"))
       return {
         stdout: JSON.stringify({
@@ -119,6 +431,8 @@ export class FakeAgent implements CodingAgent {
   submitted: { session: string | null; dispatch: Dispatch }[] = [];
   sessions = 0;
   broken = false;
+  // Optional gate so a test can hold a step open while it requests a control operation.
+  gate: (() => Promise<void>) | null = null;
   async ensureSession(w: Worker) {
     if (w.opencode_session_id) return w.opencode_session_id;
     this.sessions++;
@@ -144,6 +458,7 @@ export class FakeAgent implements CodingAgent {
     });
   }
   async inspect(w: Worker) {
+    if (this.gate) await this.gate();
     if (this.broken) throw new Error("OpenCode unavailable");
     return (
       this.snapshots.get(w.worker_id) ?? {
@@ -196,11 +511,16 @@ export class FakeAgent implements CodingAgent {
     });
   }
 }
-export function harness() {
+export function harness(overrides: Partial<Config> = {}) {
   const store = new Store(":memory:");
   const provider = new FakeProvider();
   const agent = new FakeAgent();
-  const coordinator = new Coordinator({ ...config }, store, provider, agent);
+  const coordinator = new Coordinator(
+    { ...config, ...overrides },
+    store,
+    provider,
+    agent,
+  );
   return { store, provider, agent, coordinator };
 }
 export async function runToRunning(h: ReturnType<typeof harness>, id: string) {

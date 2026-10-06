@@ -48,6 +48,7 @@ const manifest = JSON.parse(
 // lifecycle it runs is the packaged lifecycle, not a source-only path.
 let binary = "";
 let serveHarness = "";
+let artifactHarness = "";
 let commit = "";
 let workspace = "";
 let foreign = "";
@@ -104,6 +105,7 @@ function serverEnvironment(db: string, listen: number) {
   return {
     HOME: home,
     PATH: minimalPath,
+    FREESTYLE_API_URL: "http://127.0.0.1:1",
     FREESTYLE_API_TOKEN: "freestyle-token",
     FREESTYLE_SNAPSHOT_ID: "snapshot",
     SWARMFORGE_MODEL_BASE_URL: "https://model.example/v1",
@@ -149,6 +151,10 @@ beforeAll(async () => {
   serveHarness = await compileFixture(
     "compiled-serve.ts",
     join(workspace, "compiled-serve"),
+  );
+  artifactHarness = await compileFixture(
+    "compiled-artifacts.ts",
+    join(workspace, "compiled-artifacts"),
   );
   // Packaged once for the whole suite from the binary already compiled above:
   // packaging re-measures that binary and its metadata is checked against it, so
@@ -383,10 +389,16 @@ describe("compiled serve lifecycle", () => {
     return proc;
   }
 
-  async function healthy(listen: number, attempts = 100): Promise<boolean> {
+  async function healthy(
+    listen: number,
+    attempts = 100,
+    token?: string,
+  ): Promise<boolean> {
     for (let attempt = 0; attempt < attempts; attempt++) {
       try {
-        const response = await fetch(`http://127.0.0.1:${listen}/health`);
+        const response = await fetch(`http://127.0.0.1:${listen}/health`, {
+          headers: token ? { authorization: `Bearer ${token}` } : undefined,
+        });
         if (response.ok) {
           await response.text();
           return true;
@@ -454,6 +466,84 @@ describe("compiled serve lifecycle", () => {
     expect(await instanceId(db)).toEqual({ value: "default" });
     afterRestart.kill("SIGINT");
     expect(await afterRestart.exited).toBe(0);
+  }, 60000);
+
+  test("compiled capture survives safe destruction and the CLI serves exact authenticated bytes after restart", async () => {
+    const db = join(workspace, "artifact-restart.sqlite");
+    const dir = join(workspace, "durable-artifacts");
+    const result = await run([artifactHarness, db, dir], {
+      cwd: foreign,
+      env: { PATH: minimalPath, HOME: home },
+    });
+    expect(result.code).toBe(0);
+    expect(result.stderr).toBe("");
+    const saved = JSON.parse(result.stdout);
+    const listen = await port();
+    const token = "compiled-artifact-token-long-enough";
+    const requests: string[] = [];
+    const providerStub = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch: (request) => {
+        requests.push(`${request.method} ${new URL(request.url).pathname}`);
+        return new URL(request.url).pathname === "/v5/vms" &&
+          request.method === "GET"
+          ? Response.json({ vms: [], totalCount: 0 })
+          : new Response("Unexpected provider operation", { status: 500 });
+      },
+    });
+    const proc = Bun.spawn([binary, "serve"], {
+      cwd: foreign,
+      env: {
+        ...serverEnvironment(db, listen),
+        FREESTYLE_API_URL: `http://127.0.0.1:${providerStub.port}`,
+        SWARMFORGE_ARTIFACT_DIR: dir,
+        SWARMFORGE_API_TOKEN: token,
+      },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    servers.push(proc);
+    try {
+      expect(await healthy(listen, 100, token)).toBe(true);
+      const url = `http://127.0.0.1:${listen}/artifacts/${saved.artifact_id}/download`;
+      const refused = await fetch(url);
+      expect(refused.status).toBe(401);
+      await refused.text();
+      const response = await fetch(url, {
+        headers: { authorization: `Bearer ${token}` },
+      });
+      expect(response.status).toBe(200);
+      expect(Buffer.from(await response.arrayBuffer()).toString("base64")).toBe(
+        saved.bytes,
+      );
+      const ranged = await fetch(url, {
+        headers: { authorization: `Bearer ${token}`, range: "bytes=2-4" },
+      });
+      expect(ranged.status).toBe(206);
+      expect(Buffer.from(await ranged.arrayBuffer())).toEqual(
+        Buffer.from(saved.bytes, "base64").subarray(2, 5),
+      );
+      const snapshot = await run(
+        [binary, "status", "--json", "--url", `http://127.0.0.1:${listen}/mcp`],
+        {
+          cwd: foreign,
+          env: { HOME: home, PATH: minimalPath, SWARMFORGE_API_TOKEN: token },
+        },
+      );
+      expect(snapshot.code).toBe(0);
+      expect(JSON.parse(snapshot.stdout).workers[0]).toMatchObject({
+        state: "destroyed",
+        finalization: { state: "preserved" },
+      });
+    } finally {
+      proc.kill("SIGTERM");
+      const exit = await proc.exited;
+      const errors = await new Response(proc.stderr).text();
+      await providerStub.stop(true);
+      expect(exit, errors).toBe(0);
+      expect(requests).toEqual(["GET /v5/vms"]);
+    }
   }, 60000);
 
   test("rolls a failed startup back so the lock is not left behind", async () => {

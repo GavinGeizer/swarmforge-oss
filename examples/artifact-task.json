@@ -1,0 +1,21 @@
+{
+  "name": "spawn_worker",
+  "arguments": {
+    "team_id": "audit",
+    "task_id": "findings-audit",
+    "role": "coder",
+    "prompt": "Audit the module boundaries in the checked-out repository and write every finding to findings.json at the workspace root, i.e. one level above repo/, never inside the repository. Create that file yourself; do not only print the findings to stdout. Use JSON with a stable shape: { \"findings\": [ { \"file\": \"<repo-relative path>\", \"severity\": \"low|medium|high\", \"note\": \"<one sentence>\" } ] }. Read repo/ for the code, but write findings.json and any long log under .swarmforge/artifacts/ so nothing lands inside the repository. This task commits nothing and pushes nothing, so a file inside repo/ would be untracked repository dirt the operator has to clean up. Return the structured result; do not put the findings in the summary.",
+    "timeout_seconds": 1800,
+    "artifacts": [
+      {
+        "path": "findings.json",
+        "required": true
+      },
+      {
+        "path": ".swarmforge/artifacts/**",
+        "required": false
+      }
+    ],
+    "snapshot_on_failure": true
+  }
+}

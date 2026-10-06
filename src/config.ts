@@ -1,7 +1,14 @@
+import { randomUUID } from "node:crypto";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import { z } from "zod";
 
 const positive = (n: number) => z.coerce.number().int().positive().default(n);
 const nonNegative = (n: number) => z.coerce.number().int().min(0).default(n);
+// Safe integer bounds only: every artifact and finalization limit multiplies, loops or
+// allocates, so a fractional or unsafe value is rejected instead of silently truncating.
+const bounded = (n: number, max: number) =>
+  z.coerce.number().int().positive().max(max).default(n);
 const bool = (n: boolean) =>
   z
     .enum(["true", "false"])
@@ -22,7 +29,7 @@ const acceptedHosts = (v: {
     .map((s) => s.trim())
     .filter(Boolean),
 ];
-const schema = z
+const inputSchema = z
   .object({
     FREESTYLE_API_URL: z.url().default("https://api.freestyle.sh"),
     FREESTYLE_API_TOKEN: z.string().min(1),
@@ -75,6 +82,21 @@ const schema = z
       .refine((v) => !v.split("/").includes(".."))
       .default("/workspace"),
     SWARMFORGE_DB_PATH: z.string().min(1).default("./data/swarmforge.sqlite"),
+    // Resolved below when unset: beside the database, or a private temporary root when the
+    // database is in memory. The directory itself is created on first write with mode 0700.
+    SWARMFORGE_ARTIFACT_DIR: z
+      .string()
+      .min(1)
+      .max(4096)
+      .refine((v) => !v.includes("\0"), "must not contain NUL")
+      .optional(),
+    SWARMFORGE_ARTIFACT_MAX_BYTES: bounded(1073741824, Number.MAX_SAFE_INTEGER),
+    SWARMFORGE_ARTIFACT_MAX_ENTRIES: bounded(10000, 1000000),
+    SWARMFORGE_ARTIFACT_MAX_DEPTH: bounded(32, 256),
+    SWARMFORGE_ARTIFACT_TIMEOUT_MS: bounded(120000, 3600000),
+    SWARMFORGE_ARTIFACT_CONCURRENCY: bounded(4, 64),
+    SWARMFORGE_FINALIZATION_MAX_ATTEMPTS: bounded(3, 100),
+    SWARMFORGE_FINALIZATION_RETRY_MS: bounded(2000, 3600000),
     SWARMFORGE_HOST: z.string().default("127.0.0.1"),
     SWARMFORGE_ALLOWED_HOSTS: z.string().default(""),
     SWARMFORGE_PORT: positive(8787).pipe(z.number().max(65535)),
@@ -149,16 +171,28 @@ const schema = z
         message: "Must differ from server port",
       });
   });
+const schema = inputSchema.transform((v) => ({
+  ...v,
+  SWARMFORGE_ARTIFACT_DIR:
+    v.SWARMFORGE_ARTIFACT_DIR ?? defaultArtifactDir(v.SWARMFORGE_DB_PATH),
+}));
 export type Config = z.infer<typeof schema>;
 /** Validate one prompted field with the same rules used by server startup. */
 export function configFieldError(
   key: keyof Config,
   value: string,
 ): string | null {
-  const result = schema.shape[key].safeParse(value);
+  const result = inputSchema.shape[key].safeParse(value);
   return result.success
     ? null
     : result.error.issues.map((issue) => issue.message).join("; ");
+}
+// Beside the database by default. An in-memory database has no directory to sit beside, so it
+// gets a unique private temporary root: never created here, only on first artifact write.
+function defaultArtifactDir(database: string) {
+  if (database === ":memory:")
+    return join(tmpdir(), `swarmforge-artifacts-${randomUUID()}`);
+  return join(dirname(resolve(database)), "artifacts");
 }
 export function loadConfig(
   env: Record<string, string | undefined> = process.env,

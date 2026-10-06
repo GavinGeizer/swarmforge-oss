@@ -1,3 +1,4 @@
+import type { WorkerFinalization } from "../domain";
 import type { WorkerDetail } from "./client";
 
 export interface WorkerSummary {
@@ -12,6 +13,9 @@ export interface WorkerSummary {
   completed_at: number | null;
   tokens: { total: number };
   error?: string | null;
+  finalization?: WorkerFinalization | null;
+  vm_id?: string | null;
+  vm_missing?: boolean;
 }
 
 export interface OverviewData {
@@ -154,6 +158,7 @@ export function renderOverview(
   const lines = [
     "SwarmForge  ● connected",
     `MCP  ${data.url}     Metrics  ${data.metrics.enabled ? `enabled :${data.metrics.port}` : "disabled"}`,
+    `Preservation  ${data.workers.filter((w) => ["pending", "collecting", "failed"].includes(w.finalization?.state ?? "")).length} need attention`,
     `Workers  ${count(data.states, activeStates)} active · ${data.states.queued ?? 0} queued · ${data.states.completed ?? 0} completed     Tokens  ${compactNumber(data.tokens.total)}`,
   ];
   const section = (name: string, workers: WorkerSummary[], limit: number) => {
@@ -185,6 +190,7 @@ export function renderOverview(
         `${worker.team_id} / ${worker.task_id}`,
         worker.state.toUpperCase(),
         when,
+        worker.finalization ? `outputs:${worker.finalization.state}` : "",
         tokenText,
       ]
         .filter(Boolean)
@@ -229,6 +235,39 @@ export function renderWorkerDetail(
   if (worker.vm_id) lines.push(`VM  ${worker.vm_id}`);
   if (worker.opencode_session_id)
     lines.push(`Session  ${worker.opencode_session_id}`);
+  if (worker.finalization) {
+    const f = worker.finalization;
+    lines.push(
+      "",
+      `PRESERVATION  ${f.state.toUpperCase()} · ${f.attempts} attempts`,
+    );
+    if (f.error) lines.push(`  ${f.error}`);
+    if (f.next_retry_at)
+      lines.push(`  Next retry: ${new Date(f.next_retry_at).toISOString()}`);
+    if (["failed", "pending", "collecting"].includes(f.state))
+      lines.push(
+        "  VM retained until outputs are preserved; inspect failures before destroying.",
+      );
+  }
+  if (detail.artifacts) {
+    lines.push("", "ARTIFACTS");
+    if (!detail.artifacts.length) lines.push("  No preserved artifacts yet");
+    for (const a of detail.artifacts) {
+      lines.push(
+        `  ${a.filename} · ${a.state} · ${a.size ?? "?"} bytes`,
+        `    ID: ${a.artifact_id}`,
+      );
+      if (a.sha256) lines.push(`    SHA256: ${a.sha256}`);
+      if (a.state === "preserved")
+        lines.push(
+          `    Download: /artifacts/${encodeURIComponent(a.artifact_id)}/download (server authentication required)`,
+        );
+    }
+    if (detail.artifactsNextOffset != null)
+      lines.push(
+        `  More artifacts: list_artifacts offset=${detail.artifactsNextOffset}`,
+      );
+  }
   if (worker.error) lines.push("", `ERROR  ${worker.error}`);
   if (worker.excerpt && !settledStates.has(worker.state)) {
     const age = worker.excerpt_at
@@ -269,7 +308,7 @@ export function renderWorkerDetail(
   }
   lines.push(
     "",
-    `${availableActions(worker.state).join(" · ")} · Esc back · q quit`,
+    `${[...availableActions(worker.state), ...(canRetryPreservation(worker) ? ["f retry preservation"] : [])].join(" · ")} · Esc back · q quit`,
   );
   return lines.map((line) => clipped(safeTerminalText(line), width)).join("\n");
 }
@@ -282,4 +321,13 @@ export function availableActions(state: string) {
   if (["queued", "provisioning", "booting"].includes(state))
     return ["c cancel", "d destroy"];
   return ["d destroy"];
+}
+
+export function canRetryPreservation(worker: WorkerSummary) {
+  return (
+    worker.state !== "destroyed" &&
+    !!worker.vm_id &&
+    !worker.vm_missing &&
+    ["failed", "pending"].includes(worker.finalization?.state ?? "")
+  );
 }

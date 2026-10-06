@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { Coordinator } from "../src/coordinator";
 import { config, harness, runToRunning, task } from "./helpers";
 
@@ -20,6 +21,92 @@ test("creation retries retain idempotency when the queue is full", () => {
   h.store.close();
 });
 
+test("a request_id created before artifact declarations still matches its retry", () => {
+  const h = harness();
+  // A row written by the pre-declaration schema: six fields and the digest of the raw request.
+  const legacy = {
+    team_id: "team",
+    task_id: "legacy",
+    role: "coder",
+    prompt: "older request",
+    timeout_seconds: 60,
+    request_id: "legacy-id",
+  };
+  const fingerprint = createHash("sha256")
+    .update(JSON.stringify(legacy))
+    .digest("hex");
+  h.store.db.query("INSERT INTO workers VALUES(?,?,?,?,?,?)").run(
+    "w-legacy",
+    legacy.team_id,
+    legacy.task_id,
+    "completed",
+    legacy.request_id,
+    JSON.stringify({
+      ...legacy,
+      worker_id: "w-legacy",
+      request_fingerprint: fingerprint,
+      state: "completed",
+    }),
+  );
+  // The retry resolves to the existing worker instead of reporting a conflicting request.
+  expect(h.store.create({ ...legacy }).worker_id).toBe("w-legacy");
+  expect(
+    h.coordinator.spawn({ ...legacy, timeout_seconds: 60 }).worker_id,
+  ).toBe("w-legacy");
+  // A genuinely different request under the same id is still a conflict.
+  expect(() =>
+    h.coordinator.spawn({
+      ...legacy,
+      prompt: "a different request",
+      request_id: "legacy-id",
+    }),
+  ).toThrow("request_id already used with different arguments");
+  h.store.close();
+});
+
+test("creation idempotency survives the artifact declaration defaults", () => {
+  const h = harness();
+  const first = h.coordinator.spawn({ ...task, request_id: "same" });
+  expect(first.artifacts).toEqual([]);
+  expect(first.snapshot_on_failure).toBe(false);
+  // A retry that spells out the defaults, or reorders its keys, is still the same request.
+  const again = h.coordinator.spawn({
+    ...task,
+    snapshot_on_failure: false,
+    request_id: "same",
+    artifacts: [],
+  });
+  expect(again.worker_id).toBe(first.worker_id);
+  const direct = h.store.create({
+    team_id: "team",
+    task_id: "raw",
+    role: "coder",
+    prompt: "work",
+    timeout_seconds: 60,
+    request_id: "raw",
+  });
+  expect(
+    h.store.create({
+      request_id: "raw",
+      timeout_seconds: 60,
+      prompt: "work",
+      role: "coder",
+      task_id: "raw",
+      team_id: "team",
+      artifacts: [],
+      snapshot_on_failure: false,
+    }).worker_id,
+  ).toBe(direct.worker_id);
+  expect(() =>
+    h.coordinator.spawn({
+      ...task,
+      request_id: "same",
+      artifacts: [{ path: "out.txt" }],
+    }),
+  ).toThrow("request_id already used with different arguments");
+  h.store.close();
+});
+
 test("spawn returns queued before provisioning and preserves session for follow-ups", async () => {
   const h = harness();
   const w = h.coordinator.spawn(task);
@@ -30,6 +117,8 @@ test("spawn returns queued before provisioning and preserves session for follow-
   h.agent.complete(h.store.get(w.worker_id));
   await h.coordinator.tick();
   expect(h.store.get(w.worker_id).state).toBe("completed");
+  // A follow-up dispatch waits for the finished run's artifact preservation to settle.
+  await h.coordinator.finalize(w.worker_id);
   h.coordinator.message(w.worker_id, "fix race");
   await h.coordinator.tick();
   expect(h.store.get(w.worker_id).state).toBe("running");
@@ -61,6 +150,7 @@ test("running messages queue durably instead of resetting active context", async
   expect(h.agent.submitted).toHaveLength(1);
   h.agent.complete(h.store.get(w.worker_id));
   await h.coordinator.tick();
+  await h.coordinator.finalize(w.worker_id);
   await h.coordinator.tick();
   expect(h.agent.submitted).toHaveLength(2);
   h.store.close();
@@ -243,6 +333,8 @@ test("persisting a completion atomically makes queued follow-ups runnable after 
   });
   const fresh = new Coordinator(config, h.store, h.provider, h.agent);
   await fresh.recover();
+  // The restarted process also re-runs the interrupted run's artifact preservation.
+  await fresh.finalize(w.worker_id);
   await fresh.tick();
   expect(h.agent.submitted).toHaveLength(2);
   h.store.close();
@@ -289,6 +381,7 @@ test("follow-up queued while completed worker is paused becomes runnable on resu
   await runToRunning(h, w.worker_id);
   h.agent.complete(h.store.get(w.worker_id));
   await h.coordinator.tick();
+  await h.coordinator.finalize(w.worker_id);
   await h.coordinator.control(w.worker_id, "pause");
   h.coordinator.message(w.worker_id, "next");
   await h.coordinator.control(w.worker_id, "resume");

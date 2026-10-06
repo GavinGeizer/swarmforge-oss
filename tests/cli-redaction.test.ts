@@ -124,6 +124,8 @@ test("all client operations scrub echoed credentials using the resolved settings
       () => f.client.inspect(f.worker.worker_id),
       () => f.client.result(f.worker.worker_id),
       () => f.client.control(f.worker.worker_id, "pause"),
+      () => f.client.artifacts(f.worker.worker_id),
+      () => f.client.retryPreservation(f.worker.worker_id),
     ])
       await expect(action()).rejects.toThrow(
         "Proxy echoed [REDACTED] and [REDACTED]",
