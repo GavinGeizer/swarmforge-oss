@@ -42,7 +42,7 @@
 - [x] 3. Optional live readiness check
   - Add explicit bounded provider/model probes, redacted errors, optional existing-VM prerequisite check, and CLI flags/help.
   - Do not run these probes against the configured deployment during implementation.
-- [ ] Finish: documentation, static checks, build/install global binary, commit/push, and inspect CI.
+- [x] Finish: documentation, static checks, build/install global binary, commit/push, and inspect CI.
 
 ## Validation policy
 
@@ -54,6 +54,8 @@ Run static/type checks and build checks. No new or local test execution unless r
 
 - 2026-10-07: Implemented all eight feature entries. Added five MCP tools (31 total), local/global CLI commands, dashboard result/recovery/usage details, inbox, cross-worker artifact search/preview and scrolling.
 - Review corrections: VM estimates use the first durable boot event and explicit missing-VM observation time; normal cleanup success requires destroyed state; expiry is rechecked atomically; provider probes share an overall deadline and refuse cross-origin polling URLs; artifact listing negotiates older-server support; cancelled-worker guidance uses replacement workers; summary redaction precedes truncation; dashboard deltas exclude display clocks.
-- Validation: TypeScript and Biome checks pass. Live probes were not invoked. No new tests were added or local test suite executed; the existing API tool-count assertion was updated to the new contract. Publication/build/CI pending below.
+- Validation: TypeScript and Biome checks pass. Live probes were not invoked. No new tests were added or local test suite executed; the existing API tool-count assertion was updated to the new contract. Build/publication and CI results are recorded below.
 
-- CI on feature commit 6e33747: static checks passed; regressions reported one failure because live response text leaked into `list_workers`, which has an existing exclusion contract. Fixed by scoping live progress text to detail/dashboard while worker listings keep summaries and activity timestamps. All other existing regressions passed; rerun pending.
+- CI on feature commit 6e33747: static checks passed; regressions reported one failure because live response text leaked into `list_workers`, which has an existing exclusion contract. Fixed by scoping live progress text to detail/dashboard while worker listings keep summaries and activity timestamps. All other existing regressions passed; rerun completed successfully below.
+
+- Final verification: CI for fix commit `18bee13` passed type/lint checks, the existing regression suite and compiled executable build: https://github.com/GavinGeizer/swarmforge-oss/actions/runs/37634541718 . The global executable was rebuilt and atomically installed; the running service was not restarted. All eight requested feature entries and the finish checklist are complete. Live diagnostics and automatic retention were not run against the configured deployment.
