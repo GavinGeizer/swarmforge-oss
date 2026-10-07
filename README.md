@@ -4,6 +4,14 @@ SwarmForge lets an AI lead launch isolated coding workers, follow their progress
 
 The global `swarmforge` executable provides `init`, `doctor`, `serve`, and `status`, plus configuration inspection and artifact retrieval. You supply the VM snapshot, model service, and Git access. SwarmForge does not host Git, serve models, or create pull requests.
 
+## License
+
+SwarmForge is source-available under the [PolyForm Small Business License 1.0.0](LICENSE), with SPDX identifier `PolyForm-Small-Business-1.0.0`. The authoritative license is the repository-root `LICENSE`; its standard terms are unchanged.
+
+Permitted business use requires fewer than **100 people working as employees and independent contractors** and prior-tax-year revenue below **US$1,000,000 in 2019 dollars, adjusted for inflation**. Both conditions must hold, and the license's company definition includes controlled and commonly controlled organizations. Uses outside its permissions require separate permission from the copyright holder; commercial licensing can be discussed through the [project repository](https://github.com/GavinGeizer/swarmforge-oss/issues).
+
+The standard license replaces the proposed custom 10-employee/fixed-US$1-million draft. It contains no separate ban on hosting services. It is source-available rather than OSI-approved open source. Third-party software retains its own licenses. See [licensing notes](docs/licensing/README.md) and the full license for the authoritative terms.
+
 ## Contents
 
 - [Before you start](#before-you-start)
