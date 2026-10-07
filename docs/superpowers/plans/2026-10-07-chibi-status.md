@@ -23,7 +23,7 @@ Confirmed by the user: this targets the terminal CLI status screen, with Tab swi
 - [x] TUI default and Tab toggle, preserving existing controls
 - [x] Documentation and static/build checks
 - [x] Independent code review and correction
-- [ ] Commit/push and install global executable; observe CI (current environment denies writes to Git metadata and the global executable directory)
+- [x] Commit/push and install global executable; observe CI
 
 ## Validation
 
@@ -37,4 +37,4 @@ No tests are added/run locally unless requested. Use TypeScript/Biome checks, bu
 - Native read-only code review found three issues, all corrected: reserved task rows at 100×24, cleanup eligibility label, and page-specific attention wording. Follow-up review found no remaining important issues.
 - `bun run check` passed (106 files); `git diff --check` passed. Local example frames were rendered to `/tmp/swarmforge-chibi-preview.png`; no endpoints were contacted.
 - Built `dist/swarmforge` successfully for Linux x64 glibc. Local `--help` and `--version` succeeded; build identity is `54cba5b69529dbdf345119384731fff5dd4b439f-chibi-preview` to disclose uncommitted source.
-- Current workspace permissions allow source and `dist` writes, but Git metadata and `/home/overlord/.local/bin` are read-only. No commit, push, global replacement, service restart, or CI run was performed for this change.
+- Initial workspace permissions blocked Git metadata and global installation. The user restored full access; implementation commit `dc6fcbc` was pushed to `origin/master`, rebuilt, and installed atomically at `/home/overlord/.local/bin/swarmforge`. The installed build identity matched the commit and its SHA-256 matched `dist/swarmforge`. GitHub CI was observed running: https://github.com/GavinGeizer/swarmforge-oss/actions/runs/37659735856. No service restart or endpoint calls were performed.
