@@ -322,7 +322,16 @@ export function createMcpServer(c: Coordinator, signal?: AbortSignal) {
         return { unchanged: true, revision };
       const listed = c.store.queryWorkers(a);
       const summary = c.store.summary();
-      const workers = listed.workers.map((w) => publicWorker(c, w.worker_id));
+      const workers = listed.workers.map((w) => {
+        const view = publicWorker(c, w.worker_id);
+        return {
+          ...view,
+          progress: {
+            ...view.progress,
+            activity: c.excerpt(w.worker_id)?.text ?? null,
+          },
+        };
+      });
       const delta =
         !!previousRevision && previous?.revision === previousRevision;
       const prior = new Map(

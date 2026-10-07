@@ -216,7 +216,7 @@ export function publicWorker(c: Coordinator, id: string, detail = false) {
     finalization: w.finalization ?? null,
     progress: {
       ...taskProgress(w, result),
-      activity: c.excerpt(id)?.text ?? null,
+      activity: detail ? (c.excerpt(id)?.text ?? null) : null,
     },
     ...(detail
       ? {
