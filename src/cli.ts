@@ -32,7 +32,7 @@ import {
   taskTemplates,
   templatePrompt,
 } from "./task-templates";
-import { COMMIT, VERSION } from "./version";
+import { COMMIT, LICENSE_ID, LICENSE_URL, VERSION } from "./version";
 
 const usage = `SwarmForge control plane
 
@@ -84,6 +84,9 @@ Configuration is resolved from defaults, the config file, its env_file, every
 --env-file, the environment and the flags, in that order. Reading it creates
 nothing, and every reported value, source and diagnostic is redacted.
 Set SWARMFORGE_API_TOKEN when the server requires bearer authentication.
+
+License: ${LICENSE_ID}
+${LICENSE_URL}
 
 SwarmForge ${VERSION}, build ${COMMIT}.`;
 

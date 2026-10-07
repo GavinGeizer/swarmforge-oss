@@ -97,6 +97,9 @@ jobs:
           install -m 755 "$extract_dir/swarmforge" "$RUNNER_TEMP/swarmforge-install/swarmforge-extracted"
           test "$(env -i PATH=/usr/bin:/bin HOME="$install_home" "$RUNNER_TEMP/swarmforge-install/swarmforge-extracted" --version)" = "$version"
 
+      - name: Include the application license
+        run: cp LICENSE dist/LICENSE
+
       - name: Upload build artifacts
         # The same assets on every trigger: the draft release is created from
         # exactly these files, never from a second build.
@@ -107,6 +110,7 @@ jobs:
             dist/swarmforge
             dist/SHA256SUMS
             dist/metadata-*.json
+            dist/LICENSE
             dist/swarmforge-v*-linux-x64-glibc.tar.gz
             dist/swarmforge-v*-linux-x64-glibc.tar.gz.sha256
           if-no-files-found: error
@@ -168,4 +172,5 @@ jobs:
             "release-assets/swarmforge-v${version}-linux-x64-glibc.tar.gz" \
             "release-assets/swarmforge-v${version}-linux-x64-glibc.tar.gz.sha256" \
             "release-assets/SHA256SUMS" \
-            "release-assets/metadata-${version}.json"
+            "release-assets/metadata-${version}.json" \
+            "release-assets/LICENSE"

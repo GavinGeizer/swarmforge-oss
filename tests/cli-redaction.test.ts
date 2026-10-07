@@ -62,56 +62,60 @@ async function fixture() {
   };
 }
 
-test("dashboard refreshes keep the connection URL credential out of every frame", async () => {
-  const f = await fixture();
-  const frames: string[] = [];
-  const input = Object.assign(new EventEmitter(), {
-    setRawMode: () => {},
-    resume: () => {},
-    pause: () => {},
-  }) as unknown as typeof process.stdin;
-  const output = Object.assign(new EventEmitter(), {
-    columns: 120,
-    rows: 40,
-    write: (value: string) => {
-      frames.push(value);
-      return true;
-    },
-  }) as unknown as typeof process.stdout;
-  let session: Promise<void> | undefined;
-  try {
-    const initial = await f.client.overview();
-    // The old CLI protected only this first frame; the client must protect later ones too.
-    initial.url = redactedText(f.settings, initial.url);
-    session = runDashboard(f.client, initial, input, output, 10);
-    for (
-      let attempts = 0;
-      frames.filter((frame) => frame.includes("MCP  ")).length < 2 &&
-      attempts < 100;
-      attempts++
-    )
-      await Bun.sleep(10);
-    expect(
-      frames.filter((frame) => frame.includes("MCP  ")).length,
-    ).toBeGreaterThanOrEqual(2);
-    expect(frames.join("")).not.toContain(f.token);
-    f.deny(`Proxy echoed ${f.token}`);
-    for (
-      let attempts = 0;
-      !frames.some((frame) => frame.includes("Refresh failed")) &&
-      attempts < 100;
-      attempts++
-    )
-      await Bun.sleep(10);
-    expect(frames.some((frame) => frame.includes("Refresh failed"))).toBe(true);
-    expect(frames.join("")).not.toContain(f.token);
-    expect(frames.join("")).toContain("Proxy echoed [REDACTED]");
-  } finally {
-    input.emit("keypress", "", { name: "q" });
-    await session;
-    await f.close();
-  }
-});
+for (const technical of [false, true]) {
+  test(`dashboard ${technical ? "technical" : "chibi"} refreshes keep credentials out of every frame`, async () => {
+    const f = await fixture();
+    const frames: string[] = [];
+    const input = Object.assign(new EventEmitter(), {
+      setRawMode: () => {},
+      resume: () => {},
+      pause: () => {},
+    }) as unknown as typeof process.stdin;
+    const output = Object.assign(new EventEmitter(), {
+      columns: 120,
+      rows: 40,
+      write: (value: string) => {
+        frames.push(value);
+        return true;
+      },
+    }) as unknown as typeof process.stdout;
+    let session: Promise<void> | undefined;
+    try {
+      const initial = await f.client.overview();
+      // The old CLI protected only this first frame; the client must protect later ones too.
+      initial.url = redactedText(f.settings, initial.url);
+      session = runDashboard(f.client, initial, input, output, 10);
+      if (technical) input.emit("keypress", "\t", { name: "tab" });
+      const overviewFrame = (frame: string) =>
+        frame.includes(technical ? "MCP  " : "YOUR TASKS");
+      for (
+        let attempts = 0;
+        frames.filter(overviewFrame).length < 2 && attempts < 100;
+        attempts++
+      )
+        await Bun.sleep(10);
+      expect(frames.filter(overviewFrame).length).toBeGreaterThanOrEqual(2);
+      expect(frames.join("")).not.toContain(f.token);
+      f.deny(`Proxy echoed ${f.token}`);
+      for (
+        let attempts = 0;
+        !frames.some((frame) => frame.includes("Refresh failed")) &&
+        attempts < 100;
+        attempts++
+      )
+        await Bun.sleep(10);
+      expect(frames.some((frame) => frame.includes("Refresh failed"))).toBe(
+        true,
+      );
+      expect(frames.join("")).not.toContain(f.token);
+      expect(frames.join("")).toContain("Proxy echoed [REDACTED]");
+    } finally {
+      input.emit("keypress", "", { name: "q" });
+      await session;
+      await f.close();
+    }
+  });
+}
 
 test("all client operations scrub echoed credentials using the resolved settings context", async () => {
   const f = await fixture();

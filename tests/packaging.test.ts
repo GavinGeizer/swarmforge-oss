@@ -1140,7 +1140,7 @@ describe("packaging declarations", () => {
     // never left as an unquoted placeholder, the archive is extracted with its
     // manifest, the checksum runs inside the extracted tree, and the binary is
     // installed with an explicit mode.
-    expect(block).toContain("VERSION=0.1.0");
+    expect(block).toContain(`VERSION=${manifest.version}`);
     expect(block).not.toContain("<version>");
     expect(block).toContain('tar -xzf "dist/swarmforge-v$');
     expect(block).toContain('(cd "$tmp" && sha256sum -c SHA256SUMS)');

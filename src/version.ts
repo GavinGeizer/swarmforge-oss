@@ -12,6 +12,10 @@ declare const SWARMFORGE_BUILD_COMMIT: string | undefined;
 /** Build identifier reported when packaging did not supply a commit. */
 export const unknownCommit = "unknown";
 
+export const LICENSE_ID = "PolyForm-Small-Business-1.0.0";
+export const LICENSE_URL =
+  "https://polyformproject.org/licenses/small-business/1.0.0";
+
 function override(declared: string | undefined, fallback: string): string {
   return typeof declared === "string" && declared.trim() !== ""
     ? declared.trim()

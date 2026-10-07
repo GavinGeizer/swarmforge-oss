@@ -9,6 +9,7 @@
  * when an archive that already exists is verified, so "package" and "verify"
  * cannot disagree about what a good archive is.
  */
+
 import {
   chmod,
   mkdir,
@@ -21,6 +22,7 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { LICENSE_ID, LICENSE_URL } from "../src/version";
 import {
   type CompiledBinary,
   compileCli,
@@ -91,6 +93,7 @@ export function buildMetadata(options: {
 }): Record<string, unknown> {
   return {
     name: "swarmforge",
+    license: { spdx: LICENSE_ID, url: LICENSE_URL },
     version: options.version,
     commit: options.commit,
     target: compileTarget,
