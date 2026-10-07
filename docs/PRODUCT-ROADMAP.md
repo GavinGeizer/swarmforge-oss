@@ -55,3 +55,9 @@ Prioritized opportunities from a read-through of the implementation and operator
 - Checkout setup builds and installs the global executable and prints PATH/reload guidance.
 - README walks through prerequisites, installation, initialization, diagnostics, server startup, MCP connection, a first task, result/artifact collection, and cleanup.
 - Model and snapshot live compatibility checks and a local provider demo remain future work.
+
+## Artifact retrieval and agent plaintext workflow — implemented
+
+- Paginated CLI artifact listing and authenticated streaming downloads with size/SHA-256 verification, atomic publication, and overwrite refusal.
+- Dashboard artifact browser and local save action.
+- Live and preserved plaintext readers plus server/agent guidance, avoiding base64/Python reconstruction for ordinary text.

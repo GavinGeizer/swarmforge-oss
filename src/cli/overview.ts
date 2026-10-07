@@ -352,7 +352,7 @@ export function renderWorkerDetail(
   }
   lines.push(
     "",
-    `${[...availableActions(worker.state), ...(canRetryPreservation(worker) ? ["f retry preservation"] : [])].join(" · ")} · Esc back · q quit`,
+    `${[...availableActions(worker.state), ...(canRetryPreservation(worker) ? ["f retry preservation"] : [])].join(" · ")} · a artifacts · Esc back · q quit`,
   );
   return lines.map((line) => clipped(safeTerminalText(line), width)).join("\n");
 }

@@ -13,6 +13,19 @@ export class UsageError extends Error {
 export type ConfigAction = "path" | "show" | "validate";
 
 export type ParsedCommand =
+  | {
+      kind: "artifacts";
+      action: "list" | "download";
+      artifactId?: string;
+      workerId?: string;
+      output?: string;
+      offset: number;
+      limit: number;
+      json: boolean;
+      overrides?: { SWARMFORGE_URL: string };
+      configPath?: string;
+      envFiles: string[];
+    }
   | { kind: "help" }
   | { kind: "version" }
   | { kind: "init"; configPath?: string }
@@ -153,6 +166,70 @@ function doctor(rest: readonly string[]): ParsedCommand {
   return { kind: "doctor", json, configPath, envFiles };
 }
 
+function artifactCommand(rest: readonly string[]): ParsedCommand {
+  if (rest.some(isHelp)) return { kind: "help" };
+  const [action, ...tail] = rest;
+  if (action !== "list" && action !== "download")
+    throw new UsageError("artifacts requires list or download");
+  let artifactId: string | undefined;
+  let workerId: string | undefined;
+  let output: string | undefined;
+  let url: string | undefined;
+  let configPath: string | undefined;
+  let offset = 0;
+  let limit = 20;
+  let json = false;
+  const envFiles: string[] = [];
+  const iterator = tail[Symbol.iterator]();
+  for (const arg of iterator) {
+    if (arg === "--url") url = value(iterator, arg, "an endpoint");
+    else if (arg === "--config") configPath = value(iterator, arg, "a path");
+    else if (arg === "--env-file")
+      envFiles.push(value(iterator, arg, "a path"));
+    else if (arg === "--json") json = true;
+    else if (arg === "--worker" && action === "list")
+      workerId = value(iterator, arg, "a worker ID");
+    else if (arg === "--output" && action === "download")
+      output = value(iterator, arg, "a file path");
+    else if ((arg === "--offset" || arg === "--limit") && action === "list") {
+      const raw = value(iterator, arg, "an integer");
+      const number = Number(raw);
+      if (
+        !/^\d+$/.test(raw) ||
+        !Number.isSafeInteger(number) ||
+        number < (arg === "--limit" ? 1 : 0) ||
+        (arg === "--limit" && number > 100)
+      )
+        throw new UsageError(`Invalid ${arg}`);
+      if (arg === "--offset") offset = number;
+      else limit = number;
+    } else if (action === "download" && !arg.startsWith("-") && !artifactId)
+      artifactId = arg;
+    else throw new UsageError(`Unknown argument: ${arg}`);
+  }
+  if (action === "download" && (!artifactId || !output))
+    throw new UsageError(
+      "artifacts download requires an artifact ID and --output PATH",
+    );
+  if (artifactId && !/^[a-zA-Z0-9_.:-]{1,128}$/.test(artifactId))
+    throw new UsageError("Invalid artifact ID");
+  if (workerId && !/^[a-zA-Z0-9_.:-]{1,128}$/.test(workerId))
+    throw new UsageError("Invalid worker ID");
+  return {
+    kind: "artifacts",
+    action,
+    artifactId,
+    workerId,
+    output,
+    offset,
+    limit,
+    json,
+    ...(url ? { overrides: { SWARMFORGE_URL: url } } : {}),
+    configPath,
+    envFiles,
+  };
+}
+
 /**
  * Parses a command line into one command.
  *
@@ -178,6 +255,7 @@ export function parseArguments(args: readonly string[]): ParsedCommand {
   if (head === "init") return initialization(rest);
   if (head === "doctor") return doctor(rest);
   if (head === "config") return configuration(rest);
+  if (head === "artifacts") return artifactCommand(rest);
   // A leading flag keeps the implicit status invocation working.
   if (head.startsWith("-")) return status(args);
   throw new UsageError(`Unknown command: ${head}`);

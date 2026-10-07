@@ -12,7 +12,7 @@ Use this guide for the Swarmforge worker control plane. Swarmforge provisions Op
 1. **Respect the user's scope and authority.** Treat worker-count caps, role restrictions, branch rules, review requirements, stop instructions, and merge/publish authority as hard constraints. Approval to run work does not imply approval to publish externally unless the user says so or the task clearly grants it.
 2. **Keep ownership clear.** Assign one owner to each change set. Use distinct tasks and branches for concurrent implementation; avoid simultaneous edits to the same files.
 3. **Verify claims.** A worker's summary is a report, not proof. Check the current run, branch, commit, persisted state, reviewer verdict, and integrated test result.
-4. **Preserve before cleanup.** Results survive worker destruction, but artifacts and VM-local work do not. Collect what is needed and establish source durability before destroying a worker.
+4. **Preserve before cleanup.** Results and preserved artifacts survive worker destruction; unpreserved VM files and VM-local work do not. Collect what is needed and establish source durability before destroying a worker.
 5. **Close the lifecycle.** At task end, account for all workers in scope, destroy retained VMs when authorized, and verify their final states.
 
 ## Decide whether to delegate
@@ -107,14 +107,18 @@ For a failed or missing result, inspect `get_worker_logs` and `get_worker` rathe
 
 ## Collect artifacts
 
-Artifacts are stored on the VM under `.swarmforge/artifacts` and disappear on destruction. Collect any review report, benchmark, or other deliverable before cleanup.
+Use the plaintext readers for inspection and the verified CLI for complete files:
 
-1. Call `list_worker_artifacts` with a path relative to the artifacts root; the empty string lists the root. Do not prefix the argument with `.swarmforge/artifacts`.
-2. Call `get_worker_artifact` with the worker-relative path. It returns a resource link and range metadata, not file bytes.
-3. Read the URI with MCP `resources/read`. For large files, advance using `next_offset` and keep each chunk bounded (at most 32 KiB).
-4. Treat missing files, path/symlink rejection, and credential screening as real outcomes. Do not try to bypass path checks or retrieve arbitrary VM files.
+1. List live outputs with `list_worker_artifacts(worker_id, directory="")`. Directory paths are relative to `.swarmforge/artifacts`.
+2. Inspect live text with `read_worker_artifact(worker_id, path="review.md", offset=0, length=4096)`. Its path is relative to `.swarmforge/artifacts`. It returns a bounded plaintext excerpt directly (4 KiB by default), without base64 or Python decoding. Read only relevant excerpts from a large report.
+3. Preserve a complete file with `preserve_artifact(worker_id, path=".swarmforge/artifacts/<relative-path>")`. This path is relative to the worker repository. Confirm the returned artifact record is `preserved`, then use its `artifact_id`.
+4. Inspect preserved text with `read_artifact(artifact_id)`, including after the VM is destroyed. Binary results contain metadata and a download instruction, not file bytes.
+5. Save an entire text or binary deliverable with `swarmforge artifacts download ARTIFACT_ID --output ./deliverable`. The command streams bytes to disk, verifies size and SHA-256, and refuses overwrites. Review the local file with bounded file-reading/search tools. Keep full file bytes out of model context.
+6. Treat missing files, credential screening, checksum failures, and path/symlink refusals as real failures. Preserve and verify needed output and source durability before VM cleanup.
 
-Persist reports you need outside the VM before destroying it. A result record survives destroy; artifact bytes do not.
+`get_worker_artifact` plus `resources/read` is a legacy binary-resource interface. Use it only when a client explicitly needs MCP binary resources. Ordinary text inspection uses the plaintext tools; full-file retrieval uses the CLI instead of assembling base64 chunks in model context.
+
+Preserved artifacts and result records survive VM destruction. Unpreserved VM files and unpersisted Git work do not.
 
 ## Review branches independently
 

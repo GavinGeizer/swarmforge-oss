@@ -1,6 +1,7 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { redact } from "../settings/inspect";
+import { downloadArtifact } from "./artifact-download";
 import type { WorkerFilters, WorkerSort } from "./filters";
 import type { OverviewData, WorkerSummary } from "./overview";
 
@@ -91,10 +92,10 @@ export async function connectSwarmForge(
     attempt(async () =>
       structured<T>(await client.callTool({ name, arguments: args })),
     );
-  const artifacts = (workerId: string) =>
+  const artifacts = (workerId: string, offset = 0, limit = 3) =>
     call<{ artifacts: ArtifactSummary[]; next_offset: number | null }>(
       "list_artifacts",
-      { worker_id: workerId, limit: 3 },
+      { worker_id: workerId, offset, limit },
     );
   let settledCleanupSupported: Promise<boolean> | undefined;
   let dashboardSupported: Promise<boolean> | undefined;
@@ -102,6 +103,38 @@ export async function connectSwarmForge(
   let priorDashboard: OverviewData | undefined;
   return {
     artifacts,
+    listArtifacts: (options: {
+      workerId?: string;
+      offset?: number;
+      limit?: number;
+    }) =>
+      call<{ artifacts: ArtifactSummary[]; next_offset: number | null }>(
+        "list_artifacts",
+        {
+          ...(options.workerId ? { worker_id: options.workerId } : {}),
+          offset: options.offset ?? 0,
+          limit: options.limit ?? 20,
+        },
+      ),
+    async download(artifactId: string, output: string, signal?: AbortSignal) {
+      return attempt(async () => {
+        const metadata = await call<ArtifactSummary>("get_artifact_metadata", {
+          artifact_id: artifactId,
+        });
+        if (metadata.artifact_id !== artifactId)
+          throw new Error(
+            "Artifact metadata identity does not match the request",
+          );
+        const saved = await downloadArtifact(
+          url,
+          token,
+          metadata,
+          output,
+          signal,
+        );
+        return { ...saved, path: scrubText(saved.path) };
+      });
+    },
     retryPreservation: (workerId: string) =>
       call("retry_worker_finalization", { worker_id: workerId }),
     worker: (workerId: string) =>

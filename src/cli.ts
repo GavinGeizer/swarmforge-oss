@@ -37,6 +37,9 @@ Usage:
   swarmforge [status] [--url URL] [--json] [--no-interactive]
               [--config PATH] [--env-file PATH]
   swarmforge serve [--config PATH] [--env-file PATH] [--check-config]
+  swarmforge artifacts list [--worker ID] [--offset N] [--limit N] [--json]
+  swarmforge artifacts download ID --output PATH [--json]
+              [--url URL] [--config PATH] [--env-file PATH]
   swarmforge config path|show|validate [--config PATH] [--env-file PATH]
   swarmforge --version
   swarmforge --help
@@ -48,10 +51,11 @@ Commands:
             is given.
   serve     Run the API, metrics listener, coordinator and event log.
   config    Inspect configuration: path, show or validate.
+  artifacts List saved files or stream a checksum-verified download to disk.
 
 Options:
-  --url URL          MCP endpoint for status, overriding SWARMFORGE_URL.
-  --json             Print structured overview JSON and exit.
+  --url URL          MCP endpoint for client commands, overriding SWARMFORGE_URL.
+  --json             Print structured command output as JSON.
   --no-interactive   Print one snapshot and exit.
   --config PATH      Configuration file to use instead of discovery.
   --env-file PATH    Environment file applied after the config file. Repeatable.
@@ -307,6 +311,68 @@ async function runConfig(
   }
 }
 
+async function runArtifacts(
+  command: Extract<ParsedCommand, { kind: "artifacts" }>,
+) {
+  const settings = await resolveClientSettings({
+    ...selection(command),
+    overrides: command.overrides,
+  });
+  const abort = new AbortController();
+  const stop = () => abort.abort(new Error("Download cancelled"));
+  process.on("SIGINT", stop);
+  process.on("SIGTERM", stop);
+  try {
+    const client = await connectSwarmForge(
+      mcpEndpoint(settings.value.url),
+      settings.value.token,
+      (text) => scrub(settings, text),
+    );
+    try {
+      if (command.action === "download") {
+        const saved = await client.download(
+          command.artifactId!,
+          command.output!,
+          abort.signal,
+        );
+        write(
+          command.json
+            ? JSON.stringify(saved)
+            : `Saved ${scrub(settings, saved.path)} · ${saved.bytes} bytes · SHA256 ${saved.sha256}`,
+        );
+      } else {
+        const page = await client.listArtifacts(command);
+        if (command.json) write(JSON.stringify(page));
+        else {
+          for (const artifact of page.artifacts)
+            write(
+              scrub(
+                settings,
+                `${artifact.artifact_id}  ${artifact.state}  ${artifact.size ?? "?"} bytes  ${artifact.filename}  SHA256 ${artifact.sha256 ?? "unavailable"}`,
+              ),
+            );
+          if (!page.artifacts.length) write("No artifacts on this page.");
+          if (page.next_offset !== null)
+            write(`More artifacts: repeat with --offset ${page.next_offset}`);
+        }
+      }
+      return 0;
+    } finally {
+      await client.close();
+    }
+  } catch (error) {
+    throw new Error(
+      scrub(
+        settings,
+        error instanceof Error ? error.message : "Artifact command failed",
+      ),
+    );
+  } finally {
+    process.off("SIGINT", stop);
+    process.off("SIGTERM", stop);
+  }
+}
+
 async function run(command: ParsedCommand): Promise<number> {
   switch (command.kind) {
     // Help and version answer before a setting, a credential or a server module
@@ -336,6 +402,8 @@ async function run(command: ParsedCommand): Promise<number> {
       return runDoctor(selection(command), command.json);
     case "status":
       return showStatus(command);
+    case "artifacts":
+      return runArtifacts(command);
     case "serve":
       return serveCommand(command);
     case "config":

@@ -2,7 +2,7 @@
 
 SwarmForge lets an AI lead launch isolated coding workers, follow their progress, send follow-up tasks, and collect their results through MCP. Each worker runs OpenCode in a Freestyle VM against your model endpoint and Git repository. Worker state and results are stored in SQLite; the terminal dashboard shows current activity.
 
-The global `swarmforge` executable provides `init`, `doctor`, `serve`, and `status`, plus configuration inspection. You supply the VM snapshot, model service, and Git access. SwarmForge does not host Git, serve models, or create pull requests.
+The global `swarmforge` executable provides `init`, `doctor`, `serve`, and `status`, plus configuration inspection and artifact retrieval. You supply the VM snapshot, model service, and Git access. SwarmForge does not host Git, serve models, or create pull requests.
 
 ## Contents
 
@@ -189,7 +189,7 @@ Ask your connected AI lead to call `spawn_worker`. Start with a small task to co
 4. Collect outputs with `list_artifacts` and inspect `get_artifact_metadata`. Preservation runs automatically when a turn settles, using declared paths plus the standard artifact/log/result files. `read_artifact` returns a bounded, credential-screened excerpt; authenticated `GET /artifacts/<artifact_id>/download` returns exact file bytes. Verify the downloaded SHA-256 against metadata. See the [artifact quickstart](docs/ARTIFACT-QUICKSTART.md) for declarations and download commands.
 5. Call `destroy_worker` when you have preserved the work. Normal destruction checks Git persistence and artifact preservation; a refusal reports `recovery_required`. Investigate and persist the source before explicitly considering a forced deletion.
 
-Completed, failed, cancelled, and paused workers can retain billable VMs and consume capacity. Check `get_swarm_status` for leftovers before leaving. All 25 tools are described in [MCP-API.md](docs/MCP-API.md).
+Completed, failed, cancelled, and paused workers can retain billable VMs and consume capacity. Check `get_swarm_status` for leftovers before leaving. All 26 tools are described in [MCP-API.md](docs/MCP-API.md).
 
 For coding tasks, configure `SWARMFORGE_GIT_PUSH_MODE=github-app` or `ssh` to push and verify each worker branch automatically. `get_worker_result.git` then records the branch and commit, with a GitHub compare URL where supported. The default `none` uses your external Git workflow. See [Git handoff configuration](docs/ENVIRONMENT.md).
 
@@ -233,6 +233,22 @@ The overview shows global retained VM count, cleanup candidate count, and the ol
 Cleanup candidates must be completed, failed, cancelled, or recovery-required, have an available retained VM, have preserved outputs, and have no pending messages or control action. A candidate is **not** a guarantee that Git safety will pass. Use details to resolve refusals, then select and preview again. Quitting stops new batch requests after the current request. This flow requires an updated server; restart `swarmforge serve` and reopen the dashboard after installing the new binary.
 
 Cleanup is an operator action. Stored artifacts and results survive normal VM destruction. Pricing estimates and automatic retention policies remain future work.
+
+## Save deliverables and read artifact text
+
+List a page of preserved outputs, including after the VM has been destroyed:
+
+```sh
+swarmforge artifacts list --worker w-WORKER_ID
+swarmforge artifacts list --worker w-WORKER_ID --offset 20 --limit 20 --json
+swarmforge artifacts download a-ARTIFACT_ID --output ./deliverables/findings.json
+```
+
+Both commands accept `--url`, `--config`, and repeatable `--env-file` selections and need only the client endpoint and bearer token. Downloads stream authenticated raw bytes, verify the recorded size and SHA-256, and publish a private file atomically. Existing files and symlinks are refused; choose a new output path. Interrupted, corrupt, or oversized transfers leave no published file. Requests have a two-minute timeout and refuse redirects. `--json` returns metadata or the saved path, byte count, and checksum, never the file contents.
+
+In worker details, press `a` to open the artifact browser. Use ↑/↓ to select a file, `[`/`]` for artifact pages, and Enter to choose a local save path. Confirm with Enter to download and verify, or Escape to cancel. Files save on the machine running the CLI.
+
+For agents, use `read_worker_artifact(worker_id, path="report.md")` to inspect live text under `.swarmforge/artifacts`, or `read_artifact(artifact_id)` for preserved text. These tools return bounded plaintext directly. Large or binary deliverables should be preserved and downloaded with the CLI, then inspected locally with bounded reads. Ordinary text does not require base64 decoding or Python reconstruction. The older `get_worker_artifact` plus `resources/read` interface remains for clients explicitly needing binary MCP resources.
 
 ## Move the workers to another repository
 

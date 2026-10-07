@@ -46,7 +46,13 @@ const dashboardSnapshots = new WeakMap<
   Map<string, { revision: string; workers: ReturnType<typeof publicWorker>[] }>
 >();
 export function createMcpServer(c: Coordinator, signal?: AbortSignal) {
-  const server = new McpServer({ name: "swarmforge", version: "0.1.0" });
+  const server = new McpServer(
+    { name: "swarmforge", version: "0.1.0" },
+    {
+      instructions:
+        "For artifact text, use read_worker_artifact for live worker files or read_artifact for preserved artifact IDs. These return bounded plaintext directly: do not decode base64 or run Python to read text. For complete, large or binary artifacts, preserve the file if needed, then run swarmforge artifacts download ARTIFACT_ID --output PATH to stream and verify it locally. Keep file bytes out of model context. get_worker_artifact/resources-read is a legacy binary resource interface.",
+    },
+  );
   const files = new WorkerFiles(c);
   const redactor = redactorFor(c);
   const worker = { worker_id: idSchema };
@@ -348,11 +354,59 @@ export function createMcpServer(c: Coordinator, signal?: AbortSignal) {
     (a) => files.artifacts(a.worker_id, a.directory, a.offset, a.limit),
     true,
   );
+  register(
+    "read_worker_artifact",
+    "Preferred reader for live text artifacts: returns credential-screened plaintext directly, without base64 or Python decoding. Paths are relative to .swarmforge/artifacts. Defaults to a 4 KiB excerpt; use the verified CLI download for the whole file or binary data.",
+    {
+      ...worker,
+      path: artifactPath,
+      offset: z.number().int().min(0).default(0),
+      length: z.number().int().min(1).max(safeReadLimit).default(4096),
+    },
+    async (a) => {
+      const handle = await files.artifact(
+        a.worker_id,
+        a.path,
+        a.offset,
+        a.length,
+      );
+      const bytes = await files.readArtifact(
+        a.worker_id,
+        a.path,
+        a.offset,
+        a.length,
+      );
+      const view = screen(bytes);
+      return {
+        worker_id: a.worker_id,
+        path: handle.name,
+        size: handle.size,
+        offset: a.offset,
+        returned_bytes: bytes.length,
+        binary: view.binary,
+        text: view.binary ? null : view.text,
+        next_offset:
+          a.offset + bytes.length < handle.size
+            ? a.offset + bytes.length
+            : null,
+        truncated: a.offset + bytes.length < handle.size,
+        full_file: {
+          tool: "preserve_artifact",
+          arguments: {
+            worker_id: a.worker_id,
+            path: `.swarmforge/artifacts/${handle.name}`,
+          },
+          next: "Use the returned artifact_id with swarmforge artifacts download ARTIFACT_ID --output PATH; no base64 decoding is needed.",
+        },
+      };
+    },
+    true,
+  );
   server.registerTool(
     "get_worker_artifact",
     {
       description:
-        "Return an MCP resource link for a bounded binary chunk. Read the resource explicitly; use next_offset for large files.",
+        "Legacy binary resource link (resources/read yields base64). Prefer read_worker_artifact for plaintext, or preserve_artifact plus swarmforge artifacts download for complete/binary files. Do not use base64/Python decoding to read ordinary text.",
       inputSchema: {
         ...worker,
         path: z.string().min(1).max(1024),
@@ -451,7 +505,7 @@ export function createMcpServer(c: Coordinator, signal?: AbortSignal) {
   );
   register(
     "read_artifact",
-    "Read a bounded, credential-screened excerpt of at most 32 KiB. Binary content returns size, checksum and an authenticated download handle instead of bytes.",
+    "Preferred preserved-text reader: returns bounded credential-screened plaintext directly, with no base64 or Python decoding. Binary/complete files should use swarmforge artifacts download ARTIFACT_ID --output PATH.",
     {
       artifact_id: idSchema,
       offset: z.number().int().min(0).default(0),
@@ -481,6 +535,7 @@ export function createMcpServer(c: Coordinator, signal?: AbortSignal) {
         next_offset: end < record.size ? end : null,
         truncated: end < record.size,
         download_path: `/artifacts/${record.artifact_id}/download`,
+        download_command: `swarmforge artifacts download ${record.artifact_id} --output ./artifact-download`,
       };
     },
     true,
@@ -690,6 +745,23 @@ function screen(bytes: Uint8Array): { binary: boolean; text: string } {
   if (!bytes.length) return { binary: false, text: "" };
   for (let trim = 0; trim < 4 && bytes.length - trim > 0; trim++) {
     const end = bytes.length - trim;
+    if (trim) {
+      const lead = bytes[end]!;
+      const width =
+        lead >= 0xc2 && lead <= 0xdf
+          ? 2
+          : lead >= 0xe0 && lead <= 0xef
+            ? 3
+            : lead >= 0xf0 && lead <= 0xf4
+              ? 4
+              : 0;
+      if (
+        !width ||
+        trim >= width ||
+        !bytes.subarray(end + 1).every((byte) => byte >= 0x80 && byte <= 0xbf)
+      )
+        continue;
+    }
     let decoded: string;
     try {
       decoded = new TextDecoder("utf-8", { fatal: true }).decode(
@@ -701,8 +773,9 @@ function screen(bytes: Uint8Array): { binary: boolean; text: string } {
     }
     // Terminal output is text: its escape sequences are removed first, so colouring never
     // turns a log into binary metadata and no inert "[31m" fragment is left behind.
-    const text = scrub(stripEscapes(decoded));
-    return controlRatio(text) > controlAllowance(bytes.length)
+    const escaped = stripEscapes(decoded);
+    const text = scrub(escaped);
+    return controlRatio(escaped) > controlAllowance(bytes.length)
       ? { binary: true, text: "" }
       : { binary: false, text };
   }

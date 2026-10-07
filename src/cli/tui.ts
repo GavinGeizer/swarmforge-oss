@@ -1,11 +1,17 @@
 import { emitKeypressEvents } from "node:readline";
+import { safeFilename } from "../artifact-types";
+import { renderArtifactBrowser } from "./artifact-browser";
 import {
   type CleanupOutcome,
   cleanupReadiness,
   renderCleanup,
   retainedWorkers,
 } from "./cleanup";
-import type { connectSwarmForge, WorkerDetail } from "./client";
+import type {
+  ArtifactSummary,
+  connectSwarmForge,
+  WorkerDetail,
+} from "./client";
 import {
   emptyFilters,
   filterDescription,
@@ -43,12 +49,23 @@ export async function runDashboard(
     null;
   let selected = visibleWorkers(data.workers, order)[0]?.worker_id;
   let detail: WorkerDetail | null = null;
-  let mode: "overview" | "detail" | "cleanup" | "cleanup-preview" = "overview";
+  let mode:
+    | "overview"
+    | "detail"
+    | "cleanup"
+    | "cleanup-preview"
+    | "artifacts" = "overview";
   let detailReturn: "overview" | "cleanup" = "overview";
   const cleanupSelected = new Set<string>();
   let cleanupCursor: string | undefined;
   let cleanupPreview: OverviewData["workers"] = [];
   let cleanupOutcomes: CleanupOutcome[] = [];
+  let artifactPage: ArtifactSummary[] = [];
+  let artifactOffset = 0;
+  let artifactNext: number | null = null;
+  let artifactSelected = 0;
+  let savePath: string | null = null;
+  let downloadAbort: AbortController | undefined;
   let confirmation = false;
   let busy = false;
   let refreshing = false;
@@ -107,16 +124,28 @@ export async function runDashboard(
                 page: data.page,
               },
             )
-          : detail
-            ? renderWorkerDetail(detail, { width: width() })
-            : "Loading worker…";
-    const prompt = editing
-      ? `\n\n${editing.field === "query" ? "Search worker/task IDs" : `${editing.field === "team" ? "Team" : "Task"} ID (exact)`}: ${safeTerminalText(editing.draft)}▏\nEnter apply · Esc cancel · Ctrl+U clear · blank matches all`
-      : confirmation
-        ? `\n\nDestroy this worker? Preservation: ${detail?.worker.finalization?.state ?? "not yet collected"}. Normal destruction checks preservation first. Press y to confirm or n to keep it.`
-        : message
-          ? `\n\n${safeTerminalText(message)}`
-          : "";
+          : mode === "artifacts" && detail
+            ? renderArtifactBrowser(
+                detail.worker.worker_id,
+                artifactPage,
+                artifactSelected,
+                artifactOffset,
+                artifactNext,
+                width(),
+              )
+            : detail
+              ? renderWorkerDetail(detail, { width: width() })
+              : "Loading worker…";
+    const prompt =
+      savePath !== null
+        ? `\n\nSave to: ${safeTerminalText(savePath)}▏\nEnter download and verify · Esc cancel · Ctrl+U clear · existing files are refused`
+        : editing
+          ? `\n\n${editing.field === "query" ? "Search worker/task IDs" : `${editing.field === "team" ? "Team" : "Task"} ID (exact)`}: ${safeTerminalText(editing.draft)}▏\nEnter apply · Esc cancel · Ctrl+U clear · blank matches all`
+          : confirmation
+            ? `\n\nDestroy this worker? Preservation: ${detail?.worker.finalization?.state ?? "not yet collected"}. Normal destruction checks preservation first. Press y to confirm or n to keep it.`
+            : message
+              ? `\n\n${safeTerminalText(message)}`
+              : "";
     output.write(`\u001b[H\u001b[2J${body}${prompt}\n`);
   };
   const refresh = async (force = false) => {
@@ -428,6 +457,56 @@ export async function runDashboard(
     return true;
   };
 
+  const browseArtifacts = async (offset = 0) => {
+    if (!detail || busy) return;
+    busy = true;
+    mode = "artifacts";
+    message = "Loading artifacts…";
+    render();
+    try {
+      const page = await client.artifacts(detail.worker.worker_id, offset, 5);
+      artifactPage = page.artifacts;
+      artifactOffset = offset;
+      artifactNext = page.next_offset;
+      artifactSelected = 0;
+      message = "";
+    } catch (error) {
+      message = `Artifact listing failed: ${error instanceof Error ? error.message : "unknown error"}`;
+    } finally {
+      busy = false;
+      render();
+    }
+  };
+  const saveArtifact = async () => {
+    const artifact = artifactPage[artifactSelected];
+    if (!artifact || savePath === null || busy) return;
+    if (!savePath.trim()) {
+      message = "Enter a file path.";
+      render();
+      return;
+    }
+    const path = savePath;
+    savePath = null;
+    busy = true;
+    downloadAbort = new AbortController();
+    message = "Downloading and verifying artifact…";
+    render();
+    try {
+      const saved = await client.download(
+        artifact.artifact_id,
+        path,
+        downloadAbort.signal,
+      );
+      message = `Saved ${saved.path} · ${saved.bytes} bytes · SHA256 verified`;
+    } catch (error) {
+      message = `Save failed: ${error instanceof Error ? error.message : "unknown error"}`;
+    } finally {
+      downloadAbort = undefined;
+      busy = false;
+      render();
+    }
+  };
+
   emitKeypressEvents(input);
   input.setRawMode(true);
   input.resume();
@@ -440,6 +519,7 @@ export async function runDashboard(
     const stop = () => {
       if (stopped) return;
       stopped = true;
+      downloadAbort?.abort(new Error("Download cancelled"));
       clearInterval(redraw);
       clearInterval(poll);
       input.off("keypress", onKey);
@@ -455,6 +535,32 @@ export async function runDashboard(
     ) => {
       if (key.ctrl && key.name === "c") {
         stop();
+        return;
+      }
+      if (savePath !== null) {
+        if (key.name === "escape") {
+          savePath = null;
+          message = "";
+          render();
+        } else if (key.name === "return" || key.name === "enter")
+          void saveArtifact();
+        else if (key.ctrl && key.name === "u") {
+          savePath = "";
+          render();
+        } else if (key.name === "backspace") {
+          savePath = Array.from(savePath).slice(0, -1).join("");
+          render();
+        } else if (
+          !key.ctrl &&
+          !key.meta &&
+          _text &&
+          !["up", "down", "left", "right", "tab"].includes(key.name ?? "")
+        ) {
+          savePath = Array.from(savePath + safeTerminalText(_text))
+            .slice(0, 4096)
+            .join("");
+          render();
+        }
         return;
       }
       if (editing) {
@@ -498,6 +604,30 @@ export async function runDashboard(
         return;
       }
       if (busy) return;
+      if (mode === "artifacts") {
+        if (key.name === "escape") {
+          mode = "detail";
+          message = "";
+          render();
+        } else if (key.name === "up" || key.name === "down") {
+          artifactSelected = Math.min(
+            Math.max(artifactSelected + (key.name === "up" ? -1 : 1), 0),
+            Math.max(0, artifactPage.length - 1),
+          );
+          render();
+        } else if (_text === "[" && artifactOffset > 0)
+          void browseArtifacts(Math.max(0, artifactOffset - 5));
+        else if (_text === "]" && artifactNext !== null)
+          void browseArtifacts(artifactNext);
+        else if (key.name === "return") {
+          const artifact = artifactPage[artifactSelected];
+          if (artifact?.state === "preserved")
+            savePath = `./${safeFilename(artifact.filename, "artifact.bin")}`;
+          else message = "Select a preserved artifact to save.";
+          render();
+        }
+        return;
+      }
       if (mode === "cleanup-preview") {
         if (key.name === "y") void executeCleanup();
         else if (key.name === "escape" || key.name === "n") {
@@ -615,6 +745,7 @@ export async function runDashboard(
         void inspect(detail.worker.worker_id);
       else if (detail) {
         const actions = availableActions(detail.worker.state);
+        if (key.name === "a") void browseArtifacts();
         if (key.name === "f") void retryPreservation();
         if (key.name === "p" && actions.includes("p pause"))
           void control("pause");
