@@ -4,6 +4,8 @@ The global `swarmforge` command provides these features through a running server
 
 ## Progress, results and recovery
 
+The interactive status overview starts with a chibi mascot and live swarm totals. Press **Tab** in the overview to toggle the technical dashboard, retaining the selected worker, filters, sorting, and page. Both presentations use the same inspection, cleanup, artifact, and notification controls. Narrow or short terminals use a compact summary; `NO_COLOR=1` selects ASCII art. Tasks are assigned through MCP, with no chat bar in the dashboard. Attention and recent-completion expressions use workers on the loaded page; running, waiting, queued, completed, and failed counts describe the entire swarm, as does recovery-required attention.
+
 In `swarmforge status`, select a worker and press Enter. The detail view includes queue/run timing, last lifecycle or dispatch/token activity, the latest response, preserved artifact count, result summary, changed files, reported test outcome, Git branch/commit/review URL, warnings and requested follow-up.
 
 Recovery guidance is derived from current lifecycle and preservation state. Cancelled workers require a replacement; failed workers need a retained VM and session before follow-up messages are suggested. Missing/destroyed VMs retain their persisted results and preserved artifacts, but their workspace cannot be recovered from this metadata. Preservation failures offer `retry_worker_finalization`; pending control actions must settle before another control is requested.

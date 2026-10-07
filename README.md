@@ -138,7 +138,9 @@ swarmforge serve
 swarmforge status
 ```
 
-Use ↑/↓ to select a worker, Enter for details, `x` for retained-VM cleanup, `r` to refresh, and `q` to leave the dashboard. The detail view offers pause, resume, cancel, and destroy when available. `swarmforge status --json` or `--no-interactive` prints a snapshot.
+The interactive dashboard opens with a chibi bee robot, current swarm activity, usage totals, and a selectable task list. Its expression follows worker activity, recent completions, recovery needs, and refresh failures. Press **Tab** to switch to the technical overview or back; your selection, filters, and history page stay in place. Small terminals use a compact layout; `NO_COLOR=1 swarmforge status` uses an ASCII mascot. There is no chat input: assign tasks through your MCP client.
+
+Use ↑/↓ to select a worker, Enter for details, `x` for retained-VM cleanup, `r` to refresh, and `q` to leave the dashboard. The detail view offers pause, resume, cancel, and destroy when available. `swarmforge status --json` or `--no-interactive` prints the existing technical snapshot.
 
 | Surface | Default address |
 | --- | --- |

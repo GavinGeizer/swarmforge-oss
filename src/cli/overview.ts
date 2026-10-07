@@ -105,7 +105,7 @@ function count(states: Record<string, number>, names: Set<string>) {
   return [...names].reduce((total, name) => total + (states[name] ?? 0), 0);
 }
 
-function compactNumber(value: number) {
+export function compactNumber(value: number) {
   if (value < 1_000) return String(value);
   if (value < 1_000_000) {
     const amount = value / 1_000;

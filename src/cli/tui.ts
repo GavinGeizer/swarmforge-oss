@@ -19,6 +19,7 @@ import {
   sortOrders,
   type WorkerSort,
 } from "./filters";
+import { renderFriendlyOverview } from "./friendly-overview";
 import {
   availableActions,
   canRetryPreservation,
@@ -39,6 +40,8 @@ export async function runDashboard(
   pollIntervalMs = 5_000,
 ) {
   let data = initial;
+  let technicalView = false;
+  let connectionError = false;
   const bounded = !!initial.page;
   let pageOffset = initial.page?.offset ?? 0;
   let viewGeneration = 0;
@@ -111,10 +114,10 @@ export async function runDashboard(
     if (stopped) return;
     let body =
       mode === "overview"
-        ? renderOverview(data, {
+        ? (technicalView ? renderOverview : renderFriendlyOverview)(data, {
             width: width(),
             height: Math.max(
-              10,
+              technicalView ? 10 : 1,
               (output.rows || 40) - (editing ? 4 : message ? 3 : 0),
             ),
             color: !process.env.NO_COLOR && process.env.TERM !== "dumb",
@@ -122,6 +125,7 @@ export async function runDashboard(
             interactive: true,
             filters,
             sort: order,
+            connectionError,
           })
         : mode === "cleanup" || mode === "cleanup-preview"
           ? renderCleanup(
@@ -183,6 +187,7 @@ export async function runDashboard(
         `\nPgUp/PgDn scroll (${detailScroll + 1}/${rows.length}) · ` +
         rows.at(-1);
     }
+    if (mode === "overview" && technicalView) body += "\nTab chibi view";
     const prompt =
       savePath !== null
         ? `\n\nSave to: ${safeTerminalText(savePath)}▏\nEnter download and verify · Esc cancel · Ctrl+U clear · existing files are refused`
@@ -222,6 +227,7 @@ export async function runDashboard(
       if (stopped || reviewingCleanup() || generation !== viewGeneration)
         return;
       if (next) data = next;
+      connectionError = false;
       if (data.page && pageOffset > 0 && pageOffset >= data.page.total) {
         pageOffset =
           data.page.total > 0
@@ -263,6 +269,7 @@ export async function runDashboard(
       }
       message = "";
     } catch (error) {
+      connectionError = true;
       message = `Refresh failed: ${error instanceof Error ? error.message : "unknown error"}`;
     } finally {
       refreshing = false;
@@ -723,6 +730,11 @@ export async function runDashboard(
           confirmation = false;
           render();
         }
+        return;
+      }
+      if (mode === "overview" && key.name === "tab" && !key.ctrl && !key.meta) {
+        technicalView = !technicalView;
+        render();
         return;
       }
       if (busy) return;
