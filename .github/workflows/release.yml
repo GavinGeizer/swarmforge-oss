@@ -62,6 +62,11 @@ jobs:
       - name: Package the versioned archive
         run: bun run package
 
+      - name: Write the external archive checksum
+        run: |
+          version="$(bun -e 'console.log(require("./package.json").version)')"
+          (cd dist && sha256sum "swarmforge-v${version}-linux-x64-glibc.tar.gz" > "swarmforge-v${version}-linux-x64-glibc.tar.gz.sha256")
+
       - name: Verify the packaged runtime
         # A packaged artifact that cannot answer for itself is not a release:
         # the executable must run with no Bun and no node_modules on PATH, and
@@ -103,6 +108,7 @@ jobs:
             dist/SHA256SUMS
             dist/metadata-*.json
             dist/swarmforge-v*-linux-x64-glibc.tar.gz
+            dist/swarmforge-v*-linux-x64-glibc.tar.gz.sha256
           if-no-files-found: error
           retention-days: 14
 
@@ -144,6 +150,11 @@ jobs:
           RELEASE_TAG: ${{ github.ref_name }}
         run: bun scripts/package.ts release-assets release-assets --tag "$RELEASE_TAG"
 
+      - name: Verify the external archive checksum
+        run: |
+          version="$(bun -e 'console.log(require("./package.json").version)')"
+          (cd release-assets && sha256sum -c "swarmforge-v${version}-linux-x64-glibc.tar.gz.sha256")
+
       - name: Create a draft release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -155,5 +166,6 @@ jobs:
             --title "SwarmForge $version" \
             --notes "Linux x64 (glibc) executable for SwarmForge $version, built from $(git rev-parse HEAD) with Bun $(bun --version). Verify with the shipped SHA256SUMS." \
             "release-assets/swarmforge-v${version}-linux-x64-glibc.tar.gz" \
+            "release-assets/swarmforge-v${version}-linux-x64-glibc.tar.gz.sha256" \
             "release-assets/SHA256SUMS" \
             "release-assets/metadata-${version}.json"
