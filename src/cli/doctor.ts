@@ -185,22 +185,39 @@ export async function doctorChecks(
     : checks;
 }
 
-export async function runDoctor(options: SettingsOptions = {}, json = false) {
+export async function runDoctor(
+  options: SettingsOptions = {},
+  json = false,
+  remote: { live?: boolean; vmId?: string } = {},
+) {
   const checks = await doctorChecks(options);
+  if (remote.live && !checks.some((check) => check.status === "fail")) {
+    const settings = await resolveServerSettings(options);
+    const { liveDoctorChecks } = await import("./live-doctor");
+    const live = await liveDoctorChecks(settings.value, remote.vmId);
+    checks.push(
+      ...live.map((check) => ({
+        ...check,
+        message: redactedText(settings, check.message),
+      })),
+    );
+  }
   const failed = checks.some((check) => check.status === "fail");
   if (json) {
     process.stdout.write(
       `${JSON.stringify({ ok: !failed, checks }, null, 2)}\n`,
     );
   } else {
-    process.stdout.write("SwarmForge local readiness check\n\n");
+    process.stdout.write(
+      `SwarmForge ${remote.live ? "live and local" : "local"} readiness check\n\n`,
+    );
     for (const check of checks) {
       const label = check.status.toUpperCase().padEnd(4);
       const line = `${label} ${check.name}: ${check.message}\n`;
       process.stdout.write(line);
     }
     process.stdout.write(
-      `\n${failed ? "Setup needs attention." : "Local checks passed; remote services and snapshot contents remain unverified."}\n`,
+      `\n${failed ? "Setup needs attention." : remote.live ? "Checks passed; review warnings for unverified capabilities." : "Local checks passed; remote services and snapshot contents remain unverified."}\n`,
     );
   }
   return failed ? 1 : 0;

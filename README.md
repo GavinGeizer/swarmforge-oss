@@ -326,3 +326,18 @@ Restart=on-failure
 Tests use injected provider/agent doubles, real SQLite, MCP transports, and disposable Git repositories. The optional `SWARMFORGE_RUN_SMOKE=true bun run smoke` creates a billable VM using real infrastructure; ordinary tests do not.
 
 Further references: [architecture](docs/ARCHITECTURE.md), [worker protocol](docs/WORKER-PROTOCOL.md), [observability](docs/OBSERVABILITY.md), [configuration](docs/CONFIGURATION.md), and [product improvement list](docs/PRODUCT-ROADMAP.md).
+
+## Progress, readiness, policies and operator alerts
+
+See [Operator workflows](docs/OPERATOR-WORKFLOWS.md) for task progress and recovery guidance, `doctor --live`, configured usage/budget estimates, retention preview/reminders/expiry, durable notifications, reusable task templates, and artifact search/previews.
+
+```bash
+swarmforge templates list
+swarmforge usage --json
+swarmforge retention preview
+swarmforge notifications watch
+swarmforge artifacts list --query summary --state preserved
+swarmforge artifacts preview <artifact-id>
+```
+
+In `swarmforge status`, Enter shows progress/results/recovery; `a` browses artifacts, `n` opens notifications, and PgUp/PgDn scroll long detail/preview views. Live checks require an explicit `doctor --live` invocation. Automatic VM expiry is disabled by default.

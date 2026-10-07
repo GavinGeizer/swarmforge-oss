@@ -45,8 +45,10 @@ export async function runDashboard(
   let refreshQueued = false;
   let filters = emptyFilters();
   let order: WorkerSort = "recent";
-  let editing: { field: "query" | "team" | "task"; draft: string } | null =
-    null;
+  let editing: {
+    field: "query" | "team" | "task" | "artifact";
+    draft: string;
+  } | null = null;
   let selected = visibleWorkers(data.workers, order)[0]?.worker_id;
   let detail: WorkerDetail | null = null;
   let mode:
@@ -54,12 +56,27 @@ export async function runDashboard(
     | "detail"
     | "cleanup"
     | "cleanup-preview"
+    | "notifications"
+    | "artifact-preview"
     | "artifacts" = "overview";
   let detailReturn: "overview" | "cleanup" = "overview";
   const cleanupSelected = new Set<string>();
   let cleanupCursor: string | undefined;
   let cleanupPreview: OverviewData["workers"] = [];
   let cleanupOutcomes: CleanupOutcome[] = [];
+  let artifactScope: string | undefined;
+  let artifactReturn: "overview" | "detail" = "detail";
+  let artifactQuery = "";
+  let artifactPreview = "";
+  let previewId: string | undefined;
+  let previewOffset = 0;
+  let previewNext: number | null = null;
+  let notificationPage: Awaited<
+    ReturnType<DashboardClient["notifications"]>
+  > | null = null;
+  let notificationCursor = 0;
+  const notificationHistory: number[] = [];
+  let detailScroll = 0;
   let artifactPage: ArtifactSummary[] = [];
   let artifactOffset = 0;
   let artifactNext: number | null = null;
@@ -92,7 +109,7 @@ export async function runDashboard(
   };
   const render = () => {
     if (stopped) return;
-    const body =
+    let body =
       mode === "overview"
         ? renderOverview(data, {
             width: width(),
@@ -124,23 +141,53 @@ export async function runDashboard(
                 page: data.page,
               },
             )
-          : mode === "artifacts" && detail
-            ? renderArtifactBrowser(
-                detail.worker.worker_id,
-                artifactPage,
-                artifactSelected,
-                artifactOffset,
-                artifactNext,
-                width(),
-              )
-            : detail
-              ? renderWorkerDetail(detail, { width: width() })
-              : "Loading worker…";
+          : mode === "notifications"
+            ? [
+                "NOTIFICATIONS",
+                "Durable task, preservation, retention and budget alerts",
+                "",
+                ...(notificationPage?.notifications.map(
+                  (n) =>
+                    `${n.id} ${new Date(n.at).toISOString()} ${n.team_id}/${n.task_id} · ${n.title}`,
+                ) ?? ["Loading…"]),
+                "",
+                "[ previous · ] next · r refresh · Esc back · q quit",
+              ]
+                .map(safeTerminalText)
+                .join("\n")
+            : mode === "artifact-preview"
+              ? artifactPreview
+              : mode === "artifacts"
+                ? renderArtifactBrowser(
+                    artifactScope ?? "All workers",
+                    artifactPage,
+                    artifactSelected,
+                    artifactOffset,
+                    artifactNext,
+                    width(),
+                    artifactQuery,
+                  )
+                : detail
+                  ? renderWorkerDetail(detail, { width: width() })
+                  : "Loading worker…";
+    if (
+      mode === "detail" ||
+      mode === "artifact-preview" ||
+      mode === "notifications"
+    ) {
+      const rows = body.split("\n");
+      const room = Math.max(3, (output.rows || 40) - 7);
+      detailScroll = Math.min(detailScroll, Math.max(0, rows.length - room));
+      body =
+        rows.slice(detailScroll, detailScroll + room).join("\n") +
+        `\nPgUp/PgDn scroll (${detailScroll + 1}/${rows.length}) · ` +
+        rows.at(-1);
+    }
     const prompt =
       savePath !== null
         ? `\n\nSave to: ${safeTerminalText(savePath)}▏\nEnter download and verify · Esc cancel · Ctrl+U clear · existing files are refused`
         : editing
-          ? `\n\n${editing.field === "query" ? "Search worker/task IDs" : `${editing.field === "team" ? "Team" : "Task"} ID (exact)`}: ${safeTerminalText(editing.draft)}▏\nEnter apply · Esc cancel · Ctrl+U clear · blank matches all`
+          ? `\n\n${editing.field === "artifact" ? "Search artifact filenames/paths" : editing.field === "query" ? "Search worker/task IDs" : `${editing.field === "team" ? "Team" : "Task"} ID (exact)`}: ${safeTerminalText(editing.draft)}▏\nEnter apply · Esc cancel · Ctrl+U clear · blank matches all`
           : confirmation
             ? `\n\nDestroy this worker? Preservation: ${detail?.worker.finalization?.state ?? "not yet collected"}. Normal destruction checks preservation first. Press y to confirm or n to keep it.`
             : message
@@ -232,6 +279,7 @@ export async function runDashboard(
       detailReturn = mode === "cleanup" ? "cleanup" : "overview";
     busy = true;
     mode = "detail";
+    detailScroll = 0;
     detail = null;
     message = "";
     render();
@@ -458,13 +506,27 @@ export async function runDashboard(
   };
 
   const browseArtifacts = async (offset = 0) => {
-    if (!detail || busy) return;
+    if (busy) return;
+    if (mode !== "artifacts") {
+      artifactReturn = mode === "overview" ? "overview" : "detail";
+      artifactScope =
+        mode === "overview" ? undefined : detail?.worker.worker_id;
+      artifactQuery = "";
+    }
     busy = true;
     mode = "artifacts";
     message = "Loading artifacts…";
     render();
     try {
-      const page = await client.artifacts(detail.worker.worker_id, offset, 5);
+      const page =
+        artifactQuery || !artifactScope
+          ? await client.listArtifacts({
+              workerId: artifactScope,
+              query: artifactQuery || undefined,
+              offset,
+              limit: 5,
+            })
+          : await client.artifacts(artifactScope, offset, 5);
       artifactPage = page.artifacts;
       artifactOffset = offset;
       artifactNext = page.next_offset;
@@ -472,6 +534,60 @@ export async function runDashboard(
       message = "";
     } catch (error) {
       message = `Artifact listing failed: ${error instanceof Error ? error.message : "unknown error"}`;
+    } finally {
+      busy = false;
+      render();
+    }
+  };
+  const showPreview = async (offset = 0) => {
+    if (busy) return;
+    const artifact =
+      mode === "artifact-preview" ? undefined : artifactPage[artifactSelected];
+    if (artifact) previewId = artifact.artifact_id;
+    if (!previewId) return;
+    busy = true;
+    message = "Loading screened preview…";
+    render();
+    try {
+      const preview = await client.preview(previewId, offset, 4096);
+      if (stopped) return;
+      previewOffset = offset;
+      previewNext = preview.next_offset;
+      detailScroll = 0;
+      artifactPreview = [
+        `ARTIFACT PREVIEW ${preview.filename}`,
+        `Byte offset ${offset} · ${preview.truncated ? "bounded excerpt" : "end of file"}`,
+        "",
+        ...(preview.binary
+          ? ["Binary artifact; return to artifacts and press Enter to save it."]
+          : (preview.text ?? "").split("\n")),
+        "",
+        `[ previous chunk · ${previewNext !== null ? "] next chunk · " : ""}Esc artifacts · q quit`,
+      ]
+        .map(safeTerminalText)
+        .join("\n");
+      mode = "artifact-preview";
+      message = "";
+    } catch (error) {
+      message = `Preview failed: ${error instanceof Error ? error.message : "unknown error"}`;
+    } finally {
+      busy = false;
+      render();
+    }
+  };
+  const showNotifications = async (cursor = notificationCursor) => {
+    if (busy) return;
+    busy = true;
+    mode = "notifications";
+    message = "Loading notifications…";
+    render();
+    try {
+      notificationPage = await client.notifications({ cursor, limit: 20 });
+      notificationCursor = cursor;
+      detailScroll = 0;
+      message = "";
+    } catch (error) {
+      message = `Notifications failed: ${error instanceof Error ? error.message : "unknown error"}`;
     } finally {
       busy = false;
       render();
@@ -569,9 +685,15 @@ export async function runDashboard(
           message = "";
           render();
         } else if (key.name === "return" || key.name === "enter") {
-          filters = { ...filters, [editing.field]: editing.draft.trim() };
-          editing = null;
-          changeFilters();
+          if (editing.field === "artifact") {
+            artifactQuery = editing.draft.trim();
+            editing = null;
+            void browseArtifacts(0);
+          } else {
+            filters = { ...filters, [editing.field]: editing.draft.trim() };
+            editing = null;
+            changeFilters();
+          }
         } else if (key.ctrl && key.name === "u") {
           editing.draft = "";
           render();
@@ -604,12 +726,54 @@ export async function runDashboard(
         return;
       }
       if (busy) return;
-      if (mode === "artifacts") {
+      if (
+        (mode === "detail" ||
+          mode === "artifact-preview" ||
+          mode === "notifications") &&
+        (key.name === "pageup" || key.name === "pagedown")
+      ) {
+        detailScroll = Math.max(
+          0,
+          detailScroll + (key.name === "pageup" ? -10 : 10),
+        );
+        render();
+        return;
+      }
+      if (mode === "notifications") {
         if (key.name === "escape") {
-          mode = "detail";
+          mode = "overview";
+          detailScroll = 0;
           message = "";
           render();
-        } else if (key.name === "up" || key.name === "down") {
+        } else if (_text === "]" && notificationPage?.has_more) {
+          notificationHistory.push(notificationCursor);
+          void showNotifications(notificationPage.next_cursor);
+        } else if (_text === "[" && notificationHistory.length)
+          void showNotifications(notificationHistory.pop()!);
+        else if (key.name === "r") void showNotifications();
+        return;
+      }
+      if (mode === "artifact-preview") {
+        if (key.name === "escape") {
+          mode = "artifacts";
+          detailScroll = 0;
+          render();
+        } else if (_text === "]" && previewNext !== null)
+          void showPreview(previewNext);
+        else if (_text === "[" && previewOffset > 0)
+          void showPreview(Math.max(0, previewOffset - 4096));
+        return;
+      }
+      if (mode === "artifacts") {
+        if (key.name === "escape") {
+          mode = artifactReturn;
+          message = "";
+          render();
+        } else if (_text === "/") {
+          editing = { field: "artifact", draft: artifactQuery };
+          render();
+        } else if (key.name === "p") void showPreview();
+        else if (key.name === "up" || key.name === "down") {
           artifactSelected = Math.min(
             Math.max(artifactSelected + (key.name === "up" ? -1 : 1), 0),
             Math.max(0, artifactPage.length - 1),
@@ -732,6 +896,8 @@ export async function runDashboard(
           selected = visible[next]?.worker_id;
           render();
         } else if (key.name === "x") openCleanup();
+        else if (key.name === "a") void browseArtifacts();
+        else if (key.name === "n") void showNotifications();
         else if (key.name === "return") void inspect();
         else if (key.name === "r") void refresh();
         return;

@@ -27,18 +27,29 @@ import {
   homeDirectory,
   SQLITE_MEMORY,
 } from "./settings/paths";
+import {
+  getTaskTemplate,
+  taskTemplates,
+  templatePrompt,
+} from "./task-templates";
 import { COMMIT, VERSION } from "./version";
 
 const usage = `SwarmForge control plane
 
 Usage:
   swarmforge init [--config PATH]
-  swarmforge doctor [--config PATH] [--env-file PATH] [--json]
+  swarmforge doctor [--live] [--vm ID] [--config PATH] [--env-file PATH] [--json]
   swarmforge [status] [--url URL] [--json] [--no-interactive]
               [--config PATH] [--env-file PATH]
   swarmforge serve [--config PATH] [--env-file PATH] [--check-config]
   swarmforge artifacts list [--worker ID] [--offset N] [--limit N] [--json]
   swarmforge artifacts download ID --output PATH [--json]
+  swarmforge artifacts preview ID [--offset N] [--length N] [--json]
+  swarmforge artifacts list [--query TEXT] [--kind KIND] [--state STATE] [--task ID]
+  swarmforge retention preview [--offset N] [--limit N] [--json]
+  swarmforge usage [--worker ID] [--json]
+  swarmforge notifications list|watch [--cursor N] [--worker ID] [--json]
+  swarmforge templates list|show [NAME] [--prompt TEXT] [--json]
               [--url URL] [--config PATH] [--env-file PATH]
   swarmforge config path|show|validate [--config PATH] [--env-file PATH]
   swarmforge --version
@@ -46,12 +57,17 @@ Usage:
 
 Commands:
   init      Ask for required settings and create .env in the current directory.
-  doctor    Check local setup without contacting any endpoint or creating VMs.
+  doctor    Check local setup; --live explicitly probes remote readiness.
+            --vm ID checks tools in an existing running VM, without provisioning.
   status    Show the swarm overview from a running server. Used when no command
             is given.
   serve     Run the API, metrics listener, coordinator and event log.
   config    Inspect configuration: path, show or validate.
-  artifacts List saved files or stream a checksum-verified download to disk.
+  artifacts Search/preview saved files or stream a verified download to disk.
+  retention Preview configured retained-VM expiry and cleanup eligibility.
+  usage     Show measured tokens, retained VM hours and configured USD estimates.
+  notifications Read or watch durable completion and operator alerts.
+  templates List or render built-in task recipes locally; never spawns workers.
 
 Options:
   --url URL          MCP endpoint for client commands, overriding SWARMFORGE_URL.
@@ -340,8 +356,27 @@ async function runArtifacts(
             ? JSON.stringify(saved)
             : `Saved ${scrub(settings, saved.path)} · ${saved.bytes} bytes · SHA256 ${saved.sha256}`,
         );
+      } else if (command.action === "preview") {
+        const preview = await client.preview(
+          command.artifactId!,
+          command.offset,
+          command.length,
+        );
+        if (command.json) write(JSON.stringify(preview));
+        else {
+          write(
+            preview.binary
+              ? "Binary artifact; use artifacts download to save it."
+              : (preview.text ?? ""),
+          );
+          if (preview.next_offset !== null)
+            write(`More: repeat with --offset ${preview.next_offset}`);
+        }
       } else {
-        const page = await client.listArtifacts(command);
+        const page = await client.listArtifacts({
+          ...command,
+          kind: command.kindFilter,
+        });
         if (command.json) write(JSON.stringify(page));
         else {
           for (const artifact of page.artifacts)
@@ -373,6 +408,82 @@ async function runArtifacts(
   }
 }
 
+async function runOperatorCommand(
+  command: Extract<
+    ParsedCommand,
+    { kind: "notifications" | "retention" | "usage" }
+  >,
+) {
+  const settings = await resolveClientSettings({
+    ...selection(command),
+    overrides: command.overrides,
+  });
+  let stopped = false;
+  const cancel = () => {
+    stopped = true;
+  };
+  process.on("SIGINT", cancel);
+  process.on("SIGTERM", cancel);
+  try {
+    const client = await connectSwarmForge(
+      mcpEndpoint(settings.value.url),
+      settings.value.token,
+      (text) => scrub(settings, text),
+    );
+    try {
+      if (command.kind === "retention")
+        write(
+          JSON.stringify(
+            await client.retention(command.offset, command.limit),
+            null,
+            command.json ? undefined : 2,
+          ),
+        );
+      else if (command.kind === "usage")
+        write(
+          JSON.stringify(
+            await client.usage(command.workerId),
+            null,
+            command.json ? undefined : 2,
+          ),
+        );
+      else {
+        let cursor = command.cursor;
+        do {
+          const page = await client.notifications({ ...command, cursor });
+          if (stopped) break;
+          if (command.json) write(JSON.stringify(page));
+          else {
+            for (const n of page.notifications)
+              write(
+                `${n.id} ${new Date(n.at).toISOString()} ${n.team_id}/${n.task_id} ${n.worker_id} · ${n.title}`,
+              );
+            if (command.action === "list")
+              write(`Next cursor: ${page.next_cursor}`);
+          }
+          cursor = page.next_cursor;
+          if (command.action !== "watch") break;
+          if (!page.has_more)
+            for (let i = 0; i < 20 && !stopped; i++) await Bun.sleep(100);
+        } while (!stopped);
+      }
+      return 0;
+    } finally {
+      await client.close();
+    }
+  } catch (error) {
+    throw new Error(
+      scrub(
+        settings,
+        error instanceof Error ? error.message : "Operator command failed",
+      ),
+    );
+  } finally {
+    process.off("SIGINT", cancel);
+    process.off("SIGTERM", cancel);
+  }
+}
+
 async function run(command: ParsedCommand): Promise<number> {
   switch (command.kind) {
     // Help and version answer before a setting, a credential or a server module
@@ -399,7 +510,32 @@ async function run(command: ParsedCommand): Promise<number> {
       }
     }
     case "doctor":
-      return runDoctor(selection(command), command.json);
+      return runDoctor(selection(command), command.json, {
+        live: command.live,
+        vmId: command.vmId,
+      });
+    case "templates": {
+      const result =
+        command.action === "list"
+          ? taskTemplates
+          : {
+              ...getTaskTemplate(command.templateId!),
+              prompt: templatePrompt(
+                command.templateId!,
+                command.prompt ?? "Describe your task here.",
+              ),
+            };
+      if (command.json) write(JSON.stringify(result));
+      else if (Array.isArray(result))
+        for (const recipe of result)
+          write(`${recipe.id}  ${recipe.description}`);
+      else write((result as { prompt: string }).prompt);
+      return 0;
+    }
+    case "notifications":
+    case "retention":
+    case "usage":
+      return runOperatorCommand(command);
     case "status":
       return showStatus(command);
     case "artifacts":

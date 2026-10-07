@@ -172,6 +172,7 @@ export interface Worker {
   request_fingerprint: string;
   vm_id: string | null;
   vm_missing: boolean;
+  vm_missing_at?: number | null;
   opencode_session_id: string | null;
   endpoint: string | null;
   server_password: string;
@@ -204,6 +205,11 @@ export interface Dispatch {
 }
 export type EventType =
   | `worker.${WorkerState | "requested" | "resumed" | "control_superseded"}`
+  | "retention.due"
+  | "retention.cleaned"
+  | "retention.blocked"
+  | "budget.exceeded"
+  | "result.followup_required"
   | "result.received"
   | "artifact.created"
   // One attempted event per collection attempt, persisted before any transfer starts, plus

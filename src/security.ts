@@ -1,5 +1,10 @@
 import type { Coordinator } from "./coordinator";
-import { excerptLimit } from "./domain";
+import { excerptLimit, type WorkerResult } from "./domain";
+import {
+  recoveryGuidance,
+  taskProgress,
+  usageEstimate,
+} from "./operator-insights";
 export class Redactor {
   private cached: { version: unknown; values: string[] } | undefined;
   constructor(
@@ -182,6 +187,14 @@ export function excerptText(value: string, redact: (text: string) => string) {
 export function publicWorker(c: Coordinator, id: string, detail = false) {
   const w = c.store.get(id);
   const excerpt = detail ? c.excerpt(id) : null;
+  const result = redactorFor(c).value(
+    c.store.compactResult(id),
+  ) as WorkerResult | null;
+  if (result)
+    result.summary = excerptText(result.summary, (value) =>
+      redactorFor(c).text(value),
+    );
+  const pending = c.store.pendingMessages(id);
   return {
     worker_id: w.worker_id,
     team_id: w.team_id,
@@ -201,8 +214,19 @@ export function publicWorker(c: Coordinator, id: string, detail = false) {
     // Preservation is reported separately so completed, failed and cancelled keep their own
     // meaning for clients, and an exhausted collection is visible with its attempts and error.
     finalization: w.finalization ?? null,
+    progress: {
+      ...taskProgress(w, result),
+      activity: c.excerpt(id)?.text ?? null,
+    },
+    ...(detail
+      ? {
+          recovery: recoveryGuidance(w, result, pending),
+          usage: usageEstimate(c.store, c.config, id),
+          artifact_count: c.artifacts.repository.countForWorker(id),
+        }
+      : {}),
     tokens: c.store.tokens({ worker_id: id }),
-    pending_messages: c.store.pendingMessages(id),
+    pending_messages: pending,
     // Ephemeral, bounded and only on the single-worker view; never listed or persisted.
     ...(excerpt
       ? {

@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { z } from "zod";
 
+const usd = z.coerce.number().finite().min(0).max(1_000_000).optional();
 const positive = (n: number) => z.coerce.number().int().positive().default(n);
 const nonNegative = (n: number) => z.coerce.number().int().min(0).default(n);
 // Safe integer bounds only: every artifact and finalization limit multiplies, loops or
@@ -101,6 +102,15 @@ const inputSchema = z
     SWARMFORGE_ALLOWED_HOSTS: z.string().default(""),
     SWARMFORGE_PORT: positive(8787).pipe(z.number().max(65535)),
     SWARMFORGE_API_TOKEN: z.string().min(24).optional(),
+    SWARMFORGE_INPUT_USD_PER_MILLION: usd,
+    SWARMFORGE_OUTPUT_USD_PER_MILLION: usd,
+    SWARMFORGE_REASONING_USD_PER_MILLION: usd,
+    SWARMFORGE_CACHE_READ_USD_PER_MILLION: usd,
+    SWARMFORGE_CACHE_WRITE_USD_PER_MILLION: usd,
+    SWARMFORGE_VM_USD_PER_HOUR: usd,
+    SWARMFORGE_BUDGET_USD: usd,
+    SWARMFORGE_RETENTION_MODE: z.enum(["off", "remind", "auto"]).default("off"),
+    SWARMFORGE_RETENTION_SECONDS: bounded(86400, 6048000),
     SWARMFORGE_MAX_WORKERS: positive(50),
     SWARMFORGE_MAX_PROVISIONING: positive(4),
     SWARMFORGE_MAX_QUEUE: positive(1000),

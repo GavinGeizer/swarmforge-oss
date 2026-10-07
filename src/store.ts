@@ -60,6 +60,7 @@ export class Store {
       CREATE INDEX IF NOT EXISTS workers_activity ON workers(json_extract(body,'$.last_activity_at'),worker_id);
       CREATE INDEX IF NOT EXISTS workers_age ON workers(json_extract(body,'$.created_at'),worker_id);
       CREATE INDEX IF NOT EXISTS workers_preservation ON workers(json_extract(body,'$.finalization.state'));
+      CREATE INDEX IF NOT EXISTS events_worker_type ON events(worker_id,type,at);
       CREATE INDEX IF NOT EXISTS dispatch_worker_state ON dispatches(worker_id,state);`);
   }
   revision() {
@@ -318,7 +319,16 @@ export class Store {
     ).map((r) => JSON.parse(r.body));
   }
   patch(id: string, fields: Partial<Worker>): Worker {
-    const w = { ...this.get(id), ...fields };
+    const previous = this.get(id);
+    const w = {
+      ...previous,
+      ...fields,
+      ...(fields.vm_missing === true && !previous.vm_missing
+        ? { vm_missing_at: Date.now() }
+        : fields.vm_missing === false
+          ? { vm_missing_at: null }
+          : {}),
+    };
     this.db
       .query("UPDATE workers SET state=?,body=? WHERE worker_id=?")
       .run(w.state, JSON.stringify(w), id);
@@ -570,6 +580,8 @@ export class Store {
         run_id: d.run_id,
         status: result.status,
       });
+      if (result.needs_followup)
+        this.event(id, "result.followup_required", { run_id: d.run_id });
       this.transition(id, result.status, {
         completed_at: Date.now(),
         deadline_at: null,
@@ -610,6 +622,37 @@ export class Store {
         `INSERT INTO usage VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(worker_id,message_id) DO UPDATE SET input=max(input,excluded.input),output=max(output,excluded.output),reasoning=max(reasoning,excluded.reasoning),cache_read=max(cache_read,excluded.cache_read),cache_write=max(cache_write,excluded.cache_write)`,
       )
       .run(id, message, model, input, output, reasoning, read, write);
+  }
+  usageByModel(workerId?: string) {
+    return this.db
+      .query(
+        `SELECT model,sum(input) input,sum(output) output,sum(reasoning) reasoning,sum(cache_read) cache_read,sum(cache_write) cache_write FROM usage WHERE (? IS NULL OR worker_id=?) GROUP BY model`,
+      )
+      .all(workerId ?? null, workerId ?? null) as {
+      model: string;
+      input: number;
+      output: number;
+      reasoning: number;
+      cache_read: number;
+      cache_write: number;
+    }[];
+  }
+  retainedVmMilliseconds(workerId?: string, now = Date.now()) {
+    const row = this.db
+      .query(`SELECT coalesce(sum(max(0,
+      CASE WHEN state='destroyed' THEN json_extract(body,'$.last_activity_at') WHEN json_extract(body,'$.vm_missing')=1 THEN coalesce(json_extract(body,'$.vm_missing_at'),json_extract(body,'$.last_activity_at')) ELSE ? END
+      - coalesce((SELECT min(at) FROM events e WHERE e.worker_id=workers.worker_id AND e.type='worker.booting'),json_extract(body,'$.provision_started_at'),json_extract(body,'$.started_at'),json_extract(body,'$.created_at')))),0) ms
+      FROM workers WHERE json_extract(body,'$.vm_id') IS NOT NULL AND (? IS NULL OR worker_id=?)`)
+      .get(now, workerId ?? null, workerId ?? null) as { ms: number };
+    return row.ms;
+  }
+  compactResult(id: string): WorkerResult | null {
+    const row = this.db
+      .query(
+        `SELECT json_extract(body,'$.result') result FROM dispatches WHERE worker_id=? AND json_extract(body,'$.result') IS NOT NULL ORDER BY rowid DESC LIMIT 1`,
+      )
+      .get(id) as { result: string } | null;
+    return row ? (JSON.parse(row.result) as WorkerResult) : null;
   }
   tokens(
     filter: { worker_id?: string; team_id?: string; task_id?: string } = {},

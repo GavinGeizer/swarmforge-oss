@@ -21,6 +21,8 @@ import {
 } from "./domain";
 import { FinalizationGate, Finalizer, maxRetryDelay } from "./finalization";
 import { GitHandoffError } from "./git-handoff";
+import { checkBudget } from "./notifications";
+import { processRetention, retentionCandidate } from "./retention";
 import { inspectPersistence } from "./safety";
 import { excerptText, redactorFor } from "./security";
 import type { Store } from "./store";
@@ -35,6 +37,11 @@ export class Coordinator {
   private ticking = false;
   private stopped = false;
   private lastReconcile = Date.now();
+  private lastOperatorPass = 0;
+  private operatorPass: Promise<void> | undefined;
+  get stopping() {
+    return this.stopped;
+  }
   private inFlight = 0;
   private idle: Promise<void> | undefined;
   private wakeIdle: (() => void) | undefined;
@@ -396,6 +403,23 @@ export class Coordinator {
             this.exclusive(w.worker_id, () => this.step(w.worker_id)),
           ),
       );
+      if (
+        !this.stopped &&
+        !this.operatorPass &&
+        Date.now() - this.lastOperatorPass >= 30000
+      ) {
+        this.lastOperatorPass = Date.now();
+        this.operatorPass = this.track(
+          (async () => {
+            checkBudget(this);
+            await processRetention(this);
+          })(),
+        )
+          .catch(() => {})
+          .finally(() => {
+            this.operatorPass = undefined;
+          });
+      }
       // Preservation runs beside the lifecycle steps and holds no worker lock, so a slow or
       // failing collection can never delay provisioning, dispatch or another worker's step.
       for (const w of this.stopped ? [] : this.store.finalizing())
@@ -930,9 +954,12 @@ export class Coordinator {
     intent: "pause" | "resume" | "cancel" | "destroy",
     force = false,
     settledOnly = false,
+    expectedRetentionDue?: number,
   ) {
     if (this.stopped) throw new Error("Coordinator is stopping");
-    await this.track(this.runControl(id, intent, force, settledOnly));
+    await this.track(
+      this.runControl(id, intent, force, settledOnly, expectedRetentionDue),
+    );
     return this.store.get(id);
   }
   private async runControl(
@@ -940,6 +967,7 @@ export class Coordinator {
     intent: "pause" | "resume" | "cancel" | "destroy",
     force: boolean,
     settledOnly: boolean,
+    expectedRetentionDue?: number,
   ) {
     if (settledOnly && (intent !== "destroy" || force))
       throw new Error("Settled cleanup requires normal destruction");
@@ -947,6 +975,19 @@ export class Coordinator {
     if (w.state === "destroyed") {
       if (intent === "destroy") return w;
       throw new Error("Worker destroyed");
+    }
+    if (expectedRetentionDue !== undefined) {
+      const retention = retentionCandidate(this, w);
+      if (
+        this.config.SWARMFORGE_RETENTION_MODE !== "auto" ||
+        !retention.overdue ||
+        retention.due_at !== expectedRetentionDue ||
+        !settledOnly ||
+        force
+      )
+        throw new Error(
+          "Retention eligibility changed; preview the current expiry before retrying",
+        );
     }
     if (settledOnly) {
       const readiness = cleanupReadiness({

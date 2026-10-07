@@ -69,3 +69,12 @@ To use SSH handoff, set `SWARMFORGE_GIT_TREE` to a cloneable Git URL, `SWARMFORG
 Preserved artifact bytes are private to the coordinator process and share its bearer access: they are only served through the authenticated, attachment-only download route described in [ARTIFACTS.md](ARTIFACTS.md). `SWARMFORGE_ARTIFACT_DIR` and its database live on the same volume as the coordinator, so include them in that volume's backups; `bun scripts/artifact-salvage-smoke.ts --freestyle <vm-id>` salvages a retained VM into a private snapshot without touching the live database or the VM itself.
 
 Keep snapshots free of infrastructure credentials. SQLite contains prompts and worker server passwords; permissions are restricted, but disk encryption and backups are deployment responsibilities. Logs use `<DB_PATH>.log` and one rotated backup, each capped at approximately 1 MiB. The process lock is `<DB_PATH>.lock`.
+
+## Operator policies and estimates
+
+- `SWARMFORGE_RETENTION_MODE`: `off` (default), `remind`, `auto`.
+- `SWARMFORGE_RETENTION_SECONDS`: settled/preserved grace period, default 86400, range 1..6048000.
+- Optional nonnegative decimal USD rates (maximum 1000000): `SWARMFORGE_INPUT_USD_PER_MILLION`, `SWARMFORGE_OUTPUT_USD_PER_MILLION`, `SWARMFORGE_REASONING_USD_PER_MILLION`, `SWARMFORGE_CACHE_READ_USD_PER_MILLION`, `SWARMFORGE_CACHE_WRITE_USD_PER_MILLION`, `SWARMFORGE_VM_USD_PER_HOUR`.
+- `SWARMFORGE_BUDGET_USD`: optional deployment estimate alert threshold, not an enforced spending limit.
+
+See [Operator workflows](OPERATOR-WORKFLOWS.md) for usage coverage, retained VM accounting and conservative expiry behavior.

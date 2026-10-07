@@ -272,3 +272,22 @@ can print `error.message` directly; `error.code` selects the exit behaviour.
 4. Set `SWARMFORGE_DB_PATH` in `.env` to the current database path, or leave it alone to adopt
    the new XDG default once. Verify the reported path with `config show` before deleting
    anything; SwarmForge never moves an existing database.
+
+## Retention and usage settings
+
+```toml
+[retention]
+mode = "remind" # off (default), remind, auto
+seconds = 86400
+
+[usage]
+input_usd_per_million = 1.0
+output_usd_per_million = 4.0
+reasoning_usd_per_million = 4.0
+cache_read_usd_per_million = 0.10
+cache_write_usd_per_million = 1.25
+vm_usd_per_hour = 0.20
+budget_usd = 25.0
+```
+
+Rates above are illustrative. Usage settings accept nonnegative finite decimal values from 0 through 1,000,000; each is optional. Environment names are `SWARMFORGE_` plus the uppercase usage key. Retention environment names are `SWARMFORGE_RETENTION_MODE` and `SWARMFORGE_RETENTION_SECONDS`; the latter is 1 through 6,048,000 seconds (default 86,400). Missing rates produce partial/unconfigured estimates. See [Operator workflows](OPERATOR-WORKFLOWS.md) for expiry gates and billing limitations.

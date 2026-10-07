@@ -61,7 +61,7 @@ export class SettingsError extends Error {
   }
 }
 
-type Kind = "text" | "int" | "bool" | "host_path";
+type Kind = "text" | "int" | "number" | "bool" | "host_path";
 
 interface Field {
   /** Dotted path inside the config file. */
@@ -404,7 +404,38 @@ const artifactFields: Field[] = [
 ];
 
 // Every control-plane setting except the client endpoint, in one ordered list.
+const operatorFields: Field[] = [
+  ...[
+    "INPUT_USD_PER_MILLION",
+    "OUTPUT_USD_PER_MILLION",
+    "REASONING_USD_PER_MILLION",
+    "CACHE_READ_USD_PER_MILLION",
+    "CACHE_WRITE_USD_PER_MILLION",
+    "VM_USD_PER_HOUR",
+    "BUDGET_USD",
+  ].map(
+    (name): Field => ({
+      path: `usage.${name.toLowerCase()}`,
+      kind: "number",
+      key: `SWARMFORGE_${name}`,
+      env: [`SWARMFORGE_${name}`],
+    }),
+  ),
+  {
+    path: "retention.mode",
+    kind: "text",
+    key: "SWARMFORGE_RETENTION_MODE",
+    env: ["SWARMFORGE_RETENTION_MODE"],
+  },
+  {
+    path: "retention.seconds",
+    kind: "int",
+    key: "SWARMFORGE_RETENTION_SECONDS",
+    env: ["SWARMFORGE_RETENTION_SECONDS"],
+  },
+];
 const controlFields: Field[] = [
+  ...operatorFields,
   ...providerFields,
   ...modelFields,
   ...gitFields,
@@ -419,6 +450,12 @@ const controlFields: Field[] = [
 const text = z.string();
 const kinds: Record<Kind, z.ZodType> = {
   text,
+  number: z
+    .union([
+      z.number().finite(),
+      z.string().regex(/^(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/),
+    ])
+    .transform((v) => String(v)),
   int: z
     .union([z.number().int(), z.string().regex(/^-?\d+$/)])
     .transform((v) => String(v)),
@@ -459,6 +496,8 @@ const documentSchema = z.strictObject({
   workspace: table(workspaceFields, "workspace").optional(),
   server: table(serverFields, "server").optional(),
   limits: table(limitFields, "limits").optional(),
+  usage: table(operatorFields, "usage").optional(),
+  retention: table(operatorFields, "retention").optional(),
   artifacts: table(artifactFields, "artifacts").optional(),
   finalization: table(artifactFields, "finalization").optional(),
 });

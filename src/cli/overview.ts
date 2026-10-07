@@ -1,4 +1,5 @@
 import type { WorkerFinalization } from "../domain";
+import type { UsageEstimate } from "../operator-insights";
 import { duration, retainsVm, retentionSummary } from "./cleanup";
 import type { WorkerDetail } from "./client";
 import {
@@ -14,6 +15,22 @@ import { safeTerminalText } from "./terminal";
 export { safeTerminalText } from "./terminal";
 
 export interface WorkerSummary {
+  progress?: {
+    activity?: string | null;
+    queue_ms: number;
+    run_ms: number;
+    idle_ms: number;
+    last_meaningful_activity_at: number;
+    source: string;
+    summary: string | null;
+    files_changed: number;
+    tests_passed: boolean | null;
+    needs_followup: boolean;
+    review_url: string | null;
+  };
+  recovery?: { explanation: string; actions: string[] };
+  usage?: UsageEstimate;
+  artifact_count?: number;
   worker_id: string;
   team_id: string;
   task_id: string;
@@ -33,6 +50,7 @@ export interface WorkerSummary {
 }
 
 export interface OverviewData {
+  usage?: UsageEstimate;
   url: string;
   metrics: { enabled: boolean; port: number };
   states: Record<string, number>;
@@ -184,6 +202,7 @@ export function renderOverview(
     `Preservation  ${data.preservation_attention ?? data.workers.filter((w) => ["pending", "collecting", "failed"].includes(w.finalization?.state ?? "")).length} need attention`,
     `Workers${options.filters ? " (all)" : ""}  ${count(data.states, activeStates)} active · ${data.states.queued ?? 0} queued · ${data.states.completed ?? 0} completed     Tokens  ${compactNumber(data.tokens.total)}`,
   ];
+  if (data.usage) lines.push(formatUsage(data.usage));
   if (options.filters)
     lines.push(
       `VIEW  ${data.page?.total ?? matching.length}/${data.total ?? data.workers.length} workers · ${filterDescription(options.filters, options.sort ?? "recent")}`,
@@ -239,6 +258,13 @@ export function renderOverview(
           : limited,
       );
     }
+    const focus = workers
+      .slice(start, start + limit)
+      .find((w) => w.worker_id === options.selectedId);
+    if (focus?.progress)
+      lines.push(
+        `  ${focus.progress.activity ?? focus.progress.summary ?? `Last progress ${duration(now - focus.progress.last_meaningful_activity_at)} ago (${focus.progress.source}) · queued ${duration(focus.state === "queued" ? now - focus.created_at : focus.progress.queue_ms)}`}`,
+      );
     if (workers.length > start + limit)
       lines.push(`  … ${workers.length - start - limit} more`);
   };
@@ -248,7 +274,7 @@ export function renderOverview(
   if (options.interactive)
     lines.push(
       "",
-      "↑/↓ select · Enter inspect · x cleanup · r refresh · q quit",
+      "↑/↓ select · Enter inspect · x cleanup · a artifacts · n notifications · r refresh · q quit",
       filterShortcuts,
     );
   return lines
@@ -269,6 +295,18 @@ export function renderWorkerDetail(
     `${worker.team_id} / ${worker.task_id}     ${worker.state.toUpperCase()}     ${elapsed(now - started)}`,
     `Role  ${worker.role}     Tokens  ${compactNumber(worker.tokens.total)}     Pending messages  ${worker.pending_messages ?? 0}`,
   ];
+  if (worker.progress)
+    lines.push(
+      `Queued ${duration(worker.progress.queue_ms)} · run ${duration(worker.progress.run_ms)} · last meaningful activity ${duration(worker.progress.idle_ms)} ago (${worker.progress.source})`,
+    );
+  if (worker.usage) lines.push(formatUsage(worker.usage));
+  if (worker.recovery?.actions.length)
+    lines.push(
+      "",
+      "RECOVERY / NEXT ACTION",
+      worker.recovery.explanation,
+      ...worker.recovery.actions.map((action) => `  ${action}`),
+    );
   if (worker.vm_id)
     lines.push(
       `VM  ${worker.vm_id}${retainsVm(worker) ? " · retained" : worker.vm_missing ? " · missing" : " · destroyed"}`,
@@ -331,6 +369,25 @@ export function renderWorkerDetail(
     );
   }
   lines.push("", "RESULT", result?.summary ?? "  No result yet");
+  if (result?.files_changed?.length)
+    lines.push(
+      `Changed files (${result.files_changed.length}): ${result.files_changed.slice(0, 5).join(", ")}`,
+    );
+  if (result?.tests)
+    lines.push(
+      `Tests: ${!result.tests.ran ? "not run" : result.tests.passed === true ? "passed" : result.tests.passed === false ? "failed" : "outcome unknown"}${result.tests.summary ? ` · ${result.tests.summary}` : ""}`,
+    );
+  if (result?.git?.branch)
+    lines.push(
+      `Branch: ${result.git.branch} · commit ${result.git.commit ?? "unknown"} · persisted ${result.git.persisted ?? "unknown"}`,
+    );
+  if (result?.git?.review_url) lines.push(`Review: ${result.git.review_url}`);
+  if (result?.needs_followup)
+    lines.push(`Follow-up: ${result.followup_reason ?? "requested"}`);
+  if (worker.artifact_count !== undefined)
+    lines.push(
+      `Preserved artifact records: ${worker.artifact_count} · a browse`,
+    );
   if (result?.warnings?.length)
     for (const warning of result.warnings.slice(0, 3))
       lines.push(`  Warning: ${warning}`);
@@ -374,4 +431,12 @@ export function canRetryPreservation(worker: WorkerSummary) {
     !worker.vm_missing &&
     ["failed", "pending"].includes(worker.finalization?.state ?? "")
   );
+}
+
+function formatUsage(usage: UsageEstimate) {
+  const estimate =
+    usage.estimated_usd === null
+      ? "unconfigured"
+      : `$${usage.estimated_usd.toFixed(4)}${usage.complete ? "" : " (partial coverage)"}`;
+  return `Estimated USD ${estimate} · ${usage.retained_vm_hours.toFixed(2)} retained VM hours${usage.budget_usd === null ? "" : ` · budget $${usage.budget_usd}${usage.budget_exceeded ? " EXCEEDED" : ""}`} · estimates, not provider billing`;
 }

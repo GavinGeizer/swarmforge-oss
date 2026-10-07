@@ -1,11 +1,16 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import type { WorkerResult } from "../domain";
+import type { notificationFeed } from "../notifications";
+import type { UsageEstimate } from "../operator-insights";
+import type { retentionPreview } from "../retention";
 import { redact } from "../settings/inspect";
 import { downloadArtifact } from "./artifact-download";
 import type { WorkerFilters, WorkerSort } from "./filters";
 import type { OverviewData, WorkerSummary } from "./overview";
 
 interface SwarmStatus {
+  usage?: UsageEstimate;
   states: Record<string, number>;
   tokens: { total: number };
   metrics: { enabled: boolean; port: number };
@@ -23,6 +28,8 @@ export interface ArtifactSummary {
   state: string;
   size: number | null;
   sha256: string | null;
+  worker_id?: string;
+  kind?: string;
 }
 export interface WorkerDetail {
   artifacts?: ArtifactSummary[];
@@ -35,7 +42,7 @@ export interface WorkerDetail {
     excerpt_partial?: boolean;
     excerpt_at?: number;
   };
-  result: { status?: string; summary?: string; warnings?: string[] } | null;
+  result: Partial<WorkerResult> | null;
   events: { id: number; type: string; at: number; data: string }[];
   serviceLog: string | null;
 }
@@ -101,21 +108,77 @@ export async function connectSwarmForge(
   let dashboardSupported: Promise<boolean> | undefined;
   let priorDashboardKey: string | undefined;
   let priorDashboard: OverviewData | undefined;
+  let artifactSearchSupported: Promise<boolean> | undefined;
   return {
+    notifications: (
+      options: {
+        cursor?: number;
+        limit?: number;
+        workerId?: string;
+        teamId?: string;
+        taskId?: string;
+      } = {},
+    ) =>
+      call<ReturnType<typeof notificationFeed>>("list_notifications", {
+        cursor: options.cursor ?? 0,
+        limit: options.limit ?? 20,
+        worker_id: options.workerId,
+        team_id: options.teamId,
+        task_id: options.taskId,
+      }),
+    retention: (offset = 0, limit = 20) =>
+      call<ReturnType<typeof retentionPreview>>("get_retention_preview", {
+        offset,
+        limit,
+      }),
+    usage: (workerId?: string) =>
+      call<{ usage: UsageEstimate; tokens: Record<string, number> }>(
+        "get_usage_summary",
+        { worker_id: workerId },
+      ),
+    preview: (artifactId: string, offset = 0, length = 4096) =>
+      call<{
+        artifact_id: string;
+        filename: string;
+        binary: boolean;
+        text: string | null;
+        next_offset: number | null;
+        truncated: boolean;
+      }>("read_artifact", { artifact_id: artifactId, offset, length }),
     artifacts,
     listArtifacts: (options: {
       workerId?: string;
       offset?: number;
       limit?: number;
+      query?: string;
+      kind?: string;
+      state?: string;
+      taskId?: string;
     }) =>
-      call<{ artifacts: ArtifactSummary[]; next_offset: number | null }>(
-        "list_artifacts",
-        {
-          ...(options.workerId ? { worker_id: options.workerId } : {}),
+      attempt(async () => {
+        artifactSearchSupported ??= client
+          .listTools()
+          .then((result) =>
+            result.tools.some((tool) => tool.name === "search_artifacts"),
+          );
+        const supported = await artifactSearchSupported;
+        if (!supported && (options.query || options.kind || options.state))
+          throw new Error(
+            "Update/restart the server to support artifact search filters.",
+          );
+        return call<{
+          artifacts: ArtifactSummary[];
+          next_offset: number | null;
+        }>(supported ? "search_artifacts" : "list_artifacts", {
+          worker_id: options.workerId,
+          task_id: options.taskId,
           offset: options.offset ?? 0,
           limit: options.limit ?? 20,
-        },
-      ),
+          ...(supported
+            ? { query: options.query, kind: options.kind, state: options.state }
+            : {}),
+        });
+      }),
     async download(artifactId: string, output: string, signal?: AbortSignal) {
       return attempt(async () => {
         const metadata = await call<ArtifactSummary>("get_artifact_metadata", {
@@ -227,6 +290,7 @@ export async function connectSwarmForge(
         metrics: status.metrics,
         states: status.states,
         tokens: status.tokens,
+        usage: status.usage,
         workers,
       };
     },

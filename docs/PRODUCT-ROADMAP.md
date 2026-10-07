@@ -61,3 +61,14 @@ Prioritized opportunities from a read-through of the implementation and operator
 - Paginated CLI artifact listing and authenticated streaming downloads with size/SHA-256 verification, atomic publication, and overwrite refusal.
 - Dashboard artifact browser and local save action.
 - Live and preserved plaintext readers plus server/agent guidance, avoiding base64/Python reconstruction for ordinary text.
+
+## Operator workflows — implemented
+
+- Task progress, bounded completion summaries, changed-file/test/Git/follow-up details and contextual recovery guidance.
+- Explicit `doctor --live` model/snapshot probes and optional existing-VM prerequisite checks; no automatic provisioning.
+- Disabled-by-default retention policies with read-only previews, reminders and guarded automatic expiry.
+- Configured USD estimates, measured token coverage, retained VM runtime and budget alerts.
+- Local task templates with required deliverables and optional MCP spawn recipes.
+- Cross-worker artifact search and bounded plaintext preview through CLI/dashboard.
+- Durable cursor-based notifications, CLI watch and dashboard inbox.
+- Full usage and limitations: [Operator workflows](OPERATOR-WORKFLOWS.md). Progress/checklist: [implementation plan](superpowers/plans/2026-10-07-operator-workflows.md).

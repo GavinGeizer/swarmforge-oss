@@ -146,6 +146,9 @@ export interface ArtifactRecord {
 }
 
 export interface ArtifactListQuery {
+  query?: string;
+  kind?: string;
+  state?: "preserving" | "preserved" | "failed";
   worker_id?: string;
   task_id?: string;
   offset?: number;

@@ -12,7 +12,11 @@ import {
 import type { Coordinator } from "./coordinator";
 import { idSchema, spawnSchema, states } from "./domain";
 import { WorkerFiles } from "./files";
+import { notificationFeed } from "./notifications";
+import { usageEstimate } from "./operator-insights";
+import { retentionPreview } from "./retention";
 import { publicWorker, redactorFor } from "./security";
+import { applyTaskTemplate, taskTemplates } from "./task-templates";
 
 // Model-facing artifact reads stay bounded and credential screened: a lead sees at most
 // safeReadLimit bytes of screened text per call, never raw bytes and never a whole binary
@@ -41,6 +45,12 @@ type PublicArtifact = Pick<
   | "created_at"
   | "retrieved_at"
 >;
+// Advancing display clocks do not turn every row into a changed worker.
+const workerFingerprint = (value: ReturnType<typeof publicWorker>) =>
+  JSON.stringify({
+    ...value,
+    progress: { ...value.progress, queue_ms: 0, run_ms: 0, idle_ms: 0 },
+  });
 const dashboardSnapshots = new WeakMap<
   Coordinator,
   Map<string, { revision: string; workers: ReturnType<typeof publicWorker>[] }>
@@ -175,9 +185,12 @@ export function createMcpServer(c: Coordinator, signal?: AbortSignal) {
   register(
     "spawn_worker",
     "Queue an isolated coding worker. Returns immediately; use request_id for safe retries.",
-    spawnSchema.shape,
+    {
+      ...spawnSchema.shape,
+      template: z.enum(["code", "review", "research", "docs"]).optional(),
+    },
     (a) => {
-      const w = c.spawn(a);
+      const w = c.spawn(applyTaskTemplate(a, a.template));
       return {
         worker_id: w.worker_id,
         task_id: w.task_id,
@@ -185,6 +198,34 @@ export function createMcpServer(c: Coordinator, signal?: AbortSignal) {
         state: w.state,
       };
     },
+  );
+  register(
+    "list_task_templates",
+    "List built-in task recipes and required deliverables; viewing never spawns a worker.",
+    {},
+    () => ({ templates: taskTemplates }),
+    true,
+  );
+  register(
+    "get_retention_preview",
+    "Read-only paginated retention preview; automatic cleanup is off by default and uses normal Git/artifact gates.",
+    page,
+    (a) => retentionPreview(c, a.offset, a.limit),
+    true,
+  );
+  register(
+    "list_notifications",
+    "Durable task, preservation, retention and budget notifications; pass next_cursor to resume without replaying earlier events.",
+    {
+      ...worker,
+      worker_id: idSchema.optional(),
+      team_id: idSchema.optional(),
+      task_id: idSchema.optional(),
+      cursor: z.number().int().nonnegative().default(0),
+      limit: z.number().int().min(1).max(100).default(20),
+    },
+    (a) => notificationFeed(c, a),
+    true,
   );
   register(
     "get_worker",
@@ -285,14 +326,14 @@ export function createMcpServer(c: Coordinator, signal?: AbortSignal) {
       const delta =
         !!previousRevision && previous?.revision === previousRevision;
       const prior = new Map(
-        previous?.workers.map((w) => [w.worker_id, JSON.stringify(w)]),
+        previous?.workers.map((w) => [w.worker_id, workerFingerprint(w)]),
       );
       const currentIds = new Set(workers.map((w) => w.worker_id));
       const payload = delta
         ? {
             delta: true,
             changed_workers: workers.filter(
-              (w) => prior.get(w.worker_id) !== JSON.stringify(w),
+              (w) => prior.get(w.worker_id) !== workerFingerprint(w),
             ),
             worker_ids: workers.map((w) => w.worker_id),
             removed_ids: previous!.workers
@@ -308,6 +349,7 @@ export function createMcpServer(c: Coordinator, signal?: AbortSignal) {
         unchanged: false,
         revision,
         ...summary,
+        usage: usageEstimate(c.store, c.config),
         metrics: {
           enabled: c.config.SWARMFORGE_METRICS_ENABLED,
           port: c.config.SWARMFORGE_METRICS_PORT,
@@ -465,6 +507,36 @@ export function createMcpServer(c: Coordinator, signal?: AbortSignal) {
       return {
         artifacts: artifacts.map(publicArtifact),
         next_offset: listed.next_offset,
+      };
+    },
+    true,
+  );
+  register(
+    "search_artifacts",
+    "Search preserved artifact metadata across workers using filename/path substring and kind/state filters before pagination.",
+    {
+      ...page,
+      worker_id: idSchema.optional(),
+      task_id: idSchema.optional(),
+      query: z.string().max(128).optional(),
+      kind: z.string().max(64).optional(),
+      state: z.enum(["preserving", "preserved", "failed"]).optional(),
+    },
+    async (a) => {
+      const listed = await c.artifacts.list(a);
+      return { ...listed, artifacts: listed.artifacts.map(publicArtifact) };
+    },
+    true,
+  );
+  register(
+    "get_usage_summary",
+    "Measured token categories and configured USD estimates; retained VM hours include paused time, estimates are not provider billing or a spending limit.",
+    { worker_id: idSchema.optional() },
+    (a) => {
+      if (a.worker_id) c.store.get(a.worker_id);
+      return {
+        tokens: c.store.tokens(a),
+        usage: usageEstimate(c.store, c.config, a.worker_id),
       };
     },
     true,
@@ -658,6 +730,7 @@ export function createMcpServer(c: Coordinator, signal?: AbortSignal) {
     "Get aggregate lifecycle counts, capacity and token usage across all teams.",
     {},
     () => ({
+      usage: usageEstimate(c.store, c.config),
       states: c.store.summary().states,
       tokens: c.store.summary().tokens,
       limits: {

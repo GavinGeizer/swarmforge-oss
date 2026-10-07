@@ -15,7 +15,12 @@ export type ConfigAction = "path" | "show" | "validate";
 export type ParsedCommand =
   | {
       kind: "artifacts";
-      action: "list" | "download";
+      action: "list" | "download" | "preview";
+      query?: string;
+      kindFilter?: string;
+      state?: string;
+      taskId?: string;
+      length?: number;
       artifactId?: string;
       workerId?: string;
       output?: string;
@@ -26,10 +31,38 @@ export type ParsedCommand =
       configPath?: string;
       envFiles: string[];
     }
+  | {
+      kind: "templates";
+      action: "list" | "show";
+      templateId?: string;
+      prompt?: string;
+      json: boolean;
+    }
+  | {
+      kind: "notifications" | "retention" | "usage";
+      action: "list" | "watch" | "preview";
+      cursor: number;
+      offset: number;
+      limit: number;
+      workerId?: string;
+      teamId?: string;
+      taskId?: string;
+      json: boolean;
+      overrides?: { SWARMFORGE_URL: string };
+      configPath?: string;
+      envFiles: string[];
+    }
   | { kind: "help" }
   | { kind: "version" }
   | { kind: "init"; configPath?: string }
-  | { kind: "doctor"; json: boolean; configPath?: string; envFiles: string[] }
+  | {
+      kind: "doctor";
+      json: boolean;
+      live?: boolean;
+      vmId?: string;
+      configPath?: string;
+      envFiles: string[];
+    }
   | {
       kind: "status";
       /** Highest-precedence client values, so their source is reported as an override. */
@@ -152,25 +185,32 @@ function initialization(rest: readonly string[]): ParsedCommand {
 function doctor(rest: readonly string[]): ParsedCommand {
   const iterator = rest[Symbol.iterator]();
   let json = false;
+  let live = false;
+  let vmId: string | undefined;
   let configPath: string | undefined;
   const envFiles: string[] = [];
   for (const arg of iterator) {
     if (isHelp(arg)) return { kind: "help" };
-    if (arg === "--json") json = true;
+    if (arg === "--live") live = true;
+    else if (arg === "--vm") vmId = value(iterator, arg, "an existing VM ID");
+    else if (arg === "--json") json = true;
     else if (arg === "--config")
       configPath = value(iterator, "--config", "a path");
     else if (arg === "--env-file")
       envFiles.push(value(iterator, "--env-file", "a path"));
     else throw new UsageError(`Unknown argument: ${arg}`);
   }
-  return { kind: "doctor", json, configPath, envFiles };
+  if (vmId && !live) throw new UsageError("--vm requires --live");
+  if (vmId && !/^[a-zA-Z0-9_.:-]{1,128}$/.test(vmId))
+    throw new UsageError("Invalid VM ID");
+  return { kind: "doctor", json, live, vmId, configPath, envFiles };
 }
 
 function artifactCommand(rest: readonly string[]): ParsedCommand {
   if (rest.some(isHelp)) return { kind: "help" };
   const [action, ...tail] = rest;
-  if (action !== "list" && action !== "download")
-    throw new UsageError("artifacts requires list or download");
+  if (action !== "list" && action !== "download" && action !== "preview")
+    throw new UsageError("artifacts requires list, preview or download");
   let artifactId: string | undefined;
   let workerId: string | undefined;
   let output: string | undefined;
@@ -178,6 +218,11 @@ function artifactCommand(rest: readonly string[]): ParsedCommand {
   let configPath: string | undefined;
   let offset = 0;
   let limit = 20;
+  let query: string | undefined;
+  let kindFilter: string | undefined;
+  let state: string | undefined;
+  let taskId: string | undefined;
+  let length = 4096;
   let json = false;
   const envFiles: string[] = [];
   const iterator = tail[Symbol.iterator]();
@@ -187,11 +232,32 @@ function artifactCommand(rest: readonly string[]): ParsedCommand {
     else if (arg === "--env-file")
       envFiles.push(value(iterator, arg, "a path"));
     else if (arg === "--json") json = true;
-    else if (arg === "--worker" && action === "list")
+    else if (arg === "--query" && action === "list")
+      query = value(iterator, arg, "a filename query");
+    else if (arg === "--kind" && action === "list")
+      kindFilter = value(iterator, arg, "an artifact kind");
+    else if (arg === "--state" && action === "list")
+      state = value(iterator, arg, "an artifact state");
+    else if (arg === "--task" && action === "list")
+      taskId = value(iterator, arg, "a task ID");
+    else if (arg === "--length" && action === "preview") {
+      const raw = value(iterator, arg, "a byte count");
+      length = Number(raw);
+      if (
+        !/^\d+$/.test(raw) ||
+        !Number.isSafeInteger(length) ||
+        length < 1 ||
+        length > 32768
+      )
+        throw new UsageError("Invalid --length (1..32768)");
+    } else if (arg === "--worker" && action === "list")
       workerId = value(iterator, arg, "a worker ID");
     else if (arg === "--output" && action === "download")
       output = value(iterator, arg, "a file path");
-    else if ((arg === "--offset" || arg === "--limit") && action === "list") {
+    else if (
+      (arg === "--offset" || arg === "--limit") &&
+      (action === "list" || (action === "preview" && arg === "--offset"))
+    ) {
       const raw = value(iterator, arg, "an integer");
       const number = Number(raw);
       if (
@@ -203,7 +269,7 @@ function artifactCommand(rest: readonly string[]): ParsedCommand {
         throw new UsageError(`Invalid ${arg}`);
       if (arg === "--offset") offset = number;
       else limit = number;
-    } else if (action === "download" && !arg.startsWith("-") && !artifactId)
+    } else if (action !== "list" && !arg.startsWith("-") && !artifactId)
       artifactId = arg;
     else throw new UsageError(`Unknown argument: ${arg}`);
   }
@@ -211,6 +277,16 @@ function artifactCommand(rest: readonly string[]): ParsedCommand {
     throw new UsageError(
       "artifacts download requires an artifact ID and --output PATH",
     );
+  if (action === "preview" && !artifactId)
+    throw new UsageError("artifacts preview requires an artifact ID");
+  if (query && query.length > 128)
+    throw new UsageError("Artifact query exceeds 128 characters");
+  if (kindFilter && kindFilter.length > 64)
+    throw new UsageError("Artifact kind exceeds 64 characters");
+  if (state && !["preserving", "preserved", "failed"].includes(state))
+    throw new UsageError("Invalid artifact state");
+  if (taskId && !/^[a-zA-Z0-9_.:-]{1,128}$/.test(taskId))
+    throw new UsageError("Invalid task ID");
   if (artifactId && !/^[a-zA-Z0-9_.:-]{1,128}$/.test(artifactId))
     throw new UsageError("Invalid artifact ID");
   if (workerId && !/^[a-zA-Z0-9_.:-]{1,128}$/.test(workerId))
@@ -218,6 +294,11 @@ function artifactCommand(rest: readonly string[]): ParsedCommand {
   return {
     kind: "artifacts",
     action,
+    query,
+    kindFilter,
+    state,
+    taskId,
+    length,
     artifactId,
     workerId,
     output,
@@ -255,8 +336,113 @@ export function parseArguments(args: readonly string[]): ParsedCommand {
   if (head === "init") return initialization(rest);
   if (head === "doctor") return doctor(rest);
   if (head === "config") return configuration(rest);
+  if (head === "templates") return templates(rest);
+  if (head === "notifications" || head === "retention" || head === "usage")
+    return operatorCommand(head, rest);
   if (head === "artifacts") return artifactCommand(rest);
   // A leading flag keeps the implicit status invocation working.
   if (head.startsWith("-")) return status(args);
   throw new UsageError(`Unknown command: ${head}`);
+}
+
+function templates(rest: readonly string[]): ParsedCommand {
+  if (rest.some(isHelp)) return { kind: "help" };
+  const [action, ...tail] = rest;
+  if (action !== "list" && action !== "show")
+    throw new UsageError("templates requires list or show");
+  let templateId: string | undefined;
+  let prompt: string | undefined;
+  let json = false;
+  const iterator = tail[Symbol.iterator]();
+  for (const arg of iterator) {
+    if (arg === "--json") json = true;
+    else if (arg === "--prompt" && action === "show")
+      prompt = value(iterator, arg, "task instructions");
+    else if (action === "show" && !arg.startsWith("-") && !templateId)
+      templateId = arg;
+    else throw new UsageError(`Unknown argument: ${arg}`);
+  }
+  if (
+    action === "show" &&
+    (!templateId ||
+      !["code", "review", "research", "docs"].includes(templateId))
+  )
+    throw new UsageError(
+      "templates show requires code, review, research or docs",
+    );
+  return { kind: "templates", action, templateId, prompt, json };
+}
+function operatorCommand(
+  kind: "notifications" | "retention" | "usage",
+  rest: readonly string[],
+): ParsedCommand {
+  if (rest.some(isHelp)) return { kind: "help" };
+  const [first, ...tail] = rest;
+  const action = kind === "usage" ? "list" : first;
+  if (
+    (kind === "notifications" && action !== "list" && action !== "watch") ||
+    (kind === "retention" && action !== "preview")
+  )
+    throw new UsageError(
+      `${kind} requires ${kind === "retention" ? "preview" : "list or watch"}`,
+    );
+  let cursor = 0;
+  let offset = 0;
+  let limit = 20;
+  let workerId: string | undefined;
+  let teamId: string | undefined;
+  let taskId: string | undefined;
+  let url: string | undefined;
+  let configPath: string | undefined;
+  let json = false;
+  const envFiles: string[] = [];
+  const iterator = (kind === "usage" ? rest : tail)[Symbol.iterator]();
+  for (const arg of iterator) {
+    if (arg === "--json") json = true;
+    else if (arg === "--url") url = value(iterator, arg, "an endpoint");
+    else if (arg === "--config") configPath = value(iterator, arg, "a path");
+    else if (arg === "--env-file")
+      envFiles.push(value(iterator, arg, "a path"));
+    else if (arg === "--worker" && kind !== "retention")
+      workerId = value(iterator, arg, "a worker ID");
+    else if (arg === "--team" && kind === "notifications")
+      teamId = value(iterator, arg, "a team ID");
+    else if (arg === "--task" && kind === "notifications")
+      taskId = value(iterator, arg, "a task ID");
+    else if (
+      (arg === "--cursor" && kind === "notifications") ||
+      (arg === "--offset" && kind === "retention") ||
+      (arg === "--limit" && kind !== "usage")
+    ) {
+      const raw = value(iterator, arg, "an integer");
+      const n = Number(raw);
+      if (
+        !/^\d+$/.test(raw) ||
+        !Number.isSafeInteger(n) ||
+        n < (arg === "--limit" ? 1 : 0) ||
+        (arg === "--limit" && n > 100)
+      )
+        throw new UsageError(`Invalid ${arg}`);
+      if (arg === "--cursor") cursor = n;
+      else if (arg === "--offset") offset = n;
+      else limit = n;
+    } else throw new UsageError(`Unknown argument: ${arg}`);
+  }
+  for (const id of [workerId, teamId, taskId])
+    if (id && !/^[a-zA-Z0-9_.:-]{1,128}$/.test(id))
+      throw new UsageError("Invalid filter ID");
+  return {
+    kind,
+    action: action as "list" | "watch" | "preview",
+    cursor,
+    offset,
+    limit,
+    workerId,
+    teamId,
+    taskId,
+    json,
+    configPath,
+    envFiles,
+    ...(url ? { overrides: { SWARMFORGE_URL: url } } : {}),
+  };
 }

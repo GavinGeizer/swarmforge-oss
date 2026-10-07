@@ -4,8 +4,8 @@ Streamable HTTP: `POST /mcp`. Supply the configured bearer token. Standard MCP S
 
 | Tool | Arguments | Result |
 | --- | --- | --- |
-| `spawn_worker` | `task_id`, `prompt`; optional `team_id="default"`, `role="coder"`, `timeout_seconds`, `request_id` | Worker ID, ownership, initial queued state; provisioning is asynchronous. |
-| `get_worker` | `worker_id` | State, IDs, timestamps, error, pending control/messages, token usage. While a turn is active, a bounded single-line excerpt of the latest assistant text plus `excerpt_partial` and `excerpt_at`; absent once the worker settles. |
+| `spawn_worker` | `task_id`, `prompt`; optional `template="code|review|research|docs"`, `team_id="default"`, `role="coder"`, `timeout_seconds`, `request_id` | Worker ID, ownership, initial queued state; provisioning is asynchronous. |
+| `get_worker` | `worker_id` | State, IDs, timestamps, error, pending control/messages, token usage, bounded progress/result summary, recovery guidance, USD estimates and preserved artifact count. While a turn is active, a bounded single-line excerpt of the latest assistant text plus `excerpt_partial` and `excerpt_at`; absent once the worker settles. |
 | `get_dashboard_view` | Optional `query`, `team_id`, `task_id`, `state`, `preservation`, `retained_only=false`, `sort="recent"`, `offset=0`, `limit=20` (max 100), `revision` | SQLite-filtered page, global state/token/retention counts, page metadata and revision. An unchanged revision from the same query/page returns `unchanged=true`. A retained previous revision returns `delta=true`, `changed_workers`, ordered `worker_ids`, and `removed_ids`; otherwise `workers` is a full page. Process restart or cache eviction resynchronizes with a full page. |
 | `list_workers` | Optional `team_id`, `task_id`, `state`, `offset=0`, `limit=20` | Paginated metadata; total and next offset. |
 | `send_worker_message` | `worker_id`, `message` | Durable queued run ID; same OpenCode context. |
@@ -45,4 +45,16 @@ Preserved artifacts are a second, durable surface described in [ARTIFACTS.md](AR
 
 `GET /artifacts/<artifact_id>/download` returns raw artifact bytes under the same host, allowed-host, bearer and origin checks. It answers only `GET`, sends `application/octet-stream` with `Content-Disposition: attachment`, `Cache-Control: no-store` and `X-Content-Type-Options: nosniff`, and advertises `Accept-Ranges: bytes`. One `Range` header is honoured: multi-range, reversed, non-numeric and unsatisfiable requests get `416` with `Content-Range: bytes */<size>`. A range end past the stored size is clipped to it, so `Content-Range` and `Content-Length` always describe exactly the bytes the response carries, and a single response streams at most 8 MiB, so large artifacts are fetched in follow-up ranges. An unknown artifact is `404`, an artifact that is not preserved is `409`, and a caller that already disconnected receives nothing. Artifact bytes are never served from a `GET` on a tool, never inlined into a browser and never included in an error body.
 
-Response excerpts are live status only. They reuse the existing session poll, are capped at 180 characters on a single sanitized line, redact configured secrets, and are cleared when a turn settles or a new dispatch starts. They are never written to events, metrics, SQLite, or `list_workers`.
+Response excerpts are live status only. They reuse the existing session poll, are capped at 180 characters on a single sanitized line, redact configured secrets, and are cleared when a turn settles or a new dispatch starts. They are never written to events, metrics or SQLite. Worker lists/dashboard pages may include the same bounded live text in `progress.activity`; the focused excerpt metadata remains on `get_worker`.
+
+## Operator tools
+
+| Tool | Arguments | Result |
+| --- | --- | --- |
+| `list_task_templates` | None | Built-in recipe IDs, roles, instructions and required deliverables. No worker creation. |
+| `get_usage_summary` | Optional `worker_id` | Measured token categories and USD estimate with priced-token coverage, retained VM hours, deployment budget threshold/state. |
+| `get_retention_preview` | `offset=0`, `limit=20` (max 100) | Policy mode, grace period and retained workers with due time, current eligibility/refusal reason, next offset. Read-only. |
+| `list_notifications` | `cursor=0`, `limit=20` (max 100); optional `worker_id`, `team_id`, `task_id` | Durable operator events with titles, `next_cursor`, `has_more`. Keep filters consistent for cursor resumption. |
+| `search_artifacts` | `offset=0`, `limit=20` (max 100); optional `worker_id`, `task_id`, `query`, `kind`, `state` | Metadata search; all filters apply before pagination. Filename/path substring matching; no bytes. Legacy `list_artifacts` preserves its existing returned-page state filter. |
+
+Worker list/dashboard progress includes a bounded response activity or completion summary. `get_dashboard_view` and `get_swarm_status` additionally expose deployment usage estimates. Advancing display clocks do not create changed-worker deltas. See [Operator workflows](OPERATOR-WORKFLOWS.md) for commands, policy semantics, rate coverage and explicit live readiness limitations.

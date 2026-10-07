@@ -1120,32 +1120,43 @@ export class ArtifactRepository {
    * reachable by its own id. Counting it would inflate both a listing and any
    * metric derived from one.
    */
+  countForWorker(workerId: string) {
+    return (
+      this.db
+        .query(
+          "SELECT count(*) count FROM artifacts WHERE worker_id=? AND state='preserved' AND superseded_by IS NULL",
+        )
+        .get(workerId) as { count: number }
+    ).count;
+  }
   list(query: ArtifactListQuery = {}): ArtifactListResult {
     const offset = Math.max(0, query.offset ?? 0);
     const limit = Math.min(200, Math.max(1, query.limit ?? 50));
     const where = `(? IS NULL OR worker_id=?) AND (? IS NULL OR task_id=?)
-      AND (superseded_by IS NULL)`;
+      AND (? IS NULL OR instr(lower(filename),lower(?))>0 OR instr(lower(original_path),lower(?))>0)
+      AND (? IS NULL OR kind=?) AND (? IS NULL OR state=?) AND superseded_by IS NULL`;
+    const args = [
+      query.worker_id ?? null,
+      query.worker_id ?? null,
+      query.task_id ?? null,
+      query.task_id ?? null,
+      query.query ?? null,
+      query.query ?? null,
+      query.query ?? null,
+      query.kind ?? null,
+      query.kind ?? null,
+      query.state ?? null,
+      query.state ?? null,
+    ];
     const rows = this.db
       .query(
         `SELECT * FROM artifacts WHERE ${where} ORDER BY created_at,rowid LIMIT ? OFFSET ?`,
       )
-      .all(
-        query.worker_id ?? null,
-        query.worker_id ?? null,
-        query.task_id ?? null,
-        query.task_id ?? null,
-        limit,
-        offset,
-      ) as ArtifactRecord[];
+      .all(...args, limit, offset) as ArtifactRecord[];
     const total = (
       this.db
         .query(`SELECT count(*) total FROM artifacts WHERE ${where}`)
-        .get(
-          query.worker_id ?? null,
-          query.worker_id ?? null,
-          query.task_id ?? null,
-          query.task_id ?? null,
-        ) as { total: number }
+        .get(...args) as { total: number }
     ).total;
     const next = offset + rows.length;
     return { artifacts: rows, next_offset: next < total ? next : null };
