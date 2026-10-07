@@ -306,7 +306,7 @@ If you have downloaded a release archive, place it under `dist/` and set `VERSIO
 ```sh
 (
   set -eu
-  VERSION=0.1.1
+  VERSION=0.1.2
   tmp="$(mktemp -d)"
   trap 'rm -rf "$tmp"' EXIT
   tar -xzf "dist/swarmforge-v${VERSION}-linux-x64-glibc.tar.gz" -C "$tmp"

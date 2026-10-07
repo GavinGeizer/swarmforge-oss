@@ -26,16 +26,24 @@ import { FakeAgent, FakeProvider, task } from "./helpers";
 
 const fixture = (name: string) => join(import.meta.dir, "fixtures", name);
 
+// Closing an ephemeral probe lets the OS hand the same port to the next probe.
+// Keep this file's fixtures distinct so server and metrics cannot collide.
+const issuedPorts = new Set<number>();
 function freePort(): number {
-  const probe = Bun.serve({
-    hostname: "127.0.0.1",
-    port: 0,
-    fetch: () => new Response("probe"),
-  });
-  const { port } = probe;
-  void probe.stop(true);
-  if (port === undefined) throw new Error("probe listener reported no port");
-  return port;
+  for (let attempt = 0; attempt < 100; attempt++) {
+    const probe = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch: () => new Response("probe"),
+    });
+    const { port } = probe;
+    void probe.stop(true);
+    if (port === undefined) throw new Error("probe listener reported no port");
+    if (issuedPorts.has(port)) continue;
+    issuedPorts.add(port);
+    return port;
+  }
+  throw new Error("could not allocate a distinct fixture port");
 }
 
 async function reservePort(port: number) {

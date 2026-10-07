@@ -9,7 +9,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { basename, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import type { Subprocess } from "bun";
 import {
   buildConfig,
@@ -876,6 +876,29 @@ describe("release assets", () => {
     }
     return directory;
   }
+
+  test("release preparation accepts the workflow's relative download directory", async () => {
+    const directory = await downloadAssets();
+    const result = await run(
+      [
+        process.execPath,
+        "--no-env-file",
+        "--config=/dev/null",
+        join(repositoryRoot, "scripts/package.ts"),
+        "release-assets",
+        basename(directory),
+        "--tag",
+        `v${manifest.version}`,
+      ],
+      { cwd: dirname(directory) },
+    );
+    expect(result.stderr).toBe("");
+    expect(result.code).toBe(0);
+    const prepared = JSON.parse(result.stdout);
+    expect(prepared.version).toBe(manifest.version);
+    expect(prepared.commit).toBe(commit);
+    expect(prepared.archivePath.startsWith("/")).toBe(true);
+  }, 180000);
 
   test("accepts the assets the build job uploaded for a matching tag", async () => {
     const directory = await downloadAssets();

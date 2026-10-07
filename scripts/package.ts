@@ -21,7 +21,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { LICENSE_ID, LICENSE_URL } from "../src/version";
 import {
   type CompiledBinary,
@@ -163,7 +163,8 @@ export async function verifyArchive(options: {
   expectedVersion: string;
   expectedCommit?: string;
 }): Promise<VerifiedArchive> {
-  const archivePath = options.archivePath;
+  // tar runs from a temporary directory; resolve the caller's relative path first.
+  const archivePath = resolve(options.archivePath);
   const listing = await archiveListing(archivePath);
   const expectedFiles = [
     executableName,
