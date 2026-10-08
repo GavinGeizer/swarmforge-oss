@@ -16,9 +16,17 @@ test("local cf migrations finish and can be repeated without reapplying schema",
       );
       assert.ifError(result.error);
       assert.equal(result.status, 0, result.stderr);
-      assert.match(result.stdout, first ? /0001_identity.sql/ : /\[\]/);
+      assert.match(result.stdout, first ? /0002_machine_identity.sql/ : /\[\]/);
       assert.doesNotMatch(result.stdout, /❌/);
     }
+    const cleanup = spawnSync(
+      process.execPath,
+      [new URL("../scripts/cleanup-local.mjs", import.meta.url).pathname],
+      { cwd: directory, encoding: "utf8", timeout: 30_000 },
+    );
+    assert.ifError(cleanup.error);
+    assert.equal(cleanup.status, 0, cleanup.stderr);
+    assert.doesNotMatch(cleanup.stdout, /❌/);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

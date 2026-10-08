@@ -90,8 +90,25 @@ export type ParsedCommand =
       action: ConfigAction;
       configPath?: string;
       envFiles: string[];
+    }
+  | {
+      kind: "cloud";
+      action: CloudAction;
+      cloudUrl?: string;
+      credentials?: string;
+      clientName?: string;
+      noBrowser: boolean;
+      json: boolean;
+      tenantId?: string;
     };
 
+type CloudAction =
+  | "login"
+  | "status"
+  | "logout"
+  | "organizations"
+  | "use"
+  | "rotate";
 const configActions = ["path", "show", "validate"];
 const isHelp = (arg: string) => arg === "--help" || arg === "-h";
 
@@ -341,6 +358,7 @@ export function parseArguments(args: readonly string[]): ParsedCommand {
   if (head === "status") return status(rest);
   if (head === "serve") return serve(rest);
   if (head === "github") return github(rest);
+  if (head === "cloud") return cloud(rest);
   if (head === "init") return initialization(rest);
   if (head === "doctor") return doctor(rest);
   if (head === "config") return configuration(rest);
@@ -487,5 +505,53 @@ function github(rest: readonly string[]): ParsedCommand {
     throw new UsageError(
       "github login requires --client-id ID and --repository OWNER/REPO",
     );
+  return command;
+}
+
+function cloud(rest: readonly string[]): ParsedCommand {
+  if (rest.some(isHelp)) return { kind: "help" };
+  const [action, ...tail] = rest;
+  if (
+    !action ||
+    !["login", "status", "logout", "organizations", "use", "rotate"].includes(
+      action,
+    )
+  )
+    throw new UsageError(
+      "cloud requires login, status, logout, organizations, use or rotate",
+    );
+  const command: Extract<ParsedCommand, { kind: "cloud" }> = {
+    kind: "cloud",
+    action: action as CloudAction,
+    noBrowser: false,
+    json: false,
+  };
+  const iterator = tail[Symbol.iterator]();
+  for (const arg of iterator) {
+    if (arg === "--cloud-url")
+      command.cloudUrl = value(iterator, arg, "a Cloud API origin");
+    else if (arg === "--credentials")
+      command.credentials = value(
+        iterator,
+        arg,
+        "a private credential file path",
+      );
+    else if (arg === "--name" && (action === "login" || action === "use"))
+      command.clientName = value(iterator, arg, "a client name");
+    else if (arg === "--no-browser" && (action === "login" || action === "use"))
+      command.noBrowser = true;
+    else if (arg === "--json") command.json = true;
+    else if (action === "use" && !command.tenantId && !arg.startsWith("-"))
+      command.tenantId = arg;
+    else throw new UsageError("Unknown cloud option.");
+  }
+  if (
+    action === "use" &&
+    (!command.tenantId ||
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+        command.tenantId,
+      ))
+  )
+    throw new UsageError("cloud use requires an organization UUID");
   return command;
 }

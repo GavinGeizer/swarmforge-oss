@@ -17,6 +17,7 @@
     "dev": "cf dev --mode local",
     "prepare:local": "node scripts/prepare-local.mjs",
     "migrate:local": "node scripts/migrate-local.mjs",
+    "cleanup:local": "node scripts/cleanup-local.mjs",
     "migrate:preview": "node scripts/migrate-preview.mjs",
     "deploy:preview": "node scripts/deploy-preview.mjs"
   },

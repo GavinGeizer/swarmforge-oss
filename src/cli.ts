@@ -39,6 +39,9 @@ const usage = `SwarmForge control plane
 Usage:
   swarmforge github login --client-id ID --repository OWNER/REPO [--credentials PATH]
   swarmforge github status|logout [--credentials PATH]
+  swarmforge cloud login [--cloud-url ORIGIN] [--name NAME] [--no-browser]
+  swarmforge cloud status|logout|organizations|rotate [--credentials PATH] [--json]
+  swarmforge cloud use ORGANIZATION_UUID [--cloud-url ORIGIN] [--no-browser]
   swarmforge init [--config PATH]
   swarmforge doctor [--live] [--vm ID] [--config PATH] [--env-file PATH] [--json]
   swarmforge [status] [--url URL] [--json] [--no-interactive]
@@ -59,6 +62,7 @@ Usage:
 
 Commands:
   github    Authorize repository clone/push access through GitHub device login.
+  cloud     Link a separate organization-scoped SwarmForge Cloud installation.
   init      Ask for required settings, offer GitHub OAuth for GitHub repositories,
             and create .env in the current directory.
   doctor    Check local setup; --live explicitly probes remote readiness.
@@ -501,6 +505,10 @@ async function run(command: ParsedCommand): Promise<number> {
     case "version":
       write(VERSION);
       return 0;
+    case "cloud": {
+      const { cloudCommand } = await import("./cli/cloud");
+      return cloudCommand(command, write);
+    }
     case "github": {
       const { githubCommand } = await import("./cli/github");
       return githubCommand(command, write);

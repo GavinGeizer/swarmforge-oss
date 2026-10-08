@@ -79,10 +79,10 @@ test("production Worker bundle completes confidential PKCE login against simulat
   );
   try {
     const db = await mf.getD1Database("DB");
-    const sql = await readFile(
+    const sql = `${await readFile(
       new URL("../migrations/0001_identity.sql", import.meta.url),
       "utf8",
-    );
+    )};${await readFile(new URL("../migrations/0002_machine_identity.sql", import.meta.url), "utf8")}`;
     for (const statement of sql
       .replace(/--[^\n]*/g, "")
       .split(";")

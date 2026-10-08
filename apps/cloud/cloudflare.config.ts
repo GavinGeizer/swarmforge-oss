@@ -1,4 +1,4 @@
-import { bindings, defineConfig } from "cf/config";
+import { bindings, defineConfig, triggers } from "cf/config";
 
 export const localDatabaseId = "00000000-0000-4000-8000-00000000002a";
 export const previewWorkerName = "swarmforge-cloud-preview";
@@ -45,6 +45,7 @@ export default defineConfig(({ mode }) => {
       entrypoint: "./src/index.ts",
       workersDev: preview,
       previewUrls: false,
+      triggers: [triggers.scheduled({ schedule: "*/10 * * * *" })],
       // Codes/state arrive in callback queries: exclude invocation URLs and strip
       // query strings from platform traces as well as using safe application logs.
       observability: {
