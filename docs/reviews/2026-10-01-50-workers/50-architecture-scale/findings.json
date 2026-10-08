@@ -1,0 +1,79 @@
+{
+  "target": "d428e0f730ed5649485732e95d39c32f5d6a8895",
+  "scope": "Cross-system review for 50/400-worker operational limits: scheduler complexity, provider/model backpressure, per-worker locks, event loop/resource bottlenecks. Read-only; fake providers only; no real cloud/model/VM.",
+  "findings": [
+    {
+      "severity": "HIGH",
+      "title": "Redactor re-reads the whole worker table and rescans every string once per secret, blocking the single-threaded event loop",
+      "file": "src/security.ts",
+      "line": 5,
+      "evidence": "redactorFor() (src/security.ts:43-50) returns a lazy secrets() closure over c.store.all(); Redactor.text() (src/security.ts:5-23) calls this.secrets() on EVERY invocation, then runs (3+workers)*3 String.replaceAll passes (1209 at 400 workers). value() (src/security.ts:24-37) recurses per string field, so an N-field response performs N full-table scans of workers plus JSON.parse per row. Hot callers: src/coordinator.ts:650-651 (per worker per poll), src/coordinator.ts:707, src/runtime.ts:185,198 (per event per 1s flush), src/mcp.ts:40 (every tool response), src/http.ts:42, src/files.ts:70,103,135.",
+      "reproduction": "REPRODUCED with Bun 1.4.2, real SQLite under /tmp, fake provider/agent; probes in /tmp/sfrev/probe (disclosed). list_workers page of 100, response redaction only: 79.4ms @50 workers, 474.9ms @200, 1013.5ms @400. One coordinator.tick() (5 assistant msgs/snapshot, stable excerpt text): 33.7ms @50, 68.5 @100, 268.7 @200, 821.3 @400 (superlinear). eventLogger first flush (1600 pending events, 100 per pass): 1291.5ms at 400 workers, against setInterval(flush,1000) at src/serve.ts:193.",
+      "recommendation": "Materialize the secret set once (refresh on worker create / config load) and pass it into text(); replace the 3-variant replaceAll loop with one prebuilt alternation regex; at minimum hoist secrets() out of text() into value() so one response costs one scan, not N.",
+      "confidence": "high"
+    },
+    {
+      "severity": "HIGH",
+      "title": "/metrics render is O(workers x events) because events.worker_id has no index; each scrape stalls the event loop",
+      "file": "src/metrics.ts",
+      "line": 100,
+      "evidence": "The for (const w of all) loop at src/metrics.ts:81 issues three full-table events scans per worker per scrape: GROUP BY type (:100-104), min(at) for worker.ready (:111-115), and per-completed-dispatch lookup using json_extract(data,'$.run_id') (:121-129). Schema src/store.ts:27 declares no index on events.worker_id; only workers_state (:26) and dispatch_worker (:29) exist.",
+      "reproduction": "REPRODUCED. EXPLAIN QUERY PLAN at target returns [\"SCAN events\",\"USE TEMP B-TREE FOR GROUP BY\"] for the per-worker GROUP BY. Metrics.render() timing: 9.1ms @50 workers (250 event rows), 67.9ms @200 (1000 rows), 253.6ms @400 (2000 rows). Only 5 events per worker were created; a long-lived deployment accumulates far more, and cost grows linearly from these points.",
+      "recommendation": "Add CREATE INDEX IF NOT EXISTS events_worker_type ON events(worker_id,type,at) to src/store.ts; replace the per-worker loop with per-team GROUP BY aggregations; store run_id as an events column instead of filtering with json_extract(data,'$.run_id').",
+      "confidence": "high"
+    },
+    {
+      "severity": "MEDIUM",
+      "title": "No concurrency cap on provider/agent fan-out: hundreds of simultaneous outbound TLS connections",
+      "file": "src/coordinator.ts",
+      "line": 340,
+      "evidence": "runTick dispatches Promise.allSettled over every non-terminal, non-paused, non-queued worker (src/coordinator.ts:340-352) each SWARMFORGE_POLL_INTERVAL_MS; runRecover dispatches Promise.all over every worker with a vm_id (src/coordinator.ts:397-400) each 30s reconcile and at startup. exclusive() (src/coordinator.ts:266-271) serializes per worker ID only and imposes no cross-worker bound. FreestyleProvider (src/providers/freestyle.ts:20-24) only attaches a per-request AbortSignal.timeout; there is no semaphore, retry budget or 429 handling. SWARMFORGE_MAX_WORKERS has no upper bound in the config schema.",
+      "reproduction": "REPRODUCED with an instrumented fake provider: Coordinator.recover() with 400 workers returned provider_getWorker_calls=400 and peak_concurrent_provider_requests=400 (recover_ms 52.7 at 20ms fake latency). The provider-side effect (rate limits, socket exhaustion) is code-evidenced only; no real provider was contacted.",
+      "recommendation": "Route provider/agent calls in runTick and runRecover through a bounded concurrency pool (16-32), and treat provider 429/5xx as backpressure (skip the tick) instead of recording it as a worker error.",
+      "confidence": "high"
+    },
+    {
+      "severity": "MEDIUM",
+      "title": "OpenCode session history is refetched in full on every poll and every historical assistant message re-upserts usage",
+      "file": "src/providers/opencode.ts",
+      "line": 116,
+      "evidence": "OpenCodeAgent.inspect() loops `while (page.length === 100)` (src/providers/opencode.ts:116-129), issuing sequential older-page requests until a short page, on every poll for every running/waiting worker. monitor() then calls store.usage() once per assistant message in the snapshot on every poll (src/coordinator.ts:544-554), even when the max() upsert is a value no-op.",
+      "reproduction": "PARTIALLY REPRODUCED. SQLite side measured with a fake agent: coordinator.tick() at 400 workers x 60 assistant messages per snapshot = 359.5ms of write bookkeeping with the excerpt path disabled. The HTTP page fan-out was not exercised (fake agent returns the snapshot directly), so ceil(history/100) sequential round trips per worker per poll is code-evidenced only. At 400 workers with a 250-message session that is 1200 requests per 2s tick plus ~100k UPSERTs, on top of the redaction cost in finding 1.",
+      "recommendation": "Fetch only messages newer than the highest message id already recorded for the worker, or bound inspect() to the current dispatch's message subtree; skip the usage() write when the stored row already holds equal or greater totals.",
+      "confidence": "medium"
+    },
+    {
+      "severity": "LOW",
+      "title": "store.all() full-table scan with JSON.parse per row, called twice per tick and once per spawn",
+      "file": "src/coordinator.ts",
+      "line": 316,
+      "evidence": "all() is SELECT body FROM workers ORDER BY rowid with JSON.parse per row (src/store.ts). runTick scans twice (src/coordinator.ts:316 and :363); spawn() scans once per spawn for queue depth and the request_id retry check (src/coordinator.ts:172); metrics and MCP status tools scan again (src/metrics.ts:74, src/mcp.ts:262,277).",
+      "reproduction": "REPRODUCED in isolation: store.all() 0.35ms at 50 rows, 1.68ms at 400 rows. Individually minor; it is the multiplier that makes findings 1 and 3 expensive.",
+      "recommendation": "Project only the columns each caller needs, reuse one snapshot per tick, and compute queue depth/capacity in SQL.",
+      "confidence": "high"
+    },
+    {
+      "severity": "LOW",
+      "title": "runRecover does an O(VMs x workers) linear scan for VM ownership",
+      "file": "src/coordinator.ts",
+      "line": 373,
+      "evidence": "For each VM returned by provider.listWorkers(), runRecover runs all.find((w) => w.vm_id === vm.id) over the full worker array (src/coordinator.ts:373-377), i.e. 160,000 comparisons at 400 VMs and 400 workers, every 30s reconcile. The same function already builds a byId Map for the fallback lookup one line later, so this is an oversight rather than a constraint.",
+      "reproduction": "CODE-EVIDENCED. The nested loop is unambiguous in the source; not separately benchmarked because the cost is far below findings 1-3.",
+      "recommendation": "Build a Map<vm_id, worker_id> alongside byId and use it for both lookups.",
+      "confidence": "high"
+    }
+  ],
+  "tests": {
+    "ran": true,
+    "passed": true,
+    "command": "bun test tests/core.test.ts tests/lifecycle.test.ts (Bun 1.4.2 at /tmp/bun142/bin/bun) in disposable detached clone /tmp/sfrev/tmprepo at d428e0f",
+    "summary": "44 pass, 0 fail, 157 expect() calls, exit 0. Suite runs at SWARMFORGE_MAX_WORKERS=2 (tests/helpers.ts:20), so it exercises none of the scale paths. Six bounded probes in /tmp/sfrev/probe (p1-redactor, p2-redact-payload, p3-metrics, p4-tick, p5-recover, p6-wait) used real SQLite and fake provider/agent doubles only; all probe targets referenced by finding 1 reproduced (1013.5ms list page, 821.3ms tick, 1291.5ms flush at 400 workers), finding 2 reproduced (253.6ms render, SCAN events plan), finding 3 reproduced (peak 400 concurrent fake provider requests), finding 5 reproduced (1.68ms store.all()). Finding 4's HTTP half and finding 6 were code-evidenced only."
+  },
+  "limitations": [
+    "No real cloud or model provider contacted, no VM created, no smoke test; all provider/agent behaviour faked. Absolute timings come from one container with a warm page cache and will differ on production hardware; the worker-count ratios and EXPLAIN QUERY PLAN output are the load-bearing evidence.",
+    "The 400-worker state was constructed by inserting 400 worker rows directly, not by spawning through the MCP surface; admission control (SWARMFORGE_MAX_WORKERS, SWARMFORGE_MAX_QUEUE) was not exercised.",
+    "Snapshot Bun is 1.3.14 and cannot read lockfileVersion 2; official Bun 1.4.2 was installed to /tmp/bun142 and the lockfile was never rewritten.",
+    "Packaging/build, settings/config-serving, Git handoff and CLI scopes were not reviewed, and the full test suite was not run (whole-suite scope belongs to another reviewer).",
+    "Per-worker lock semantics (exclusive, tearingDown, intent) were read but not exercised and are left to the lifecycle reviewers."
+  ]
+}

@@ -1,0 +1,43 @@
+{
+  "target": "d428e0f730ed5649485732e95d39c32f5d6a8895",
+  "scope": "Cancellation races against dispatch/messages/results, lost acknowledged messages, quiesce semantics (src/coordinator.ts, src/store.ts, src/domain.ts, src/providers/freestyle.ts, src/mcp.ts)",
+  "findings": [
+    {
+      "severity": "HIGH",
+      "title": "cancel reports 'cancelled' when the guest could not be proven stopped, and never retries quiescing",
+      "file": "src/coordinator.ts",
+      "line": 890,
+      "evidence": "applyControl('cancel') consumes only quiesce() === 'missing' (line 890) and then transitions to 'cancelled' with error:null (line 895). quiesce() returns 'paused' - contract comment at lines 720-724: guest alive, not provably stopped - when systemctl stop is not code 0 (731-737), when pauseWorker throws (739-743), or when the confirmation probe is ambiguous (744). Sibling paths escalate the same outcome: fail() -> recovery_required (785-804) and destroy -> recovery_required (917-926). runTick skips terminal states without intent (340-353) and runRecover only reacts to provider states paused/pausing/stopped (421-432), so a running guest is never re-checked. docs/MCP-API.md:13 documents cancel as 'Stops execution'.",
+      "reproduction": "Reproduced with repo fakes (/tmp/probe/tests/probe-cancel.test.ts probe A, bun 1.4.2): run to running, make provider.exec answer {code:1} for 'systemctl stop' and pauseWorker throw, then control(id,'cancel') -> state cancelled, error null, VM still present in state 'running'; after 5 more ticks plus recover(): zero further systemctl stop attempts, state still cancelled. Probe B: identical faults with destroy -> recovery_required. Real provider (src/providers/freestyle.ts:279-301, 88-95) throws on any non-2xx from pause/exec, so a single transient Freestyle outage during cancel reaches the 'paused' fallback.",
+      "recommendation": "Mirror the sibling escalation in the cancel branch: if quiesce() returns 'paused', transition to recovery_required with an explicit 'OpenCode could not be stopped; inspect' error (retryable intent) or keep cancelled but set a non-null error flagging an un-quiesced guest; never clear intent on an unproven stop.",
+      "confidence": "high"
+    },
+    {
+      "severity": "MEDIUM",
+      "title": "Failed control-intent application falls through to fallback completion, reporting 'completed' and blocking cancel/destroy",
+      "file": "src/coordinator.ts",
+      "line": 519,
+      "evidence": "step()'s catch (510-526) special-cases GitHandoffError (518) but not control-intent failures. When applyControl('pause') (839-857) throws while the worker is running/waiting, the catch reads .swarmforge/result.json via fallback() (673-691) and promotes it through complete() (692-719), pushing the branch, while the intent stays recorded. runControl then refuses every other intent (828-829).",
+      "reproduction": "Reproduced (probe H): run to running, seed the active run's .swarmforge/result.json, make pauseWorker throw, then control(id,'pause') -> 'completed intent:pause error:null' though nothing was paused; cancel -> refused 'Another worker control operation is pending'; destroy -> refused; after 3 ticks state completed with intent pause and error 'Provider or OpenCode operation failed; retrying within deadline'.",
+      "recommendation": "In step()'s catch, re-read the worker and return early after the error patch when w.intent is set, so the intent is retried next pass instead of completing the turn; also ensure complete()/finish() does not report success while an intent is pending.",
+      "confidence": "high"
+    },
+    {
+      "severity": "LOW",
+      "title": "Acknowledged-then-dropped send_worker_message outside the tearingDown hold",
+      "file": "src/coordinator.ts",
+      "line": 489,
+      "evidence": "The VM-disappeared branches call store.cancelDispatches without a teardown hold (lines 411 and 489); queueMessage refuses only while tearingDown has the id or intent is set (196-208). During the awaited provider.getWorker() the worker still reads running and vm_missing:false, so a message is acknowledged delivery:'queued' and then silently marked cancelled by that branch.",
+      "reproduction": "Reproduced (probe G): gate getWorker, delete the VM from the fake provider, call message(id,'racing message') while gated -> queued with state running; after release the worker is failed/vm_missing and the acked run is cancelled. Impact is bounded because the workspace is already lost; it violates the invariant asserted at lines 197-200.",
+      "recommendation": "Wrap the cancelDispatches calls at lines 411 and 489 in this.teardown(...) (as fail() does) or take the hold before the getWorker await, so the refusal window matches the documented linearization.",
+      "confidence": "medium"
+    }
+  ],
+  "tests": {
+    "command": "cd /tmp/probe && /tmp/bun142/bun-linux-x64/bun test tests/lifecycle.test.ts tests/excerpt.test.ts ; /tmp/bun142/bun-linux-x64/bun test tests/probe-cancel.test.ts",
+    "ran": true,
+    "passed": true,
+    "summary": "Repo lifecycle+excerpt tests: 41 pass / 0 fail, 155 assertions, exit 0. Reviewer probes (8, /tmp/probe/tests/probe-cancel.test.ts, not committed): 8 pass / 0 fail, exit 0. Bun 1.4.2 from /tmp; lockfile untouched."
+  },
+  "limitations": "No real Freestyle/OpenCode calls - repository fakes only, so real-provider failure timing is code-evidenced rather than executed. No full-suite run and no compile step (outside this scope). Findings restricted to src/ control flow plus targeted local probes in /tmp; /workspace/repo left unchanged at baseline 5672ead."
+}

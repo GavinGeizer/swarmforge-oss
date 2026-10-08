@@ -1,0 +1,77 @@
+{
+  "target": "d428e0f730ed5649485732e95d39c32f5d6a8895",
+  "scope": "Bun compilation options, ambient file autoload exclusion, version/commit definitions, target/runtime support",
+  "verdict": "FINDINGS",
+  "checkout": "/tmp/rev44clone (detached at target; /workspace/repo left at assigned baseline 5672ead, clean)",
+  "findings": [
+    {
+      "severity": "MEDIUM",
+      "title": "buildConfig ignores the `root` argument, so packaging another source tree silently ships this repository's code",
+      "file": "scripts/build.ts",
+      "line": 84,
+      "evidence": "buildConfig hardcodes entrypoints: [join(repositoryRoot, \"src\", \"cli.ts\")], while packageVersion (scripts/build.ts:94), repositoryCommit (scripts/build.ts:110) and packageCli (scripts/package.ts:272-286) honour an options.root parameter. Version/commit come from `root`; code always comes from repositoryRoot.",
+      "reproduction": "Bun 1.4.2, /tmp/probe/root-probe.ts: created /tmp/probe/altroot with package.json version 9.9.9-alt plus one git commit, then called packageCli({ root: \"/tmp/probe/altroot\", outDir: \"/tmp/probe/altdist\" }) -> exit 0, produced swarmforge-v9.9.9-alt-linux-x64-glibc.tar.gz and metadata-9.9.9-alt.json with commit f1d7b3d2..., while the archived binary is this repository's src/cli.ts build (82,695,648 bytes; --help prints this repo's usage).",
+      "recommendation": "Thread root into buildConfig and use join(root, \"src\", \"cli.ts\"), or remove the root parameter so the mismatch cannot be expressed.",
+      "guard_gap": "packageCli's executable.version !== version check (scripts/package.ts:287) compares two values derived from the same root, so it is self-consistent; verifyArchive only cross-checks define'd strings, the digest and the executable's own --version/--help. No test or CLI path passes root, so impact is latent rather than live in CI.",
+      "confidence": "high"
+    },
+    {
+      "severity": "LOW",
+      "title": "SHA256SUMS covers only the executable, leaving the shipped version/commit metadata unverified by the documented install step",
+      "file": "scripts/package.ts",
+      "line": 75,
+      "evidence": "checksums() emits one line for the executable only; README.md:50-52 teaches `sha256sum -c SHA256SUMS` as the operator's verification of the downloaded archive.",
+      "reproduction": "Code-evidenced: a repacked archive whose metadata-<version>.json was edited passes `sha256sum -c` because the manifest never covers that file. Not executed (would require building a tampered archive).",
+      "recommendation": "Add a manifest line for the metadata file and extend verifyArchive's expectedFiles and checksum expectations accordingly.",
+      "guard_gap": "verifyArchive validates metadata against the executable inside the same archive, so nothing binds the metadata bytes to the shipped digest; CI catches a repack, the operator-facing post-download check does not.",
+      "confidence": "medium"
+    },
+    {
+      "severity": "LOW",
+      "title": "Build provenance ignores a dirty worktree, so a modified checkout is stamped with a clean HEAD commit",
+      "file": "scripts/build.ts",
+      "line": 109,
+      "evidence": "repositoryCommit() validates only that `git -C root rev-parse HEAD` exits 0 and yields 40 hex chars; no `git status --porcelain` check exists in scripts/build.ts, scripts/package.ts or the release workflow.",
+      "reproduction": "Code-evidenced (not executed in CI, where checkouts are clean): running `bun run build` from a checkout with uncommitted edits records HEAD, which does not describe the shipped source; the workflow cross-check `--help | grep \"build $(git rev-parse HEAD)\"` compares against the same HEAD and would also pass.",
+      "recommendation": "Check worktree cleanliness before compiling and either refuse to package a dirty tree or record a dirty flag in the metadata; enforce it inside packageCli so all callers get it.",
+      "guard_gap": "No cleanliness guard exists; scripts/build.ts:104-107 documents the commit as the operator's mapping back to source, which a dirty build silently invalidates.",
+      "confidence": "medium"
+    },
+    {
+      "severity": "LOW",
+      "title": "Duplicated, unused advertisedPlatform constant in scripts/build.ts invites silent drift",
+      "file": "scripts/build.ts",
+      "line": 25,
+      "evidence": "scripts/build.ts:25 exports advertisedPlatform = \"linux-x64-glibc\" with no importer anywhere (grep over src/tests/scripts); the live copy is scripts/package.ts:40, used by archiveName (scripts/package.ts:67) and buildMetadata (scripts/package.ts:97).",
+      "reproduction": "Code-evidenced: editing scripts/build.ts:25 changes no archive name, metadata field or test outcome; tests/packaging.test.ts asserts compileTarget but not the platform literal.",
+      "recommendation": "Delete the dead export in scripts/build.ts or have scripts/package.ts import it from a single source.",
+      "guard_gap": "No test binds the archive name or metadata platform to a single definition, so a change applied to the wrong copy passes CI.",
+      "confidence": "high"
+    }
+  ],
+  "verified_correct": [
+    "autoloadDotenv/autoloadBunfig are the only live defaults (node_modules/bun-types/bun.d.ts:3684-3714 documents them @default true; autoloadTsconfig/autoloadPackageJson already default false), and all four keys are real Bun 1.4.2 API members. A binary compiled from target ignored a foreign .env (source: default) while a control binary compiled without the flags read it (source: env), proving the flags work; it also ignored .env/bunfig.toml placed beside the executable.",
+    "Source-run suppression verified: `bun --no-env-file --config=/dev/null src/cli.ts config show` ignored the foreign .env while a bare source run read it.",
+    "Version/commit defines verified: `bun scripts/build.ts` reported version 0.1.0 and commit d428e0f730ed5649485732e95d39c32f5d6a8895; a control build reported 9.9.9 / build cafecafe..., confirming define substitution covers the typeof guards at src/version.ts:29 and src/version.ts:43.",
+    "Target/runtime support honest: bun-linux-x64-baseline is a valid CompileTarget; the binary is ELF x86-64 dynamically linked to glibc with maximum required symbol version GLIBC_2.17 (objdump -T), matching advertisedPlatform linux-x64-glibc; bytecode:false produces plain transpiled JS as documented."
+  ],
+  "tests": {
+    "ran": true,
+    "passed": true,
+    "commands": [
+      "/tmp/bun142/bun-linux-x64/bun (1.4.2) install --frozen-lockfile -> exit 0, 125 packages",
+      "/tmp/bun142/bun-linux-x64/bun scripts/build.ts -> exit 0, binary 82691552 bytes, target bun-linux-x64-baseline",
+      "./node_modules/.bin/tsc --noEmit -> exit 0",
+      "/tmp/bun142/bun-linux-x64/bun test tests/packaging.test.ts -t \"ambient\" -> exit 0, 1 pass / 0 fail / 34 filtered out",
+      "/tmp/probe/root-probe.ts (F1 reproduction) -> exit 0, defect reproduced",
+      "file/ldd/objdump -T on dist/swarmforge -> exit 0, glibc dynamic, max GLIBC_2.17"
+    ]
+  },
+  "limitations": [
+    "Bun 1.4.2 installed to /tmp/bun142 because the image's /usr/local/bin/bun is 1.3.14 and cannot read this lockfile (lockfileVersion 2); no lockfile was rewritten.",
+    "Full tests/packaging.test.ts and the whole suite were not run (whole-suite review only); only one targeted test plus build/type-check.",
+    "Release workflow reviewed statically only; bun run package:verify, the draft-release job and gh release create were not executed.",
+    "F2 and F3 are code-evidenced but were not reproduced end-to-end (they require archive tampering / a dirty tree).",
+    "Cross-target builds (musl, arm64, darwin, windows) were out of the stated milestone scope and not attempted."
+  ]
+}

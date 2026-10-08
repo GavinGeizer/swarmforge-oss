@@ -1,0 +1,61 @@
+{
+  "target": "d428e0f730ed5649485732e95d39c32f5d6a8895",
+  "scope": "Token accounting/progress/excerpt sanitation; cumulative vs per-run usage; misleading inference counts.",
+  "findings": [
+    {
+      "severity": "HIGH",
+      "title": "Excerpt redaction is bypassed by terminal-invisible code points deleted after redaction, reassembling the plaintext secret",
+      "file": "src/security.ts",
+      "line": 97,
+      "evidence": "excerptText() calls redact(value) at line 97 and only then strips invisible code points at line 107 (isInvisible(code) ? \"\" : chars[index]). Inserting an invisible code point inside a configured secret defeats Redactor.text's replaceAll, and the subsequent strip deletes the splitter, rejoining the halves into the exact secret. Reproduced with 13 code points: U+200B U+200C U+200D U+FEFF U+00AD U+0001 U+0007 U+001F U+0085 U+0091 U+009B U+2028 U+202E U+2060. Reached from src/coordinator.ts:651 (trackExcerpt). The file comment at line 95 asserts the opposite ordering guarantee.",
+      "reproduction": "/tmp/rev30/probe/confirm.test.ts C1: excerptText(`model-${U+200B}secret`, Redactor(['model-secret'])) returns 'model-secret'. C2 end-to-end through the coordinator + publicWorker: an assistant message carrying the worker's own server_password split by U+200B is served by get_worker with the password intact (probe log: 'C2 leaks own server password: true'). The same works for the configured model API key and the freestyle API token. ANSI-split secrets do NOT leak (ESC becomes a space), which is why no existing test catches it.",
+      "recommendation": "Strip invisible code points before invoking the redactor (or move the redact call to after the character loop), then collapse whitespace and trim. Add a regression test asserting excerptText output for a secret split by U+200B and U+0007.",
+      "confidence": "high"
+    },
+    {
+      "severity": "HIGH",
+      "title": "inference gauge and excerpt entries are never cleared on reconcile-driven paused/recovery_required or poll-time guest loss",
+      "file": "src/coordinator.ts",
+      "line": 425,
+      "evidence": "Four transitions skip cleanup of this.inference and this.excerpts: reconcile paused (425), reconcile stopped->recovery_required (430), step() guest lost->failed (490), step() guest paused->paused (498). Guarded paths exist elsewhere (408-411 reconcile-lost, 849-850 control pause, 892-893 cancel, 966-967 destroy), so the invariant is clearly intended. runTick calls recover() before the per-worker step() loop (308-314), so a stopped/paused guest is normally reconciled into a terminal/paused state and never re-inspected, making the stale value permanent. Consequences: swarmforge_inference_requests_active (src/metrics.ts:80) and get_swarm_status.inference_requests_active (src/mcp.ts:287) over-report forever; get_worker keeps returning excerpt/excerpt_partial/excerpt_at for a failed worker, contradicting docs/MCP-API.md:8 and :35; both Maps grow without eviction.",
+      "reproduction": "/tmp/rev30/probe/confirm.test.ts C3 (step guest lost -> failed: gauge 1, metric line reads 1, excerpt served), C4 (reconcile -> paused: gauge 1 and excerpt present after 5 further tick+recover cycles), C5 (reconcile -> recovery_required: gauge 1 after 5 cycles). /tmp/rev30/probe/recoverfirst.test.ts R1/R2 reproduce the same via the reconcile-first ordering. Control: control(id,'pause') does clear both maps (gauge 0, excerpt null).",
+      "recommendation": "Clear this.inference and this.excerpts in all four transitions, or centrally when a worker leaves running/waiting without a result. Additionally gate publicWorker's excerpt on !terminal.has(state) && state !== 'paused' so the documented contract holds even if a cleanup path is missed.",
+      "confidence": "high"
+    },
+    {
+      "severity": "MEDIUM",
+      "title": "swarmforge_tokens_total labels every token row with the configured model, discarding the recorded per-message model",
+      "file": "src/metrics.ts",
+      "line": 95,
+      "evidence": "render() calls store.tokens({worker_id}) which sums all five directions with no GROUP BY model (src/store.ts:328), then tokens.inc({team, model: this.c.config.SWARMFORGE_MODEL_NAME, direction}, usage[direction]) at lines 92-99. The usage.model column written at src/store.ts:30 and 307-321 is never read anywhere in the codebase. Rows recorded under a different model collapse onto the configured name, so the {team,model,direction} breakdown advertised in docs/OBSERVABILITY.md:16 is not produced.",
+      "reproduction": "/tmp/rev30/probe/confirm.test.ts C6: store.usage(worker_id,'m1','aux-model',11,0,0,0,0) renders swarmforge_tokens_total{team=\"other\",model=\"qwen\",direction=\"input\"} 11 - the aux-model row is reported as qwen.",
+      "recommendation": "Select usage grouped by model (SELECT model, sum(input), ... GROUP BY model) and emit one tokens.inc per recorded model, using the configured name only as a fallback for empty model values.",
+      "confidence": "high"
+    },
+    {
+      "severity": "MEDIUM",
+      "title": "trackExcerpt and token-progress baseline key on the single current dispatch, so a cancelled-then-requeued turn can hide or misattribute the live excerpt",
+      "file": "src/coordinator.ts",
+      "line": 638,
+      "evidence": "trackExcerpt filters assistant messages to m.parent_id === d.message_id where d = this.store.dispatch(w.worker_id) returns only the first non-completed/non-cancelled dispatch (src/store.ts:236-239). If send_worker_message enqueues a follow-up and the earlier dispatch is then cancelled (store.cancelDispatches, e.g. from fail() or src/coordinator.ts:223), messages belonging to the still-streaming dispatch are ignored and the excerpt is deleted (line 643), reporting no progress while the guest is generating. The same single-dispatch keying drives the token-progress baseline at 612-618.",
+      "reproduction": "Code-evidenced only; not reproduced end to end within the budget. Related guard already covered by tests/excerpt.test.ts:204-212, which asserts a stale prior-turn message leaves the excerpt null.",
+      "recommendation": "Consider assistant messages parented to any unresolved dispatch for the worker, and stamp the excerpt with its originating message_id so text from a superseded run can never be presented as the current turn's live output.",
+      "confidence": "medium"
+    }
+  ],
+  "tests": {
+    "ran": true,
+    "command": "bun1.4.2 test tests/{token-idle,excerpt,session-status,core,overview,api}.test.ts; plus reviewer probes in /tmp/rev30/probe",
+    "results": {
+      "targeted_existing_suites": "token-idle+excerpt: 20 pass/0 fail; +session-status+core: 42 pass/0 fail across 4 files, 162 assertions; overview+api: 18 pass/0 fail",
+      "reviewer_probes": "confirm.test.ts 0 pass/6 fail; inv.test.ts 1 pass/1 fail; recoverfirst.test.ts 0 pass/3 fail; persist.test.ts 3 pass/1 fail; reach.test.ts 1 pass/1 fail - each failure is the reproduction of a finding"
+    }
+  },
+  "limitations": [
+    "Finding 4 is code-evidenced, not reproduced end to end.",
+    "Finding 3 simulates a differing modelID at the store boundary rather than against a real OpenCode server.",
+    "Finding 1 severity assumes the guest can read its own exported OPENCODE_SERVER_PASSWORD (src/providers/freestyle.ts:153); no guest was booted.",
+    "Full test suite, packaging and build were not run (out of scope).",
+    "Bun 1.4.2 was installed under /tmp; the lockfile was never rewritten. All work was in a disposable clone at /tmp/rev30/repo; /workspace/repo was left untouched on baseline 5672ead and clean."
+  ]
+}

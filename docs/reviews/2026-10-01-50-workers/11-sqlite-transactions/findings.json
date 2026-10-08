@@ -1,0 +1,50 @@
+{
+  "target": "d428e0f730ed5649485732e95d39c32f5d6a8895",
+  "scope": "SQLite transactions and atomic invariants, error rollback, concurrent control mutations; src/store.ts (reachability traced through src/coordinator.ts, src/security.ts, src/cli/overview.ts, src/runtime.ts, src/mcp.ts)",
+  "findings": [
+    {
+      "severity": "LOW",
+      "title": "Stale `error` survives finish()'s re-arm of a failed worker to `ready`",
+      "file": "src/store.ts",
+      "line": 297,
+      "evidence": "finish() writes `error: result.summary` on the transition to the terminal result state (src/store.ts:294), then re-arms a worker that still has a queued dispatch with `this.transition(id, \"ready\", { completed_at: null })` (src/store.ts:296-297). transition() merges supplied fields over the stored worker (src/store.ts:146-152), so the failure summary persists. The sibling re-arm path in queueMessage explicitly passes `error: null` (src/coordinator.ts:239-243), so the two disagree.",
+      "reproduction": "Local fake provider/agent from tests/helpers (no cloud calls). Worker to running; coordinator.message(follow-up); agent.complete({status:'failed', summary:'lint gate failed'}); await coordinator.tick(). Result: state = \"ready\", error = \"lint gate failed\", completed_at = null. publicWorker() returns {state:'ready', error:'lint gate failed'}. See /tmp/rev11/probe/p8.ts and /tmp/rev11/probe/p12.ts (both exit 0).",
+      "recommendation": "Clear terminal-only fields on re-arm: `this.transition(id, \"ready\", { completed_at: null, error: null })`, or normalise error/deadline_at inside transition() whenever the target state is non-terminal.",
+      "confidence": "high - reproduced end-to-end; consumers are display-only (src/security.ts:146, src/cli/overview.ts:232, src/runtime.ts:94), so impact is observability rather than state-machine corruption"
+    },
+    {
+      "severity": "LOW",
+      "title": "cancelDispatches() is the only multi-row mutation in store.ts with no transaction, and is never paired atomically with the terminal transition",
+      "file": "src/store.ts",
+      "line": 246,
+      "evidence": "cancelDispatches() (src/store.ts:246-250) loops dispatches calling saveDispatch(), each an independent implicit commit. Every other multi-statement invariant wraps this.db.transaction(...): create (:71), transition (:158), claimDispatch (:252), finish (:278). Coordinator always calls cancelDispatches() then a separate transition() (src/coordinator.ts:411-418, :489-495, :775-783, :799-804, :894-905, :935-958, :968-975), so 'all dispatches cancelled AND worker terminal' is never a single commit. The two statements are synchronous with no await between them, so there is no JS interleaving window; a crash window requires killing the process mid-window.",
+      "reproduction": "Injected a throw on the 2nd saveDispatch inside cancelDispatches: resulting dispatch states were [\"cancelled\", \"pending\", \"pending\"] (partial cancellation). See /tmp/rev11/probe/p7.ts (exit 0). Crash-window impact traced by code: a worker left in running/waiting with all dispatches cancelled falls through monitor() to transition 'waiting' (src/coordinator.ts:536-539) until deadline_at (set at src/store.ts:256) trips the timeout check at src/coordinator.ts:452-455.",
+      "recommendation": "Wrap the loop in this.db.transaction(...)(). Stronger: add one store method that cancels dispatches and applies the terminal transition in a single transaction, and replace every cancelDispatches()+transition() pair in the coordinator with it.",
+      "confidence": "high for the atomicity gap (reproduced); medium for real-world impact, which is bounded by the single-writer process lock (src/runtime.ts:145) and busy_timeout=5000 (src/store.ts:22)"
+    },
+    {
+      "severity": "LOW",
+      "title": "request_id retry idempotency depends on the config-resolved SWARMFORGE_DEFAULT_TIMEOUT_SECONDS",
+      "file": "src/store.ts",
+      "line": 82,
+      "evidence": "create() fingerprints the resolved input: `createHash(\"sha256\").update(JSON.stringify(input))` (src/store.ts:72-74). input is built by Coordinator.spawn, which fills timeout_seconds from config.SWARMFORGE_DEFAULT_TIMEOUT_SECONDS when the caller omits it (src/coordinator.ts:185-190). src/store.ts:81-82 then throws \"request_id already used with different arguments\" on mismatch, so an operator setting is baked into the idempotency key.",
+      "reproduction": "Two Coordinator instances over one Store differing only in SWARMFORGE_DEFAULT_TIMEOUT_SECONDS (3600 -> 1800), same request_id and identical body: retry rejected with 'request_id already used with different arguments'. See /tmp/rev11/probe/p11.ts (exit 0).",
+      "recommendation": "Fingerprint only caller-supplied arguments (hash the spawnSchema output before timeout_seconds is resolved) and treat the effective timeout as mutable metadata, or compare a canonicalised subset (team/task/role/prompt) and log rather than reject a timeout-only difference.",
+      "confidence": "high - reproduced; not covered by tests/lifecycle.test.ts:13-17 or tests/core.test.ts:88-120, which retry under unchanged config with an explicit timeout_seconds. Breaks the documented 'use request_id for safe retries' contract (src/mcp.ts:73, ARCHITECTURE.md)"
+    }
+  ],
+  "tests": {
+    "command": "bun test tests/core.test.ts tests/lifecycle.test.ts tests/token-idle.test.ts (Bun 1.4.2 at /tmp/opencode/bun-linux-x64/bun)",
+    "exit_code": 0,
+    "result": "57 pass, 0 fail, 201 expect() calls, 250ms",
+    "probes": "13 standalone scripts under /tmp/rev11/probe against :memory: stores or throwaway /tmp files using tests/helpers FakeProvider and FakeAgent; all exit 0",
+    "toolchain_note": "Snapshot Bun 1.3.14 cannot read lockfileVersion 2; official Bun 1.4.2 installed under /tmp. bun.lock verified byte-identical after `bun install --frozen-lockfile`."
+  },
+  "limitations": [
+    "store.ts is unchanged between baseline 5672ead and target d428e0f, so this assesses pre-existing code rather than the branch delta.",
+    "Full test suite intentionally not run (reserved for the whole-suite reviewer); only the store/targeted suites above.",
+    "Multi-process concurrent writers not exercised beyond a two-connection probe; the flock plus documented single-owner deployment makes that path unreachable.",
+    "Filesystem-permission and redaction surfaces only spot-checked (WAL/SHM inherit 0600) and belong to other reviewers' scopes.",
+    "No real cloud, model or infrastructure calls: all providers and the coding agent were local fakes."
+  ]
+}

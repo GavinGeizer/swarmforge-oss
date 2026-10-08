@@ -1,0 +1,63 @@
+{
+  "target": "d428e0f730ed5649485732e95d39c32f5d6a8895",
+  "scope": "config path/show/validate and serve --check-config behaviour, partial-invalid settings, filesystem side effects (src/cli.ts, src/cli/arguments.ts, src/settings/{load,paths,inspect}.ts, src/serve-command.ts, pre-flight refusals in src/serve.ts, src/config.ts, src/runtime.ts)",
+  "findings": [
+    {
+      "severity": "MEDIUM",
+      "title": "config show emits no structured report for any failure except server value validation",
+      "file": "src/cli.ts",
+      "line": 247,
+      "evidence": "reportConfigShow calls resolveClientSettings at line 247 outside the try; the try at 249-264 wraps only resolveServerSettings, and its catch rethrows anything that is not a SettingsError. prepare() (src/settings/load.ts:725-774) raises config_not_found, config_invalid, env_file_not_found and env_file_invalid, and resolveClientSettings (src/settings/load.ts:866-897) raises invalid_client. Only invalid_config, raised by the server resolver, reaches the structured server:{ok:false,code,message,hint} branch.",
+      "reproduction": "Reproduced. `swarmforge config show --config typo.toml` with `[server] prot = 8787` -> exit=1, stdout empty, stderr 'SwarmForge: Invalid configuration file ...: server: Unrecognized key: \"prot\"'. Same empty-stdout exit=1 for malformed TOML, for env_file = \"missing.env\", for a non-assignment line in the env file, for client.url = \"ftp://host/mcp\", and for SWARMFORGE_CONFIG pointing at an absent file. Control: a valid document with an incomplete server does produce the JSON report.",
+      "recommendation": "Resolve both surfaces inside one guarded block; catch SettingsError from the client resolution as well and emit {client:{ok:false,code,message,hint},server:{...}}, keeping the non-SettingsError rethrow. SettingsError.message is already credential- and control-character-free (src/settings/load.ts:49-62).",
+      "confidence": "high"
+    },
+    {
+      "severity": "MEDIUM",
+      "title": "config path omits the config file's own env_file and never reports env-file existence",
+      "file": "src/cli.ts",
+      "line": 235,
+      "evidence": "reportConfigPath derives env_files only from command.envFiles, i.e. the --env-file flags captured in src/cli/arguments.ts:118-121. The env_file declared by the document is read only inside prepare() (src/settings/load.ts:751-758), which config path never calls. This contradicts the command's own doc comment at src/cli.ts:209-210 ('the environment files layered on it') and README.md:77.",
+      "reproduction": "Reproduced. With a config file containing `schema_version = 1` and `env_file = \"secrets.env\"`: `swarmforge config path --config withenvfile.toml` -> exit=0, {\"config_path\":\"/tmp/.../withenvfile.toml\",\"exists\":true,\"env_files\":[]}. The listed secrets.env is absent, and `config validate` on the same file then exits 1 with no JSON. The explicitly listed --env-file entries carry no existence flag either.",
+      "recommendation": "Read the selected document's env_file in the path branch and prepend anchorPath(env_file, dirname(configPath), homeDirectory(process.env)) to env_files, with a per-entry existence flag; fall back to today's output plus a notes field if parsing fails. Minimum acceptable change: amend the doc comment, --help and README.md:77 to state that env_files lists only --env-file flags.",
+      "confidence": "high"
+    },
+    {
+      "severity": "MEDIUM",
+      "title": "serve --check-config reports ok:true for deployments startServer refuses at startup steps 2 and 3",
+      "file": "src/cli.ts",
+      "line": 195,
+      "evidence": "The --check-config branch (src/cli.ts:195-200) only repeats the ':memory:' refusal, and the import('./serve-command') that would reach startServer is placed after the early return (src/cli.ts:204). startServer refuses first at src/serve.ts:161 via acquireProcessLock, which throws 'Another SwarmForge process owns this database' (src/runtime.ts:147-152), and then at src/serve.ts:163-166 with 'Instance ID differs from persisted database owner'. docs/SERVE.md:33-34 lists both as startup validation steps and docs/CONFIGURATION.md:225-226 requires a serve command to keep the single-database and instance-ID rules, while README.md:80 and src/cli.ts:52-53 present --check-config as the preflight verification.",
+      "reproduction": "Reproduced. (a) Created a durable data/swarmforge.sqlite whose settings.instance_id was 'blue' against a config declaring [workspace] instance_id = \"green\": `swarmforge serve --check-config --config c.toml` -> exit=0, {\"ok\":true,...}. (b) Held LOCK_EX|LOCK_NB on data/swarmforge.sqlite.lock from a live Bun process: the same command again returned exit=0 with {\"ok\":true,...}. serve itself was not started.",
+      "recommendation": "In the --check-config branch, when the database file already exists, open it read-only and compare settings.instance_id with the resolved SWARMFORGE_INSTANCE_ID, failing with startServer's message; then attempt a non-blocking flock(LOCK_EX|LOCK_NB) on <DB_PATH>.lock and refuse when it is held. Both are read-only, so the 'no database, lock file or listener' promise holds. Document in --help which steps remain unverified (port availability, recovery).",
+      "confidence": "high"
+    },
+    {
+      "severity": "MEDIUM",
+      "title": "config validate and serve --check-config report ok:true for an invalid client endpoint",
+      "file": "src/cli.ts",
+      "line": 273,
+      "evidence": "reportValidation calls only resolveServerSettings, so the client surface (fields at src/settings/load.ts:76-89, validation at 866-897) is never resolved. Neither docs/CONFIGURATION.md nor --help states that validation is server-only. Related: a bearer token set only as server.api_token is never surfaced as client.values.token, because client.token is a distinct config key.",
+      "reproduction": "Reproduced. `swarmforge config validate --config serverok.toml` where the file declares client.url = \"ftp://bad.invalid/mcp\" and an otherwise complete server -> exit=0, {\"ok\":true,\"config_path\":\"/tmp/.../serverok.toml\",...}. `swarmforge config show` on the same file -> exit=1 with empty stdout, so no command reports the invalid endpoint in the structured redacted form.",
+      "recommendation": "Resolve client settings in reportValidation too and include the redacted result under a client key, or add client_ok:false with a client_error.code. Keep values/sources as the primary server payload so existing consumers do not change.",
+      "confidence": "high"
+    },
+    {
+      "severity": "LOW",
+      "title": "config path reports exists:true when the selected config path is a directory",
+      "file": "src/cli.ts",
+      "line": 234,
+      "evidence": "existsSync(path) performs no regular-file test, so any existing filesystem entry satisfies the 'whether it exists' field README.md:77 advertises.",
+      "reproduction": "Reproduced. `swarmforge config path --config adir` -> exit=0, {\"config_path\":\"/tmp/.../adir\",\"exists\":true,\"env_files\":[]}, while `config validate --config adir` fails with 'Cannot read ...: EISDIR'.",
+      "recommendation": "Use statSync(path, {throwIfNoEntry:false})?.isFile() ?? false for the exists field, or rename it to present and add an is_file flag.",
+      "confidence": "high"
+    }
+  ],
+  "tests": {
+    "ran": true,
+    "passed": true,
+    "command": "bun test tests/commands.test.ts tests/settings.test.ts tests/inspect.test.ts (official Bun 1.4.2 unpacked at /tmp/bun142; the sandbox's 1.3.14 cannot read this lockfileVersion:2 snapshot and the lockfile was not modified)",
+    "summary": "76 pass, 0 fail, 646 expect() calls, exit 0, 5.94s. Targeted at this scope only; the full suite was not run. Six disposable CLI probes under /tmp/probe1../tmp/probe6 (outside the source checkout) exercised config path/show/validate and serve --check-config with synthetic per-command canaries, isolated HOME and XDG_* and a scratch cwd; exit codes and streams are quoted in the findings and in artifacts/review.md. No cloud, model or infrastructure provider was contacted and no serve process was started."
+  },
+  "limitations": "serve itself was never executed (out of scope; it would need provider doubles), so findings 1-4 rest on real CLI runs plus a source-level trace into src/serve.ts and src/runtime.ts; finding 3 is demonstrated as '--check-config returned ok:true in the states that startServer refuses'. The whole test suite was not run and no packaging/build scope was compiled. Findings 2, 4 and 5 are behavioural-contract findings measured against the project's own documentation (src/cli.ts:52-53,209-210; README.md:77-80,87; docs/CONFIGURATION.md:225-226; docs/SERVE.md:33-34) and are rated MEDIUM/LOW because the impact is operator confusion and a false-green deploy gate rather than data loss or a credential leak. Checked and cleared: no filesystem side effects from any of these commands (before/after snapshot of cwd, HOME and both XDG roots differed only by this reviewer's own snapshot file); no in-memory-database bypass (file::memory:, :MEMORY: and file::memory:?cache=shared all create real on-disk files under bun:sqlite, and ' :memory: ' is trimmed and refused); redaction on these paths held for every canary used. Reviewer experiments disclosed: /tmp/rev41 (detached clone at the target), /tmp/bun142, /tmp/probe1../tmp/probe6, /tmp/memprobe*.ts, /tmp/probe*.sh, /tmp/sfraw. No secret file was inspected."
+}

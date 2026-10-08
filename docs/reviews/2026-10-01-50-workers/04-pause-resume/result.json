@@ -1,0 +1,36 @@
+{
+  "worker_id": "w-d89aad0b-1be3-41f9-b7ea-a0a0aa21f68b",
+  "result": {
+    "worker_id": "w-d89aad0b-1be3-41f9-b7ea-a0a0aa21f68b",
+    "task_id": "04-pause-resume",
+    "run_id": "86ad9a48-5707-434b-b47b-dd01f6593c8f",
+    "status": "completed",
+    "summary": "Verdict FINDINGS at exact target d428e0f730ed5649485732e95d39c32f5d6a8895 (feature/binary-config-serve-20260930). Scope: pause/resume ordering, timeout suspension, retries, pending intents under concurrency. 2 findings, both reproduced with the repo's own fakes. (1) MEDIUM coordinator.ts:440 - a control intent recorded while a step is in flight survives that step's terminal transition (store.finish store.ts:291 and fail coordinator.ts:800-804 leave w.intent set; runTick :345 admits any worker with an intent), so the next tick applies it via applyControl and regresses completed->paused and recovery_required->paused, holding capacity and stranding an accepted send_worker_message (delivery:queued, dispatch stays pending until an unrequested resume). (2) LOW coordinator.ts:235 - queueMessage stamps provision_started_at while paused and resume adds the whole pause elapsed (:863), so the 300s boot guard became ~3900s after a 1h pause. No source changes; targeted suites 58 pass/0 fail.",
+    "details": "Method: fetched the target branch, cloned a disposable detached checkout at /tmp/rev-scope/checkout, verified git rev-parse HEAD = d428e0f730ed5649485732e95d39c32f5d6a8895. /workspace/repo left at baseline 5672ead2a526e07fea9ed11e58b3725e42013527, clean, untouched. Bun 1.4.2 installed to /tmp/rev-scope/bun142 (snapshot Bun 1.3.14 cannot read lockfileVersion 2); bun install --frozen-lockfile exit 0, lockfile not rewritten.\n\nF1 MEDIUM (reproduced): runControl stores the intent then awaits exclusive(), which returns the already-running step, so control never runs its own step. When that step settles the worker (finish -> completed, ambiguous-delivery recovery_required at :573, or fail -> failed/recovery_required) the intent is left set. The next tick's filter (w.intent || ...) includes terminal workers, and applyControl's pause branch has no terminal guard, so the state regresses. Reproduced with gated agent.inspect: completed->paused (previous_state completed, events worker.completed -> worker.paused) and recovery_required->paused. Impact: masks a state the docs require the operator to act on, holds a MAX_WORKERS slot, and a follow-up message is acknowledged with delivery:queued yet never delivered (step is only reached for non-paused states). Why guards miss it: lifecycle.test.ts:309-336 and :562-598 cover destroy-during-reconcile and cancel-behind-an-in-flight-step; fail's missing-VM branch clears intent on purpose, but no test lets an intent wait behind monitor()/complete(), and lifecycle.test.ts:286-298 makes pause-on-completed look intentional. Fix: drop/refuse intents that lost a race to a terminal transition (only cancel/destroy may act on terminal states) and clear intent in store.finish and fail's settled transitions.\n\nF2 LOW (reproduced): queueMessage resets provision_started_at to now while paused; resume then adds the entire pause elapsed, double counting the pre-message part, so the boot guard at :444-451 cannot fire for that long. Measured 3900s window instead of 300s after a 1h pause. Fix: keep the original stamp or clamp the shift to time since the stamp.\n\nChecked and sound: deadline/provision/token-idle clocks are suspended while paused and shifted once on resume; send_worker_message linearization via tearingDown plus cancel/destroy intent (the enqueue at :225 and the throw at :232 share one db.transaction, verified no dispatch leak); spawn request_id retry fingerprint over normalized input; resume/cancel retry keeps VM and intent; worker.resumed cannot surface as a state via lifecycleState().\n\nNo secrets, canaries or credential-shaped examples were captured in the artifacts; the Redactor-sensitive paths were not exercised with real values.",
+    "files_changed": [],
+    "tests": {
+      "ran": true,
+      "passed": true,
+      "command": "cd /tmp/rev-scope/checkout && bun142 install --frozen-lockfile (exit 0) && bun142 test tests/lifecycle.test.ts tests/token-idle.test.ts tests/wait.test.ts (58 pass, 0 fail, 221 asserts, exit 0) && bun142 test /tmp/rev-scope/probe/pause-race.test.ts (2 pass, 0 fail) && bun142 test /tmp/rev-scope/probe/provision-window.test.ts (2 pass, 0 fail)",
+      "summary": "Existing targeted lifecycle/token-idle/wait suites pass unchanged (58/0, exit 0) with Bun 1.4.2, confirming no pre-existing failures in scope. Four reviewer probes outside the source checkout (/tmp/rev-scope/probe) using tests/helpers.ts fakes and :memory: SQLite reproduced both findings (gated inspect -> completed/recovery_required regressed to paused; paused-message -> 3900s boot window) and confirmed the message-refusal path leaks no dispatch. Full suite not run (whole-suite reviewer); probes exit 0."
+    },
+    "git": {
+      "tree": "swarmforge-oss",
+      "workspace": "/workspace/repo",
+      "branch": "swarmforge/repo-review-50-20260930/04-pause-resume/w-d89aad0b-1be3-41f9-b7ea-a0a0aa21f68b",
+      "commit": "5672ead2a526e07fea9ed11e58b3725e42013527",
+      "base_commit": "5672ead2a526e07fea9ed11e58b3725e42013527",
+      "review_url": "https://github.com/GavinGeizer/swarmforge-oss/compare/5672ead2a526e07fea9ed11e58b3725e42013527...swarmforge%2Frepo-review-50-20260930%2F04-pause-resume%2Fw-d89aad0b-1be3-41f9-b7ea-a0a0aa21f68b",
+      "dirty": false,
+      "persisted": true
+    },
+    "warnings": [
+      "git.commit is the assigned baseline 5672ead, not the reviewed target; the exact target d428e0f730ed5649485732e95d39c32f5d6a8895 was reviewed in a disposable detached checkout at /tmp/rev-scope/checkout.",
+      "Findings were reproduced with the repository's fake provider/agent rather than a live provider; the F1/F2 ordering is proven from the code path plus gated-double probes, not from a production incident.",
+      "Window sizes quoted for F1 (30s inspect bound, 120s git push bound, 2s poll interval) come from src/config.ts defaults, not from measured production traces.",
+      "Full test suite intentionally not run; CLI/serve, config/redaction, packaging, git-handoff internals and metrics were outside this scope."
+    ],
+    "needs_followup": true,
+    "followup_reason": "Two actionable defects at the exact target. F1 (MEDIUM, src/coordinator.ts:440 with :345 and :837-856): a control intent recorded while a step is in flight survives that step's terminal transition and regresses completed/recovery_required to paused, stranding an accepted follow-up message; fix by refusing/clearing intents that lost the race to a terminal transition and clearing intent in store.finish and fail's settled paths. F2 (LOW, src/coordinator.ts:235 with :863): provision_started_at is stamped at message time while paused and then shifted by the whole pause elapsed, inflating the boot guard; keep the original stamp or clamp the shift."
+  }
+}

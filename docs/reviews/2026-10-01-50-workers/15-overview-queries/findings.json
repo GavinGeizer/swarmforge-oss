@@ -1,0 +1,43 @@
+{
+  "target": "d428e0f730ed5649485732e95d39c32f5d6a8895",
+  "scope": "Overview aggregation, counts / latest result / current run / token accounting correctness and pagination (src/mcp.ts, src/store.ts, src/security.ts, src/cli/overview.ts, src/cli/client.ts, src/cli/tui.ts, src/coordinator.ts, src/metrics.ts, src/domain.ts)",
+  "findings": [
+    {
+      "severity": "HIGH",
+      "title": "list_workers pages can exceed the 128 KiB MCP response cap, making swarmforge status fail entirely",
+      "file": "src/mcp.ts",
+      "line": 44,
+      "evidence": "register() rejects any tool response over 131072 bytes (src/mcp.ts:44). list_workers (src/mcp.ts:101-118) maps every row through publicWorker, which returns the worker error verbatim (src/security.ts:143). Store.finish copies result.summary into error, and resultSchema permits summary up to 4000 chars (src/domain.ts:44). The CLI overview loop hardcodes limit:100 (src/cli/client.ts:77-80) with no error recovery.",
+      "reproduction": "In-memory MCP server + client. 40 failed workers with 4000-char summaries: list_workers{limit:20} not an error; list_workers{limit:100} returns isError=true with text 'Response exceeds limit; request a smaller page'. Replaying the verbatim cli/client.ts overview loop yields OVERVIEW FAILED. Threshold sweep by worker count at 4000-char summaries: 20 workers = 88,993 bytes (ok), 29 = 129,025 (ok), 30 = 133,473 (exceeds).",
+      "recommendation": "Bound list_workers payload internally (clip error to a short form for list views, or cap total bytes and return a matching next_offset), and have cli/client.ts catch the oversized-page error and retry with a halved limit rather than propagating the failure.",
+      "confidence": "high"
+    },
+    {
+      "severity": "MEDIUM",
+      "title": "Worker-detail TIMELINE renders the oldest 100 events instead of the newest",
+      "file": "src/cli/client.ts",
+      "line": 101,
+      "evidence": "client.inspect calls get_worker_logs with {limit:100} and no cursor (src/cli/client.ts:101-104). Store.events uses 'WHERE id > after ORDER BY id LIMIT ?', so after=0 returns the oldest page (src/store.ts). renderWorkerDetail then renders events.slice(-8) (src/cli/overview.ts:256). Each turn emits several events (worker.running, result.received, worker.ready), so ~30+ follow-up turns exceed 100 events.",
+      "reproduction": "40 simulated follow-up turns produce 121 events. The default page ends at event id 100 while the newest event in the log is id 121. With deterministic one-minute event timestamps the rendered TIMELINE ends at 01:40:00 and the true newest event 02:01:00 never appears in the rendered output.",
+      "recommendation": "Page to the tail in client.inspect (follow the cursor to the final page and keep it), or add a bounded reverse read in Store.events (ORDER BY id DESC LIMIT ? then reverse) for the detail view.",
+      "confidence": "high"
+    },
+    {
+      "severity": "MEDIUM",
+      "title": "Stale inference map entries permanently inflate get_swarm_status and the Prometheus inference gauge",
+      "file": "src/coordinator.ts",
+      "line": 419,
+      "evidence": "Both the reconcile() and step() branches transition a worker to 'paused' on out-of-band VM pause without calling this.inference.delete(worker_id), unlike the control-intent pause path in applyControl which does delete. runTick filters out paused workers, so step()/monitor() never refresh or clear the value. get_swarm_status sums the map (src/mcp.ts:287-290) and metrics.render() sets the gauge from it (src/metrics.ts:80).",
+      "reproduction": "Harness worker driven to running; snapshot forced to busy with inference_active:1; tick -> estimate 1; provider VM set to paused; tick + recover() + tick -> worker state paused, estimate still 1, map still holds [worker_id, 1].",
+      "recommendation": "Delete the inference entry in both pause branches, or prune entries for every worker not in an active state at the end of runTick/reconcile so the aggregate is derived from currently polled workers rather than accumulated history.",
+      "confidence": "high"
+    }
+  ],
+  "tests": {
+    "ran": true,
+    "passed": true,
+    "command": "/tmp/opencode/bun142 install --frozen-lockfile (exit 0); /tmp/opencode/bun142 test tests/overview.test.ts tests/api.test.ts tests/cli.test.ts (20 pass 0 fail, exit 0); /tmp/opencode/bun142 test tests/overview.test.ts tests/api.test.ts tests/cli.test.ts tests/session-status.test.ts tests/wait.test.ts (43 pass 0 fail, exit 0); 10 reviewer probes under /tmp/rv15/probes with Bun 1.4.2",
+    "summary": "Existing targeted scope tests pass and do not exercise any of the three findings: no >100-event log, no >128 KiB page, no out-of-band pause. All three findings were independently reproduced with local fake providers against real shipped code."
+  },
+  "limitations": "Full suite not run (whole-suite reviewer scope). Findings 1 and 2 reproduced with locally synthesized failure summaries and event histories rather than a real failed swarm; the producing code paths are the shipped ones. Finding 1's byte threshold depends on identifier lengths; numbers use short IDs. get_swarm_status counts, get_task/get_team_status totals, store.tasks/store.teams aggregates, store.result latest-result and run_id lookup, and next_offset arithmetic for list_workers/list_tasks/artifacts were traced and probed with no defect found. No real cloud/model providers, VMs, network smoke or credentials were used; only tests/helpers.ts fixtures."
+}

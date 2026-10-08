@@ -1,0 +1,36 @@
+{
+  "worker_id": "w-e8b92cdf-b8da-4eaf-b3ee-8421e3242e4c",
+  "result": {
+    "worker_id": "w-e8b92cdf-b8da-4eaf-b3ee-8421e3242e4c",
+    "task_id": "08-deadline-progress",
+    "run_id": "2ed5cca1-9e42-4ff1-a870-c20c58db5e5c",
+    "status": "completed",
+    "summary": "Review of target d428e0f7 (feature/binary-config-serve-20260930) for worker deadlines, token-progress idle detection, scheduler quiescence and false recovery detection. Verdict FINDINGS. HIGH: a control intent persisted at coordinator.ts:833 that keeps failing in applyControl is never cleared, and step() returns at coordinator.ts:440 before the deadline check (452) and the token-idle budget (612-626), so an expired deadline never fires, OpenCode is never stopped, dispatches are never delivered or collected, and cancel/destroy/force-destroy plus send_worker_message all refuse to clear it; control() even answers success. MEDIUM: the deadline is enforced before monitor(), so a turn that already settled with a valid result is torn down as 'Worker task timed out' and its result is discarded. LOW: the 30s reconcile is awaited inline before the step fan-out, deferring all budget enforcement behind two API timeouts. Findings 1 and 2 reproduced with local fakes; baseline 25 pass/0 fail, probes 6 pass/0 fail. Artifacts: /workspace/.swarmforge/artifacts/review.md and findings.json.",
+    "details": "Target d428e0f730ed5649485732e95d39c32f5d6a8895 verified in a disposable detached clone at /tmp/rev08/target; /workspace/repo left at assigned baseline 5672ead and clean. The delta vs baseline only adds shutdown/tick tracking in coordinator.ts, so findings are existing-code defects.\n\nF1 HIGH (reproduced, src/coordinator.ts:440, 452, 612-626, 510-526, 833, 828-829): runControl persists intent then calls step; step's first branch applies the intent and returns, so a persistently failing pauseWorker/resumeWorker re-enters applyControl forever. The catch patches error but never clears intent, so state stays running with pending_control while an expired deadline_at and an expired token_progress_at are never enforced, systemctl stop is never issued, the queued dispatch is never delivered, and cancel/destroy are refused ('Another worker control operation is pending'); a restart does not help because the intent is durable and runRecover skips workers with one. control() resolves successfully, masking the failure. Probe /tmp/rev08/probe/deadline-intent.test.ts: 3 of 4 tests cover F1, control test proves the deadline path works with no intent pending.\n\nF2 MEDIUM (reproduced, src/coordinator.ts:452 vs 486-509, 610-611): the deadline check precedes monitor(), the only path that settles a turn, so a turn that finished and wrote a valid result is failed/recovery_required with 'Worker task timed out', its dispatch cancelled and its result discarded; claimDispatch (src/store.ts:251-264) starts the deadline at claim, so delivery and Git time also consume it. Probe /tmp/rev08/probe/deadline-settle.test.ts plus an unexpired-deadline control.\n\nF3 LOW (code-evidenced, src/coordinator.ts:311): runTick awaits recover() before the per-worker step fan-out; runRecover awaits listWorkers and one getWorker per worker at API_TIMEOUT each, so a degraded API defers all deadline/idle enforcement by roughly two timeouts while the ticking guard skips polls.\n\nSound and checked: pause/resume budget shifting, durable idle clock across restarts, max-monotonic recordProgress, idle-stop quiesce/retention, sessionStatus never treating an unrecognized type as settled, no false completion without a completed reply or run_id-matched result.json, ambiguous-delivery escalation only on idle plus absent history.\n\nLimits: fakes only, no live provider/model/VM, no full suite, no build; F3 not executed. Probe files live only under /tmp (disclosed). No credentials used or emitted.",
+    "files_changed": [],
+    "tests": {
+      "ran": true,
+      "passed": true,
+      "command": "bun test tests/token-idle.test.ts tests/session-status.test.ts (Bun 1.4.2 at /tmp/opencode/bun, --frozen-lockfile in /tmp clone): 25 pass/0 fail, exit 0; bun test /tmp/rev08/probe/: 6 pass/0 fail, exit 0",
+      "summary": "Target tests in scope passed (25/25). Six reviewer probes outside the checkout passed (6/6), including the two reproductions; a third probe (30s reconcile gating) was removed unexecuted rather than left failing. No full suite, build, packaging, real provider/model call or VM smoke was run."
+    },
+    "git": {
+      "workspace": "/workspace/repo",
+      "branch": "swarmforge/repo-review-50-20260930/08-deadline-progress/w-e8b92cdf-b8da-4eaf-b3ee-8421e3242e4c",
+      "commit": "5672ead2a526e07fea9ed11e58b3725e42013527",
+      "base_commit": "5672ead2a526e07fea9ed11e58b3725e42013527",
+      "review_url": "https://github.com/GavinGeizer/swarmforge-oss/compare/5672ead2a526e07fea9ed11e58b3725e42013527...swarmforge%2Frepo-review-50-20260930%2F08-deadline-progress%2Fw-e8b92cdf-b8da-4eaf-b3ee-8421e3242e4c",
+      "dirty": false,
+      "persisted": true
+    },
+    "warnings": [
+      "F1 leaves a worker unmanageable through the MCP surface: destroy(force=true) and cancel are refused while the intent is pending, so operator recovery needs direct database editing or a code fix.",
+      "F2 can turn a successful run into recovery_required and lose its structured result; it is asymmetric with the token-idle budget, which is documented to never stop a completed turn.",
+      "F3 is code-evidenced only; reproducing it needs a 30s reconcile window, so it was not executed.",
+      "Snapshot Bun 1.3.14 cannot read this lockfileVersion 2; Bun 1.4.2 was installed under /tmp/opencode/bun and the lockfile was not rewritten.",
+      "Reviewer probe files (/tmp/rev08/probe/*.test.ts) and the disposable clone (/tmp/rev08/target) live outside the source checkout; /workspace/repo was not modified."
+    ],
+    "needs_followup": true,
+    "followup_reason": "F1 (HIGH) needs a fix bounding unappliable control intents so the task deadline and token-idle quiescence stay enforceable, plus control() surfacing the unapplied pending_control; F2 (MEDIUM) needs the deadline checked after the turn can settle."
+  }
+}

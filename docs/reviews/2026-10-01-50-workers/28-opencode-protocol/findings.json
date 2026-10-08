@@ -1,0 +1,71 @@
+{
+  "target": "d428e0f730ed5649485732e95d39c32f5d6a8895",
+  "scope": "OpenCode request/response/session semantics, errors, history/status interpretation and compatibility assumptions (src/providers/opencode.ts and its consumers in src/coordinator.ts, src/domain.ts) against @opencode-ai/sdk@1.18.31",
+  "verdict": "FINDINGS",
+  "findings": [
+    {
+      "severity": "HIGH",
+      "title": "An unrecognized /session/status response shape is read as 'the turn finished', silently completing a worker mid-generation",
+      "file": "src/providers/opencode.ts",
+      "line": 166,
+      "also_lines": [184, "src/coordinator.ts:560", "src/providers/opencode.ts:64"],
+      "evidence": "inspect() reads sessionStatus(status.data?.[w.opencode_session_id]?.type). For any body that is not a record keyed by session id (null, array, string, non-status body) the index yields undefined and sessionStatus() returns 'idle' at line 184, which coordinator.ts:560 treats as settled. The adapter is strict only about an unrecognized 'type' (-> 'unknown'); the body shape is never validated. src/config.ts:44 leaves the worker-side server unpinned (bare 'opencode serve'), so the shape is an external contract.",
+      "reproduction": "/tmp/rev28/probes/probe1-status-shape.ts (real OpenCodeAgent + Coordinator, in-process fake fetch): statuses for a genuinely busy session -> 'absent key -> idle', 'null body -> idle', 'array body -> idle', 'string body -> idle', 'unrecognized type -> unknown'. Coordinator impact: fake server reports busy with one completed reply and a second assistant turn still streaming -> baseline state=running (correct), but with an array-shaped status body -> state=completed result=\"FIRST\".",
+      "recommendation": "Validate the body before reading it: return 'unknown' when data is null, not an object, or an array; only treat a well-formed record missing this session's key as 'idle'. Update the 'null body -> idle' assertion in tests/session-status.test.ts to expect 'unknown'.",
+      "confidence": "high (behavior reproduced against the target code; only the environmental trigger is inferred)"
+    },
+    {
+      "severity": "MEDIUM",
+      "title": "Every poll re-walks the entire session history: uncapped, uncached, order-assuming",
+      "file": "src/providers/opencode.ts",
+      "line": 113,
+      "also_lines": [116, 121, 129, "src/coordinator.ts:541"],
+      "evidence": "inspect() loops 'while (page.length === 100)' walking every older page and unshifting them, with no page cap and no per-worker memo; monitor() calls it on every tick. Requests per inspect grow linearly with history. One failed page (throwOnError: true) discards the entire snapshot.",
+      "reproduction": "/tmp/rev28/probes/probe2-pagination.ts: 100 messages -> 3 requests/37ms; 1000 -> 12/178ms; 5000 -> 52/829ms; 20000 -> 202/3262ms (15ms simulated RTT). Three polls of a 5000-message session -> 156 requests. A server that returns an overlapping page makes inspect() throw 'OpenCode message pagination did not advance'; probe3 shows the coordinator then keeps the worker non-terminal in state=running with 'Provider or OpenCode operation failed; retrying within deadline' until the deadline.",
+      "recommendation": "Cache the oldest fetched message id per worker and fetch forward only; cap the backward walk (the coordinator only needs messages parented to the current dispatch message id); degrade to the recent page on a page-fetch failure instead of throwing.",
+      "confidence": "high for the cost and the wedge (measured); the cursor's lexicographic-order assumption (sort()[0] == oldest, src/store.ts:217 mixes SwarmForge message ids into the same namespace) is an unverified hypothesis"
+    },
+    {
+      "severity": "MEDIUM",
+      "title": "OpenCode error detail is discarded and errored messages without time.completed are dropped entirely",
+      "file": "src/providers/opencode.ts",
+      "line": 142,
+      "also_lines": ["src/coordinator.ts:597", "src/coordinator.ts:581"],
+      "evidence": "The adapter maps 'error: info.error?.name'. At the pinned SDK the diagnosis lives in info.error.data (ApiError: message/statusCode/isRetryable; ProviderAuthError: providerID/message; StructuredOutputError: retries; see @opencode-ai/sdk@1.18.31 dist/v2/gen/types.gen.d.ts). coordinator.ts:597 then reports only 'OpenCode session failed (<Name>)'. Separately coordinator.ts:581-584 requires m.completed, so an errored assistant message lacking time.completed is excluded from 'replies' and the worker later dies with the unrelated 'No token progress' message.",
+      "reproduction": "Code trace against the pinned SDK type definitions; no server needed. redactorFor(this).value is already applied to results at coordinator.ts:707, so a redacted data.message could be surfaced.",
+      "recommendation": "Carry a bounded, redacted info.error.data.message through AgentMessage.error and include it in the failure string; treat info.error !== undefined as terminal even without time.completed.",
+      "confidence": "high for the discarded detail (code + pinned SDK types); the no-time.completed branch is an unverified hypothesis about server behavior"
+    },
+    {
+      "severity": "MEDIUM",
+      "title": "A saved session that no longer exists fails the worker as 'Provisioning timed out' instead of being recreated",
+      "file": "src/providers/opencode.ts",
+      "line": 79,
+      "also_lines": [80, 84, 87, "src/coordinator.ts:468", "src/coordinator.ts:446"],
+      "evidence": "When w.opencode_session_id is set, ensureSession calls session.get and returns it; with throwOnError: true a 404/410 throws, so the deterministic-title search and session.create fallback a few lines below are never reached. step() retries every tick while 'booting' and the provisioning timeout at coordinator.ts:446-449 then fails the worker with an error naming the wrong subsystem.",
+      "reproduction": "/tmp/rev28/probes/probe3-impact.ts: ensureSession throwing 'HTTP 404: /session/ses-1 not found' -> 'state=booting error=\"Provider or OpenCode operation failed; retrying within deadline\"'; after the provision timeout -> 'state=failed error=\"Provisioning timed out\"'.",
+      "recommendation": "Catch the not-found case specifically (the SDK error carries the HTTP status) and fall through to session.list/session.create; keep rethrowing transport and auth failures.",
+      "confidence": "high (reproduced against the target coordinator and adapter with fakes)"
+    }
+  ],
+  "tests": {
+    "command": "bun test tests/session-status.test.ts tests/adapters.test.ts tests/token-idle.test.ts",
+    "exit_code": 0,
+    "passed": 32,
+    "failed": 0,
+    "bun_version": "1.4.2 (installed at /tmp/rev28/bunhome; snapshot bun 1.3.14 cannot read lockfileVersion 2)",
+    "log": "/workspace/.swarmforge/logs/rev28-targeted.log",
+    "probes": [
+      "/tmp/rev28/probes/probe1-status-shape.ts",
+      "/tmp/rev28/probes/probe2-pagination.ts",
+      "/tmp/rev28/probes/probe3-impact.ts"
+    ]
+  },
+  "limitations": [
+    "Full test suite deliberately not run (whole-suite scope); only the three in-scope test files.",
+    "No real OpenCode server, model provider or network smoke: all adapter/coordinator probes used in-process fake fetch and a fake WorkerProvider.",
+    "Server-side message ordering versus the lexicographic 'before' cursor, and whether OpenCode stamps time.completed on an errored message, could not be verified from the SDK package and are reported as hypotheses.",
+    "The OpenCode server version in the worker image is external to this repo, so the likelihood of the /session/status shape change in F1 is unverified; only the resulting code behavior was reproduced.",
+    "Experiments live only under /tmp/rev28 (pristine detached clone at the target, a runnable copy, the unpacked SDK, and three probe scripts); /workspace/repo was never modified."
+  ]
+}

@@ -1,0 +1,36 @@
+{
+  "worker_id": "w-8b07c2f6-a9b9-46cd-a21f-9db4d1dca99b",
+  "result": {
+    "worker_id": "w-8b07c2f6-a9b9-46cd-a21f-9db4d1dca99b",
+    "task_id": "21-http-limits",
+    "run_id": "c5e5a8bf-856b-47b0-a87b-4381146d78ee",
+    "status": "completed",
+    "summary": "Review INCOMPLETE at target d428e0f730ed5649485732e95d39c32f5d6a8895 (branch feature/binary-config-serve-20260930) for scope: request size/concurrency bounds, malformed JSON, connection lifecycle, resource exhaustion, error status semantics. 6 findings: 4 MEDIUM (60s idleTimeout shorter than the ~150s composed control-operation bound so long cancel/destroy calls lose their reply; /metrics render unbounded per scrape and its listener skips the host/bearer check; /events cost scales with retained workers via the redaction secret set; no concurrency cap, one 123 KiB batched request registered 1000 store listeners) plus 1 LOW silent 500 and 1 LOW verified-good note on malformed JSON/oversize rejection. 5 findings reproduced locally with fake providers, 1 code-derived. Targeted tests 33 pass / 0 fail. One confirming probe was cut off by the 30-minute review deadline, so the scope was not exhausted. Artifacts: /workspace/.swarmforge/artifacts/review.md and findings.json.",
+    "details": "Detached disposable checkout at /tmp/swarm-rev verified with git rev-parse HEAD = d428e0f730ed5649485732e95d39c32f5d6a8895; /workspace/repo left at its assigned baseline 5672ead2a526e07fea9ed11e58b3725e42013527 and clean. Toolchain: official Bun 1.4.2 staged in /tmp because the snapshot Bun 1.3.14 cannot read lockfileVersion 2; the lockfile was never rewritten. F1 (MEDIUM) src/serve.ts:175 idleTimeout 60 vs the quiesce call chain at src/coordinator.ts:725-745 and cancel at 875-906, each step bounded by SWARMFORGE_API_TIMEOUT_MS 30000, so a cancel of a paused worker can need 120-150s; reproduced cancel_worker returning at 60021ms with hanging fake providers and the isolated Bun idleTimeout mechanism failing a 12s handler at 4002ms. F2 (MEDIUM) src/serve.ts:177-190 metrics listener has no bearer or host check unlike src/http.ts:9-29, and src/metrics.ts:74-131 issues per-worker and per-dispatch SQL: 50ms at 200 retained workers, 731ms at 1000, 5125ms at 3000. F3 (MEDIUM) src/http.ts:34-52 with src/security.ts:43-50 and 5-23: /events replay 1981ms and 1986ms at 1000 retained workers. F4 (MEDIUM) src/http.ts:87-99 and src/store.ts:42-56: 1000 wait_for_state_change calls fit in 123891 bytes and registered 1000 listeners from one connection; one event with 256 waiters cost 101ms synchronous; 2000 waiters took 48s to settle; Bun pendingRequests ceiling observed at 256. F5 (LOW) src/http.ts:95 discards the thrown error and returns a bare 500 with no log. F6 (LOW, verified good) src/http.ts:63-85 correctly returns 400 for empty, malformed, null, scalar and array bodies and 413 for oversize and lying content-length. Teardown was verified clean: client abort released its listener and all listeners returned to zero, so F4 is exhaustion rather than a leak. Limitations: cancel3.ts (4x25s chained quiesce) was cut off by the deadline, leaving F1 worst case code-derived; no full suite run and no check/compile; no real cloud, model or infrastructure smoke. Report and findings JSON were sanitized with the production Redactor over deployment secrets and dummy canaries to a fixed point with no residual matches.",
+    "files_changed": [],
+    "tests": {
+      "ran": true,
+      "passed": true,
+      "command": "/tmp/bun142/bun-linux-x64/bun test tests/http.test.ts tests/wait.test.ts tests/serve.test.ts",
+      "summary": "33 pass, 0 fail, 189 expect() calls, exit 0 using official Bun 1.4.2 (snapshot Bun 1.3.14 cannot read lockfileVersion 2; lockfile not rewritten). bun install --frozen-lockfile succeeded with 125 packages. 14 custom probes under /tmp/probe with fake providers only: 13 completed exit 0, cancel3.ts cut off by the review deadline, cap.ts first run exceeded a shell timeout and was re-run at smaller N. No full suite, no check or compile run."
+    },
+    "git": {
+      "workspace": "/workspace/repo",
+      "branch": "swarmforge/repo-review-50-20260930/21-http-limits/w-8b07c2f6-a9b9-46cd-a21f-9db4d1dca99b",
+      "commit": "5672ead2a526e07fea9ed11e58b3725e42013527",
+      "base_commit": "5672ead2a526e07fea9ed11e58b3725e42013527",
+      "review_url": "https://github.com/GavinGeizer/swarmforge-oss/compare/5672ead2a526e07fea9ed11e58b3725e42013527...swarmforge%2Frepo-review-50-20260930%2F21-http-limits%2Fw-8b07c2f6-a9b9-46cd-a21f-9db4d1dca99b",
+      "dirty": false,
+      "persisted": true
+    },
+    "warnings": [
+      "Verdict INCOMPLETE: the review scope was not exhausted within the 30-minute budget; findings stand on collected evidence but coverage of connection lifecycle is partial.",
+      "cancel3.ts, the confirming probe for the worst-case chained quiesce bound behind F1, was cut off by the deadline, so F1 worst case is code-derived rather than measured.",
+      "Bun 1.4.2 was staged under /tmp because the snapshot Bun 1.3.14 cannot read lockfileVersion 2; the lockfile was not rewritten.",
+      "Only 3 of 20 test files were run; the full suite belongs to the whole-suite reviewer.",
+      "No real cloud, model provider or infrastructure smoke was performed; all probes used local fake providers."
+    ],
+    "needs_followup": true,
+    "followup_reason": "F1 (MEDIUM, src/serve.ts:175) needs either a composed request budget derived from the idle timeout or a whole-call bound on mutating tools; confirming measurement pending. F2/F3/F4 (MEDIUM) need admission and retention bounds: an authenticated cap on concurrent requests and wait_for_state_change waiters, a bearer/host check on the metrics listener, and cached or pre-aggregated metrics plus a redaction secret set that is not rebuilt per event."
+  }
+}

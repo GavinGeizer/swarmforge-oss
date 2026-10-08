@@ -1,0 +1,12 @@
+{
+  "worker_id": "w-95465c2b-eefd-49a7-b170-d38f5aaa7f3a",
+  "task_id": "35-config-discovery",
+  "target": "d428e0f730ed5649485732e95d39c32f5d6a8895",
+  "initial_run_status": "failed: deadline",
+  "recovery_run_id": "38a647ad-d9a1-44b4-8b80-09a07f5063c6",
+  "recovery_result_status": "Worker task timed out",
+  "artifact_report_preserved": true,
+  "structured_result_available": false,
+  "source_state": "Independent live VM Git checks confirmed clean baseline 5672ead2a526e07fea9ed11e58b3725e42013527; actual remote master matched.",
+  "cleanup_state": "destroyed"
+}

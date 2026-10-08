@@ -1,0 +1,37 @@
+{
+  "worker_id": "w-7848c8f3-7f8d-4a3b-9315-0fabe828833b",
+  "result": {
+    "worker_id": "w-7848c8f3-7f8d-4a3b-9315-0fabe828833b",
+    "task_id": "10-followup-protocol",
+    "run_id": "6f156824-6eb1-4d80-98d4-6c04153da087",
+    "status": "completed",
+    "summary": "Verdict FINDINGS at target d428e0f730ed5649485732e95d39c32f5d6a8895 (feature/binary-config-serve-20260930). Scope: follow-up queue/session identity, per-run result metadata, ordering after completed turns, queue caps. 1 HIGH, 1 LOW. HIGH (src/coordinator.ts:220 with :226-237,:799): send_worker_message to a worker paused with previous_state=recovery_required skips the cancelDispatches branch keyed on w.state, so the acknowledged run queues behind the worker's stale unresolved dispatch; when the token-idle watchdog quiesces that dead run, fail() cancels the acknowledged follow-up, so no error is returned and the message is lost, violating the invariant at :196-200. LOW (src/store.ts:300, src/mcp.ts:150): get_worker_result(worker_id) can serve an earlier run's success as latest for a failed current run, with no staleness marker. Session identity, result identity, completed-turn ordering and the 100-turn cap verified sound. Report: /workspace/.swarmforge/artifacts/review.md, findings.json.",
+    "details": "Target verified by detached clone at /tmp/opencode/rev10/t (git rev-parse HEAD = d428e0f73...); /workspace/repo left at baseline 5672ead, clean, unmodified.\n\nFINDING 1 (HIGH) trigger: worker holds an unresolved dispatch while reaching recovery_required (coordinator.ts:429-432 VM stopped reconcile, or :573-578 ambiguous delivery - neither cancels dispatches) -> pause_worker (previous_state=recovery_required) -> send_worker_message -> resume_worker. queueMessage's stale-dispatch cleanup at :220 tests w.state, which is 'paused', so cancelDispatches is skipped; the branch at :226-237 rewrites previous_state to booting/ready and returns delivery:'queued'. step() at state ready (:475-484) picks store.dispatch(id), the oldest unresolved row (store.ts:236-240 ORDER BY rowid), so the new turn is never submitted and is later cancelled by fail() -> cancelDispatches (:799). Reproduced with the repo harness (probes/followup-order.test.ts): acknowledged delivery 'queued' yet dispatches = sent:<original>, pending:<new>; after resume, submissions after the acknowledged message = 0; final state failed ('No token progress for 1s; worker quiesced'); acknowledged dispatch state 'cancelled'. Control case A (same setup without pause) is correct. Guards do not help: the tearingDown/intent guard (:201-208) only covers in-flight teardown, and tests/lifecycle.test.ts:527-678 covers only cancel/destroy/failure races plus paused+completed (:286) - never paused+terminal-with-stale-dispatch (the only terminal previous_state that can hold a stale row, since 'failed' always cancels first). Fix: compute the effective state (paused ? previous_state : state) and run the existing session check + cancelDispatches before enqueueing; add a regression test.\n\nFINDING 2 (LOW): Store.result() filters dispatches that already have a result and get_worker_result returns only {worker_id, result}, so after run 1 completes and run 2 dies without a structured result the tool returns run 1's status:'completed' while the worker is 'failed', with no state or latest run_id to compare. Reproduced (probes/stale-result.test.ts). Fix: include state and the latest dispatch run_id (or is_latest_run) when run_id is omitted.\n\nVERIFIED SOUND: session id retained across follow-ups and turn correlation via unique per-dispatch message_id (:581-584); identify() forces server-assigned identity and the filesystem fallback rejects a mismatched run_id (:685-686); finish() re-arms 'ready' only when another dispatch is queued (store.ts:277-299); cap probe shows 99 follow-ups + spawn prompt = 100 unresolved then 'Worker message queue full' (docs/MCP-API.md:25); refused message for paused/previous_state=cancelled leaves no dispatch row (transaction rollback).\n\nEXPERIMENTS: only in /tmp/opencode/rev10 (copy of the target with node_modules from official Bun 1.4.2, bun.lock unmodified, fake provider/agent doubles, no credentials); probe copies in /workspace/.swarmforge/logs. No smoke test, no real provider, no config changes.",
+    "files_changed": [],
+    "tests": {
+      "ran": true,
+      "passed": true,
+      "command": "bun test tests/lifecycle.test.ts; bun test tests/session-status.test.ts tests/core.test.ts; bun test ../probes/{followup-order,stale-result,cap,rollback}.test.ts (Bun 1.4.2)",
+      "summary": "tests/lifecycle.test.ts 34 pass/0 fail (exit 0); tests/session-status.test.ts + tests/core.test.ts 22 pass/0 fail (exit 0). Probes: followup-order.test.ts tests B and C fail their assertions by design to reproduce the HIGH finding; stale-result.test.ts fails its assertion to reproduce the LOW finding; cap.test.ts (cap = 100 unresolved turns, matches docs) and rollback.test.ts pass. No full suite, no compile, no real provider/smoke."
+    },
+    "git": {
+      "tree": "swarmforge",
+      "workspace": "/workspace/repo",
+      "branch": "swarmforge/repo-review-50-20260930/10-followup-protocol/w-7848c8f3-7f8d-4a3b-9315-0fabe828833b",
+      "commit": "5672ead2a526e07fea9ed11e58b3725e42013527",
+      "base_commit": "5672ead2a526e07fea9ed11e58b3725e42013527",
+      "review_url": "https://github.com/GavinGeizer/swarmforge-oss/compare/5672ead2a526e07fea9ed11e58b3725e42013527...swarmforge%2Frepo-review-50-20260930%2F10-followup-protocol%2Fw-7848c8f3-7f8d-4a3b-9315-0fabe828833b",
+      "dirty": false,
+      "persisted": true
+    },
+    "warnings": [
+      "Reviewer experiments are outside the source checkout: disposable detached clone /tmp/opencode/rev10/t (target HEAD verified) and a dependency copy /tmp/opencode/rev10/work (official Bun 1.4.2, bun install --frozen-lockfile, bun.lock not rewritten) plus probes in /tmp/opencode/rev10/probes.",
+      "Findings 1 and 2 are demonstrated with the repository's fake provider/agent doubles; behaviour against real Freestyle/OpenCode services is inferred from the code path, not executed.",
+      "Token-idle quiescing was accelerated with a 1s configured timeout instead of waiting 300s.",
+      "Targeted tests only; the full suite was not run (reserved for the whole-suite reviewer) and nothing was compiled.",
+      "Review artifacts: /workspace/.swarmforge/artifacts/review.md and findings.json; probe sources also in /workspace/.swarmforge/logs."
+    ],
+    "needs_followup": true,
+    "followup_reason": "HIGH finding is actionable: send_worker_message acknowledged to a paused worker with previous_state=recovery_required is queued behind a stale dispatch and silently cancelled (src/coordinator.ts:220 with :226-237, :799). Send to the owning coder with the reproduction in /workspace/.swarmforge/logs/followup-order.test.ts."
+  }
+}

@@ -1,0 +1,50 @@
+{
+  "target": "d428e0f730ed5649485732e95d39c32f5d6a8895",
+  "scope": "Client HTTP/MCP connection/error/close handling, token redaction, URL output and noninteractive JSON semantics (src/cli.ts, src/cli/arguments.ts, src/cli/client.ts, src/cli/overview.ts, src/cli/tui.ts, src/http.ts, src/mcp.ts, src/security.ts, src/settings/inspect.ts, src/settings/load.ts)",
+  "sanitized": true,
+  "sanitization_note": "Sanitized with the production Redactor.text plus generic URL/query patterns at fixed point. All probe credential markers were synthetic and have been removed; credential-bearing URLs, user-information URLs and query values are described structurally rather than reproduced. Findings, evidence shapes, line numbers and conclusions are unchanged.",
+  "findings": [
+    {
+      "severity": "MEDIUM",
+      "title": "Interactive dashboard re-prints the unredacted endpoint after its first refresh",
+      "file": "src/cli/client.ts",
+      "line": 88,
+      "evidence": "client.overview() returns { url } from the raw url argument (client.ts:88). src/cli.ts:160 scrubs data.url once, but runDashboard's refresh() replaces the whole object with a fresh client.overview() result (tui.ts:56) and renderOverview prints `MCP  ${data.url}` (overview.ts:156). The scrub is never re-applied, so the raw endpoint is on screen from the first 5s poll (tui.ts:125) onward. Rendered line shape: a `MCP  ` prefix followed by the loopback endpoint with its query string intact, then the metrics segment.",
+      "reproduction": "Probe /tmp/rev40/probe/tui-url.ts (real createHttpHandler server, real connectSwarmForge, real runDashboard) reported booleans: initial frame marker present = false, post-refresh frame marker present = true. Probe /tmp/rev40/probe/pty-e2e.ts ran the real `bun src/cli.ts status --url <endpoint carrying the marker>` under a real pty (script -qec) past the 5s poll: transcript marker present = true. Trigger: operator runs `swarmforge status` on a TTY while the resolved endpoint carries a bearer value in its query string (a token-named parameter) or in its user-information component, supplied via --url or client.url. Consequence: the control-plane bearer value is rendered to the terminal and scrollback for as long as the dashboard runs. Probes assert on a boolean marker match rather than the marker text.",
+      "recommendation": "Separate the connection URL from the display URL: either let connectSwarmForge accept a caller-supplied display URL, or re-apply scrub(settings, ...) to `data` inside runDashboard's refresh() immediately after `data = await client.overview()`. Add a test that drives runDashboard with a client whose overview() returns a credential-bearing url and asserts no rendered frame contains it.",
+      "confidence": "high"
+    },
+    {
+      "severity": "MEDIUM",
+      "title": "Dashboard error banner is not scrubbed with the resolved client credential context",
+      "file": "src/cli/tui.ts",
+      "line": 77,
+      "evidence": "runDashboard catches refresh (tui.ts:76-81), inspect (92-97) and control (110-115) errors itself and assigns the raw message to `message` (tui.ts:77, :93, :111), which is rendered via safeTerminalText (tui.ts:48). safeTerminalText strips control characters only and performs no credential redaction. Because the error never propagates out of runDashboard, the outer catch at src/cli.ts:180-187 - the only place the resolved credential context is applied - never runs. The same lines at src/cli.ts:184-186 do scrub, and src/cli.ts:181-183 documents the intent.",
+      "reproduction": "Probe /tmp/rev40/probe/tui-error.ts drove the real runDashboard with a client whose overview() throws an error embedding a synthetic marker: banner contains marker = true. Banner shape: a `Refresh failed:` prefix, a remote refusal phrase, then a bearer scheme and the marker. Transport feasibility confirmed by /tmp/rev40/probe/transport-error.ts with a real StreamableHTTPClientTransport: the SDK error message is a streamable-HTTP POST failure phrase that embeds the remote response body, and that body contained the marker (message contains marker = true). Trigger: any refresh, inspect, or pause/resume/cancel/destroy failure after the initial successful overview, where the remote failure text carries the bearer value. Consequence: the control-plane bearer reaches the terminal whenever the server or an intermediary proxy echoes the received Authorization header in an error body.",
+      "recommendation": "Pass the resolved client settings or a scrub callback into runDashboard and apply it to every message before rendering, wrapping the assignments at tui.ts:77, :93 and :111 in scrub(settings, ...). Add a test that enters runDashboard with a rejecting client and asserts the credential is absent from every frame.",
+      "confidence": "high"
+    }
+  ],
+  "tests": {
+    "toolchain": "Bun 1.4.2 at /tmp/rev40/bun142/bun-linux-x64/bun (system bun is 1.3.14 and cannot read this lockfile; lockfile never rewritten)",
+    "ran": true,
+    "results": [
+      { "command": "bun install --frozen-lockfile", "exit": 0, "summary": "125 packages installed" },
+      { "command": "bun test tests/cli.test.ts tests/overview.test.ts tests/http.test.ts", "exit": 0, "summary": "14 pass, 0 fail, 65 expect() calls" },
+      { "command": "bun test tests/commands.test.ts", "exit": 0, "summary": "15 pass, 0 fail, 223 expect() calls" },
+      { "command": "bun run /tmp/rev40/probe/tui-url.ts", "exit": 0, "summary": "Finding 1 reproduced" },
+      { "command": "bun run /tmp/rev40/probe/pty-e2e.ts", "exit": 0, "summary": "Finding 1 reproduced end-to-end under a pty" },
+      { "command": "bun run /tmp/rev40/probe/tui-error.ts", "exit": 0, "summary": "Finding 2 reproduced" },
+      { "command": "bun run /tmp/rev40/probe/transport-error.ts", "exit": 0, "summary": "Echoed-bearer transport error confirmed" },
+      { "command": "bun run /tmp/rev40/probe/overview-escape.ts", "exit": 0, "summary": "No finding" },
+      { "command": "bun run /tmp/rev40/probe/live-call-error.ts", "exit": 1, "summary": "Inconclusive: ad-hoc stub did not satisfy the MCP handshake; superseded by transport-error.ts" }
+    ]
+  },
+  "limitations": [
+    "The dashboard is TTY-gated, so reproductions used a real pty (script -qec) or the same fake-stdin/stdout EventEmitter pattern the repository's own tests/overview.test.ts uses.",
+    "All probes used tests/helpers.ts fake provider/agent and a loopback Bun.serve handler; no real cloud or model provider was contacted and no real infrastructure smoke was run.",
+    "Finding 2's trigger depends on a server or intermediary echoing the Authorization header. Reachability of the echoed header is confirmed at the client boundary; the concrete deployment is environment-dependent.",
+    "The full suite was not run; that is the whole-suite reviewer's scope. Only the four test files covering this scope were executed.",
+    "/tmp/rev40/repo/node_modules exists only in the disposable /tmp checkout; /workspace/repo was never checked out, built, or modified."
+  ]
+}

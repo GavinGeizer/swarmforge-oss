@@ -1,0 +1,67 @@
+{
+  "target": "d428e0f730ed5649485732e95d39c32f5d6a8895",
+  "scope": "Lifecycle transition correctness and state invariants across queued/provisioning/booting/ready/running/waiting/completed/failed/cancelled/paused/recovery_required/destroyed; state-machine adversarial traces. Files: src/coordinator.ts, src/store.ts, src/domain.ts, src/mcp.ts, src/config.ts, src/providers/*, src/cli/overview.ts action gating, tests/lifecycle.test.ts, tests/helpers.ts, docs/MCP-API.md, docs/ARCHITECTURE.md.",
+  "findings": [
+    {
+      "severity": "HIGH",
+      "title": "A permanently failing pause/resume leaves a durable intent that blocks every other control operation, disables the deadline and suppresses reconciliation",
+      "file": "src/coordinator.ts",
+      "line": 828,
+      "evidence": "runControl refuses any differing intent while one is pending (src/coordinator.ts:828-829) and that check precedes the redundant-pause early return (:832), so pause/cancel/destroy all throw 'Another worker control operation is pending'. applyControl pause/resume call the provider with no absence handling (:848 pauseWorker, :859 resumeWorker) unlike cancel (:882-889 vmMissing) and destroy (:913 getWorker). step's catch (:510-517) only patches error, so the intent stays durable. step handles the intent before the deadline check (:440-443 vs :452-455). recover returns early for intent-bearing workers (:407), so the confirmed-absence path (:408-419) never records vm_missing or frees capacity. queueMessage refuses messages only for cancel/destroy intents (:201-208). Reproduced with local fakes (/tmp/probes/probe4.test.ts): variant 1 (pause permanently failing, guest alive) -> 'state: running intent: pause ... expired deadline ignored: true', cancel and destroy both throw, guest still running; variant 2 (paused, guest deleted out of band, resume) -> 'after ticks: paused intent: resume vm_missing: false', message acknowledged 'delivery: queued' with dispatches 'sent,pending', force destroy throws.",
+      "reproduction": "cd /tmp/probes && /tmp/bun142/bin/bun test probe4.test.ts (Bun 1.4.2, exit 0, 2 pass)",
+      "recommendation": "In applyControl pause/resume, catch the provider error and probe the existing vmMissing(w.vm_id); on confirmed absence settle immediately (pause -> previous_state, resume -> previous_state ?? 'ready') with vm_missing true and intent cleared. In runControl let cancel/destroy supersede a pending pause/resume intent. Do not let the w.intent early return in recover skip the absence check for pause/resume intents.",
+      "confidence": "high"
+    },
+    {
+      "severity": "MEDIUM",
+      "title": "pause_worker escapes terminal states and lets reconciliation overwrite the reason a worker settled",
+      "file": "src/coordinator.ts",
+      "line": 851,
+      "evidence": "The MCP pause tool (src/mcp.ts:127-140) applies no state gate, and runControl (:816-836) only rejects destroyed/vm_missing/differing intent/non-paused resume/redundant pause, so applyControl pause transitions completed, failed, cancelled and recovery_required workers to the non-terminal 'paused' with previous_state set to the terminal state (:851-855). recover skips only terminal.has(w.state) (:420), so a VM reporting 'stopped' moves the record to recovery_required with error 'VM stopped; inspect before resuming' (:429-432); resume_worker is then refused ('Worker is not paused'). Reproduced (/tmp/probes/probe1.test.ts, probe3.test.ts): 'completed after pause: paused previous_state: completed'; 'failed error: test suite red: 3 failures' -> 'after reconcile: recovery_required error: VM stopped; inspect before resuming previous_state: failed' -> resume THREW 'Worker is not paused'; the original summary survives only in store.result. src/cli/overview.ts:277-283 gates pause to ready/running/waiting, showing the transition is unintended; no lifecycle test pauses a settled worker.",
+      "reproduction": "cd /tmp/probes && /tmp/bun142/bin/bun test probe1.test.ts (Bun 1.4.2, exit 0, 2 pass); probe3.test.ts reproduces the error clobber before erroring on my own later resume call",
+      "recommendation": "Reject pause when terminal.has(w.state), keeping cancel/destroy; or keep the terminal state authoritative by having recover() also skip records whose previous_state is terminal and never overwrite error for an already-settled worker.",
+      "confidence": "high"
+    },
+    {
+      "severity": "LOW",
+      "title": "cancel settles as cancelled when quiescence could not be proven, unlike fail and destroy",
+      "file": "src/coordinator.ts",
+      "line": 890,
+      "evidence": "quiesce returns 'paused' both for a genuinely paused guest and for the ambiguous case where the OpenCode stop failed, pauseWorker failed and the guest still exists (:739-744). fail maps that to recovery_required (:785-798) and destroy to recovery_required (:918-926), but the cancel path only inspects for 'missing' (:890) and otherwise transitions to cancelled with no error. Code-evidenced; not separately reproduced.",
+      "reproduction": "Reuse the fake setup of tests/lifecycle.test.ts:505 (exec 'systemctl stop' returning code 1 plus pauseWorker throwing) with intent=cancel instead of an expired deadline.",
+      "recommendation": "Treat quiesce() === 'paused' as recovery_required in the cancel path, as fail() already does, so an unproven stop is visible and the retained guest is not silently reported as cancelled.",
+      "confidence": "medium"
+    }
+  ],
+  "tests": [
+    {
+      "command": "/tmp/bun142/bin/bun install --frozen-lockfile (in /tmp/rv03t)",
+      "exit": 0,
+      "result": "125 packages installed into the disposable detached clone; lockfile untouched"
+    },
+    {
+      "command": "/tmp/bun142/bin/bun test tests/lifecycle.test.ts tests/wait.test.ts tests/restart.test.ts tests/session-status.test.ts tests/token-idle.test.ts tests/core.test.ts",
+      "exit": 0,
+      "result": "81 pass, 0 fail, 302 expect() calls, 6 files"
+    },
+    {
+      "command": "/tmp/bun142/bin/bun test /tmp/probes/probe1.test.ts /tmp/probes/probe2.test.ts /tmp/probes/probe4.test.ts",
+      "exit": 0,
+      "result": "6 pass, 0 fail (diagnostic traces; findings reproduced)"
+    },
+    {
+      "command": "/tmp/bun142/bin/bun test /tmp/probes/probe3.test.ts",
+      "exit": 1,
+      "result": "2 probe-authoring errors from my own sequencing (paused a worker whose fake guest was already deleted, then called resume); superseded by probe4.test.ts, not a product failure"
+    }
+  ],
+  "limitations": [
+    "Bun 1.4.2 was installed to /tmp/bun142/bin/bun because the snapshot Bun 1.3.14 cannot parse lockfileVersion 2; the lockfile was never rewritten.",
+    "Only the six lifecycle-related test files were run; the full suite belongs to the whole-suite reviewer.",
+    "No real cloud/model provider, network smoke or credential access; only the repository's own FakeProvider/FakeAgent doubles plus in-test overrides.",
+    "HIGH and MEDIUM findings are reproduced end-to-end against the exact target; production reachability of the HIGH finding depends on a provider call that never succeeds (out-of-band deletion or a persistent provider fault), which the same file already handles for other paths.",
+    "LOW finding is code-evidenced only (same fake setup as an existing test, not separately executed).",
+    "Reviewer experiments live only outside the source checkout: /tmp/rv03t (detached clone + node_modules), /tmp/probes/probe1..probe4.test.ts, /tmp/bun142/bin/bun, /tmp/buninstall.sh.",
+    "/workspace/repo left at assigned baseline 5672ead2a526e07fea9ed11e58b3725e42013527, clean, no commits or pushes."
+  ]
+}

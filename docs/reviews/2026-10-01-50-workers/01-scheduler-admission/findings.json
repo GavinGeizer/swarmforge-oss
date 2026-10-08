@@ -1,0 +1,68 @@
+{
+  "target": "d428e0f730ed5649485732e95d39c32f5d6a8895",
+  "scope": "Capacity accounting, spawn admission, queued/provisioning limits, fairness and oversubscription at 50/400 workers (src/coordinator.ts, src/runtime.ts, src/domain.ts). Deterministic local fake providers only.",
+  "findings": [
+    {
+      "severity": "MEDIUM",
+      "title": "Session revival occupies MAX_PROVISIONING slots and head-of-line blocks new queued admission for up to SWARMFORGE_PROVISION_TIMEOUT_SECONDS (300s)",
+      "file": "src/coordinator.ts",
+      "line": 323,
+      "evidence": "runTick counts every worker in state 'provisioning' OR 'booting' against SWARMFORGE_MAX_PROVISIONING (lines 323-325) and gates promotion on 'capacity < MAX_WORKERS && provisioning < MAX_PROVISIONING' (lines 330-331). send_worker_message on a failed/recovery_required worker that already owns a VM transitions it to 'booting' (lines 238-243: w.state === 'completed' ? 'ready' : 'booting'), i.e. a session restore, not a new VM. queueMessage also resets provision_started_at to Date.now() (line 242), and the only thing that ends the state is the provision timeout at lines 444-451 (default 300s).",
+      "reproduction": "Reproduced with local fake provider/agent in /tmp/opencode/probe/p2_booting_slot.ts (exit 0): 4 workers driven to running, transitioned to failed, then each given a follow-up message whose session restore always throws. Output: post-message states=[\"booting\",\"booting\",\"booting\",\"booting\"]; fresh worker state after 10 ticks: queued; capacity accounting = 4 of MAX_WORKERS=50; provisioning-slot consumers = 4 of MAX_PROVISIONING=4; provider VMs created total = 4 (no new VM created). /tmp/opencode/probe/p3_bounds.ts (a) confirms the bound: after aging provision_started_at past 300s, revived=[\"failed\"x4] and fresh=ready. A 400-worker/50-cap control run (p1_capacity.ts) shows the base path itself is correct: peakProviderVms=50, peakProvisioningOrBooting=4, peakCapacityAccounted=50, FIFO.",
+      "recommendation": "Separate the two cases in the accounting: gate the provisioning budget only on workers that still need a VM (state 'provisioning', or 'booting' with no vm_id), or add a distinct flag/state for session revival and exclude it from the lines 323-325 counter. Additionally give revival a shorter bound than SWARMFORGE_PROVISION_TIMEOUT_SECONDS so a permanently failing restore cannot hold the gate.",
+      "confidence": "high"
+    },
+    {
+      "severity": "MEDIUM",
+      "title": "fail() leaves a durable intent set, so a pause racing a terminal failure resurrects 'failed' into a non-terminal, capacity-holding 'paused' worker with no result",
+      "file": "src/coordinator.ts",
+      "line": 800,
+      "evidence": "The main fail() transition writes only { error, completed_at, deadline_at: null } with no intent: null (lines 800-804), unlike its sibling VM-missing branch (line 776-782) and applyControl's cancel branch (line 895-905), which both clear it. Reachability: step() awaits provider.getWorker in the running/waiting branch (line 487) for up to SWARMFORGE_API_TIMEOUT_MS; a concurrent control(id,'pause') durably patches intent (line 833) and then awaits exclusive() (line 834), which returns the already-running promise instead of re-running step() (lines 251-257); the in-flight step then calls fail() (line 504-506 'Worker VM stopped', or lines 595-600 'Missing or malformed structured result'); the next tick's filter admits any worker with a truthy intent (line 345) and applyControl transitions the failed worker to 'paused' (lines 851-855).",
+      "reproduction": "Reproduced with local fake provider/agent in /tmp/opencode/probe/p4_stale_intent.ts (exit 0): worker driven to running; guest set to 'stopped' out of band with provider.getWorker delayed 40 ms; control(id,'pause') issued during that round-trip. Output: control('pause') returned state=failed; after fail(): state=paused intent=null error=Worker VM stopped; next tick: state=paused previous_state=failed; terminal? false; result available? no; vm retained? true; 5 more ticks: state=paused, never terminal, VM still held.",
+      "recommendation": "Add intent: null to the transition fields at lines 800-804 so a terminal outcome always consumes the pending intent, and have runControl re-read state after exclusive() returns instead of reporting a value the next tick invalidates. The cancel/destroy variants of the same race are benign because the stale intent equals the operator's requested outcome; only 'pause' converts a terminal failure into a non-terminal state.",
+      "confidence": "high"
+    }
+  ],
+  "tests": {
+    "command": "cd /tmp/opencode/rev01 && /tmp/opencode/bun-linux-x64/bun test tests/lifecycle.test.ts tests/core.test.ts",
+    "exit_code": 0,
+    "result": "44 pass, 0 fail, 157 assertions, 2 files, 181ms (Bun 1.4.2)",
+    "probes": [
+      {
+        "name": "p1_capacity.ts",
+        "exit_code": 0,
+        "note": "400 workers / MAX_WORKERS=50 / MAX_PROVISIONING=4: peakProviderVms=50, peakProvisioningOrBooting=4, peakCapacityAccounted=50, admittedInFifoOrder=true. No oversubscription."
+      },
+      {
+        "name": "p2_booting_slot.ts",
+        "exit_code": 0,
+        "note": "Reproduces finding 1."
+      },
+      {
+        "name": "p3_bounds.ts",
+        "exit_code": 0,
+        "note": "Finding 1 300s bound; MAX_QUEUE boundary exact (MAX_QUEUE=5 -> accepted=5 rejected=7); cancelling a queued worker frees one slot."
+      },
+      {
+        "name": "p4_stale_intent.ts",
+        "exit_code": 0,
+        "note": "Reproduces finding 2."
+      },
+      {
+        "name": "p5_redact.ts",
+        "exit_code": 0,
+        "note": "Production Redactor scrubbed every probe canary before export."
+      }
+    ],
+    "not_run": "Full suite, packaging/build targets and scripts/smoke.ts: out of scope for this reviewer (whole-suite and packaging scopes respectively; smoke creates a real billable VM)."
+  },
+  "limitations": [
+    "Disclosure: an initial 'git --work-tree=/tmp/opencode/rev01 checkout <target> -- .' run from /workspace/repo updated the assigned repo's index to the target tree; it was detected immediately and reverted with 'git reset --hard 5672ead'. Post-revert: HEAD=5672ead2a526e07fea9ed11e58b3725e42013527, 'git status --porcelain' = 0 lines, branch unchanged, no commits/pushes/tags, no untracked files, no stash. All review work then used the clean disposable clone /tmp/opencode/rev01.",
+    "Findings reproduced with injected local doubles only; no cloud/model provider, VM or smoke run. Real API timings could change the race-window width but not the logic error.",
+    "Snapshot bun is 1.3.14 and cannot read lockfileVersion 2; official Bun 1.4.2 was installed at /tmp/opencode/bun-linux-x64 and the lockfile was never rewritten.",
+    "MAX_WORKERS/MAX_PROVISIONING misconfiguration (provisioning > workers) traced by inspection only, not probed; not a bypass because capacity is checked first in the same condition (lines 330-331).",
+    "The 300s ceiling in finding 1 was established by aging provision_started_at rather than waiting 300s of wall clock; the arithmetic is exact but no timed run was performed.",
+    "Per-team fairness (store.all() is ORDER BY rowid, so strict global FIFO), queue thrash at 400 workers, and startup reconciliation above MAX_WORKERS orphaned VMs were read but not probed; no defects found, and FIFO is consistent with docs/ARCHITECTURE.md:36 ('teams are labels, not security tenants').",
+    "All probe log lines were passed through the production Redactor (src/security.ts:43-50) before export; no canary survived and no secret files were inspected."
+  ]
+}

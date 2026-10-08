@@ -1,0 +1,36 @@
+{
+  "worker_id": "w-3f02f24f-e80d-40bc-b773-ceea9c080bb5",
+  "result": {
+    "worker_id": "w-3f02f24f-e80d-40bc-b773-ceea9c080bb5",
+    "task_id": "07-startup-recovery",
+    "run_id": "c12f6118-ddeb-4d8d-acd3-548fe198d235",
+    "status": "completed",
+    "summary": "Verdict FINDINGS at target d428e0f730ed5649485732e95d39c32f5d6a8895 (feature/binary-config-serve-20260930); read-only in a detached /tmp clone, HEAD verified. Scope: restart recovery, interrupted dispatch/provisioning/control intents, stale sessions, stranded workers. No CRITICAL/HIGH. MEDIUM src/coordinator.ts:831 - recovery_required is terminal and unresumable even when the coordinator parked the worker on a paused/stopped/healthy guest: resume is refused, the terminal early return at :420 precedes the paused/stopped mapping at :421-432, and the tick skips terminal states at :344-349. The emitted 'inspect before resuming' error names a step no tool performs; the only recovery (send_worker_message) cancels the original dispatch, so the spawned prompt is never re-delivered. Reproduced for interrupted submit, stopped guest and quiesce-paused guest across restarts. LOW src/coordinator.ts:685 - result.json fallback requires the optional run_id, discarding a schema-valid file result. Intent replay, VM adoption/orphan retention, vm_missing and shutdown paths are sound. Artifacts: .swarmforge/artifacts/review.md, findings.json.",
+    "details": "Setup: official Bun 1.4.2 unpacked in /tmp (snapshot bun 1.3.14 cannot read this lockfileVersion 2 lockfile); bun install --frozen-lockfile in a disposable lab copy, lockfile not rewritten. /workspace/repo stayed at baseline 5672ead, clean and unmodified.\n\nF1 MEDIUM (reproduced): recovery_required is in terminal (src/domain.ts:17-23) so runTick skips it (src/coordinator.ts:344-349) and runRecover returns at :420 before mapping a paused/stopped guest (:421-432, where the !terminal.has guard at :429 is dead code); control 'resume' is gated on state==='paused' (:830-831). Entry paths: interrupted submit -> 'Prompt delivery ambiguous' on a running idle guest (:561-579); stopped guest -> 'VM stopped; inspect before resuming' (:429-432); quiesce that could only pause the guest -> recovery_required (:785-804, :909-926). applyControl can already resume such a guest (:859, :915-916) but is unreachable. Retained VMs keep consuming SWARMFORGE_MAX_WORKERS capacity (:317-322, probe P4). Probes: p1 P1 (stopped guest, resume refused, unchanged after a second restart), p1 P2 (paused guest, resume refused after restart), p2 P5 (dispatch 'sending' + idle session -> recovery_required on a running guest), p3 P8 (send_worker_message recovers but runs become ['cancelled:Implement a feature','sent:please continue'], so the spawned prompt is never re-delivered). Existing tests only assert entry into the state (tests/lifecycle.test.ts:144,179,264,352); docs/ARCHITECTURE.md:16 documents follow-ups as the resolution, so this is an operability gap versus the messages the code emits.\n\nF2 LOW (reproduced): fallback() rejects a schema-valid result file lacking the optional run_id (src/coordinator.ts:685 vs src/domain.ts:45), while identify() overwrites run_id anyway (:665-672); probe p3 P7 shows the worker left waiting with no result vs completed when run_id is present. Documented as 'a matching-run result.json' (docs/ARCHITECTURE.md:26).\n\nChecked and sound: durable pause/cancel/destroy intents replay after restart (p1 P3); VM adoption by metadata and visible orphan retention (coordinator:365-396, lifecycle:179); confirmed-absent VM -> failed + vm_missing, never re-provisioned (coordinator:408-419); a landed prompt is marked sent, not replayed (coordinator:561-567, lifecycle:250); durable token-progress baseline survives restart (store:265-276); startup order, rollback, abort-during-recovery, listener release, process lock and event-log cursor (serve.ts:140-198, serve-command.ts:88-137, runtime.ts:145-213; tests/serve.test.ts:331,354,380,432); track/stop writer drain and waitForStateChange wake on shutdown (coordinator:82-90, 258-300).",
+    "files_changed": [],
+    "tests": {
+      "ran": true,
+      "passed": true,
+      "command": "bun test tests/restart.test.ts tests/lifecycle.test.ts probes/ (Bun 1.4.2, disposable lab /tmp/opencode/rev07/lab, exit 0) -> 44 pass, 0 fail, 124 assertions. Breakdown: tests/restart+tests/lifecycle 35 pass/0 fail; probes/p1 3 pass; probes/p2 3 pass; probes/p3 2 pass; probes/sanitize 1 pass (both artifacts unchanged by the production Redactor). Targeted only: no full suite, no build/packaging compile. No real provider or model call - repo FakeProvider/FakeAgent in /tmp only.",
+      "summary": "44 pass, 0 fail, 124 assertions, exit 0 with Bun 1.4.2. Probes reproduced the MEDIUM stranded-recovery_required paths (stopped guest, paused guest, interrupted submit, follow-up cancelling the original prompt, retained capacity) and the LOW run_id fallback rejection. Result JSON validated against the target src/domain.ts resultSchema."
+    },
+    "git": {
+      "workspace": "/workspace/repo",
+      "branch": "swarmforge/repo-review-50-20260930/07-startup-recovery/w-3f02f24f-e80d-40bc-b773-ceea9c080bb5",
+      "commit": "5672ead2a526e07fea9ed11e58b3725e42013527",
+      "base_commit": "5672ead2a526e07fea9ed11e58b3725e42013527",
+      "review_url": "https://github.com/GavinGeizer/swarmforge-oss/compare/5672ead2a526e07fea9ed11e58b3725e42013527...swarmforge%2Frepo-review-50-20260930%2F07-startup-recovery%2Fw-3f02f24f-e80d-40bc-b773-ceea9c080bb5",
+      "dirty": false,
+      "persisted": true
+    },
+    "warnings": [
+      "Reviewer experiments live only outside the source checkout: detached clone /tmp/opencode/rev07/sf and lab copy /tmp/opencode/rev07/lab with probes /tmp/opencode/rev07/lab/probes/{p1,p2,p3,sanitize,validate}.test.ts and node_modules; /workspace/repo untouched.",
+      "Real Freestyle provider behaviour unverified (no live calls): whether exec/prepare can run against a 'stopped' guest (F1 case 2 rescue path) and whether vms.get(slug) resolves a slug (src/providers/freestyle.ts:44-47 createWorker idempotency guard). Reported as unverified, not as findings.",
+      "No process was SIGKILLed; crash points were simulated by writing the durable state a crash leaves (worker intent, dispatch 'sending').",
+      "Full suite intentionally not run and nothing compiled (whole-suite and packaging reviewer scopes).",
+      "Artifacts: /workspace/.swarmforge/artifacts/review.md (12100 B) and findings.json (5598 B); test log /workspace/.swarmforge/logs/reviewer07-tests.log; both artifacts pass the production Redactor with canary secrets and contain no credentials."
+    ],
+    "needs_followup": true,
+    "followup_reason": "MEDIUM F1 is actionable in src/coordinator.ts: recovery_required cannot be resumed (gate at :830-831, terminal early return at :420, tick filter at :344-349) although the coordinator's own errors promise 'inspect before resuming'; either make recovery resumable for paused/stopped guests or reword the errors and preserve the stranded dispatch prompt. LOW F2 at src/coordinator.ts:685 discards a schema-valid result.json that omits the optional run_id."
+  }
+}

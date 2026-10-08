@@ -1,0 +1,43 @@
+{
+  "target": "d428e0f730ed5649485732e95d39c32f5d6a8895",
+  "scope": "XDG paths, HOME fallback, relative overrides, foreign CWD independence and config selection (src/settings/paths.ts, src/settings/load.ts, src/cli.ts config selection/reporting, src/config.ts db default, scripts/smoke.ts config entry, docs/CONFIGURATION.md, docs/ENVIRONMENT.md)",
+  "findings": [
+    {
+      "severity": "MEDIUM",
+      "title": "Relative HOME bypasses the absolute-path guard: default config and database paths become working-directory relative",
+      "file": "src/settings/paths.ts",
+      "line": 19,
+      "evidence": "homeDirectory() rejects a non-absolute HOME at paths.ts:15-18, then falls through to `return normalize(homedir())` at paths.ts:19. On POSIX os.homedir() returns $HOME verbatim when it is set, including a relative value, so the fallback reintroduces exactly the rejected value (confirmed on Bun 1.3.14, Bun 1.4.2 and Node). defaultConfigPath/defaultDatabasePath (paths.ts:57-73) then return relative paths, load.ts:739-741 uses defaultConfigPath(env) unanchored, and load.ts:835-841 passes the relative database path through unchanged; src/store.ts:19 mkdirSync(dirname(path)) plus new Database(path) resolve against process.cwd(). This contradicts docs/CONFIGURATION.md:21-24, which states a checkout cannot change a service's configuration. Local probe with a relative HOME: homeDirectory returned a relative path; defaultConfigPath returned a relative config path; resolveServerSettings with an unrelated cwd option still selected the file in process.cwd(); the resolved SWARMFORGE_DB_PATH was relative and constructing a Store created the directory inside process.cwd(); CLI `config path` printed the relative path with exists:true and `serve --check-config` returned ok:true. Tilde expansion is also wrong: a tilde host_path resolves to <base>/<relative home>/<name> instead of an absolute home path.",
+      "reproduction": "Disposable clone at /tmp/rev35/probe-copy; fixture planted under /tmp/rev35/repro; run from that directory with a relative HOME: (1) homeDirectory returns a relative path; (2) resolveServerSettings({env, cwd: unrelated}) selects the planted relative config file because readFile resolves it against process.cwd(); (3) resolved db path is relative and Store() creates the tree in the CWD; (4) CLI config path / serve --check-config report the relative config path. Log: /workspace/.swarmforge/logs/rev35-f1-repro.log",
+      "recommendation": "Validate the os.homedir() fallback with isAbsolute too and fail closed with a SettingsError (or resolve the real account home independently of $HOME) instead of returning a relative value; defensively reject or re-anchor relative default config/database paths in load.ts.",
+      "confidence": "high"
+    },
+    {
+      "severity": "LOW",
+      "title": "`config path` reports the invocation directory as an existing config file for an empty --config, diverging from the resolver",
+      "file": "src/cli.ts",
+      "line": 215,
+      "evidence": "configPath() at cli.ts:215-224 duplicates the selection logic of prepare()/selector() in src/settings/load.ts. anchorPath with an empty string resolves to the invocation directory, so `config path --config \"\"` prints that directory with exists:true and exit 0, while the resolver treats the same empty configPath as an explicit selection and fails config_invalid (EISDIR); `serve --check-config` and `config validate` exit 1.",
+      "reproduction": "HOME=<tmp> bun src/cli.ts config path --config \"\" -> config_path = CWD, exists = true, exit 0; HOME=<tmp> bun src/cli.ts serve --check-config --config \"\" -> EISDIR, exit 1. Log: /workspace/.swarmforge/logs/rev35-f1-repro.log",
+      "recommendation": "Treat an empty --config / SWARMFORGE_CONFIG as unset in both code paths (selector() already skips it), or reject it as a usage error in src/cli/arguments.ts value(); preferably have configPath() reuse the resolver's selection helper so reporting cannot drift from resolution.",
+      "confidence": "high"
+    },
+    {
+      "severity": "LOW",
+      "title": "scripts/smoke.ts bypasses the settings resolver and ignores config file, env_file and XDG defaults",
+      "file": "scripts/smoke.ts",
+      "line": 18,
+      "evidence": "smoke() calls loadConfig() directly (scripts/smoke.ts:18), unlike src/main.ts:7 and src/cli.ts:194 which call resolveServerSettings. loadConfig() reads process.env only and applies the schema default SWARMFORGE_DB_PATH = './data/swarmforge.sqlite' (src/config.ts:77), so it ignores SWARMFORGE_CONFIG, the discovered config file, the config file's env_file and the XDG database default. Verified locally: with a valid config file declaring an absolute server.db_path plus env_file, resolveServerSettings returned that absolute path while loadConfig returned the CWD-relative default, and running the script with the opt-in variable aborted on missing provider/model values even though the config file and its env file supplied them.",
+      "reproduction": "Disposable clone with HOME=<tmp> and <tmp>/.config/swarmforge/config.toml declaring schema_version=1, env_file and an absolute server.db_path: resolveServerSettings -> that absolute db_path; loadConfig -> the CWD-relative default; running the script aborts although the config file plus env file supply the required values. Log: /workspace/.swarmforge/logs/rev35-f1-repro.log",
+      "recommendation": "Resolve the smoke script's configuration through resolveServerSettings({ env: process.env }) so it exercises the same entry point as serve, and add a test asserting the script's resolved SWARMFORGE_DB_PATH matches the resolver for the same environment.",
+      "confidence": "medium"
+    }
+  ],
+  "tests": {
+    "command": "bun test tests/settings.test.ts tests/commands.test.ts tests/cli.test.ts tests/inspect.test.ts && bun test tests/packaging.test.ts -t binary",
+    "toolchain": "Bun 1.4.2 installed at /tmp/opencode/bun/bin/bun; snapshot Bun 1.3.14 cannot read this lockfileVersion 2 lockfile and fails the settings tests on its TOML API; the lockfile was never rewritten",
+    "results": "targeted: exit 0, 78 pass / 0 fail, 656 expect() calls; packaging -t binary: exit 0, 1 pass / 0 fail",
+    "probes": "local-only disposable probes under /tmp/rev35 (relative vs absolute HOME and XDG bases, empty/relative/override config selector, foreign-cwd selection, config-vs-env path anchoring, in-memory sentinel pass-through, loadConfig vs resolver for the smoke script)"
+  },
+  "limitations": "Full suite not run (whole-suite reviewer owns it); only the config-relevant packaging binary case was executed from that file. No real Freestyle/OpenCode/model provider or infrastructure contacted; all probes used local fake values and disposable directories. No credential files inspected and no real credentials used or emitted; artifacts passed through the production Redactor (src/security.ts) to a fixed point. F3's operational impact (billable VM smoke) is inferred from code plus a local reproduction of the configuration step; the real smoke flow was never executed. Windows USERPROFILE behaviour reasoned from code and POSIX os.homedir() semantics only. Reviewer experiments live only outside the source checkout, in /tmp/rev35."
+}

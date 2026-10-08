@@ -1,0 +1,6 @@
+{"probe":"artifact-long-token","leakedCredentialBytes":true}
+{"probe":"default-timeout-idempotency","identicalCallerRetryRejected":true}
+{"probe":"busy-fallback","completedWithoutIdleEvidence":true}
+{"probe":"failed-control","deadlineBypassed":true,"cancelRefused":true}
+{"probe":"excerpt-invisible-character","credentialRejoinedAfterRedaction":true}
+{"probe":"git-clean-guard","failedGitStatusPassedAsClean":true}

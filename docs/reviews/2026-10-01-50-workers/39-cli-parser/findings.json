@@ -1,0 +1,59 @@
+{
+  "target": "d428e0f730ed5649485732e95d39c32f5d6a8895",
+  "scope": "CLI grammar, argument ambiguity, repeats/missing values/unknown flags, defaults and backward-compatible status flags (src/cli/arguments.ts, src/cli.ts argument dispatch and usage text, CLI flag path into src/settings/load.ts). Read-only review; experiments in /tmp/rev39 only.",
+  "findings": [
+    {
+      "severity": "MEDIUM",
+      "title": "Empty flag value accepted and silently ignored: status --url \"\" falls back to the default/env endpoint",
+      "file": "src/cli/arguments.ts",
+      "line": 48,
+      "evidence": "value() at src/cli/arguments.ts:48-53 only rejects an exhausted iterator, so \"\" is returned as a legal value; status() passes it through at src/cli/arguments.ts:66 as overrides.SWARMFORGE_URL=\"\". setValue treats an empty value as unset (src/settings/load.ts:662 `if (value === \"\") return;`) and resolveClientSettings then falls back to SWARMFORGE_URL or DEFAULT_CLIENT_URL = http://127.0.0.1:8787/mcp (src/settings/load.ts:871). Regression vs baseline 5672ead, where argumentsFor() did `if (!value) throw new Error(\"--url requires an endpoint\")`.",
+      "reproduction": "Bun 1.4.2, detached checkout at target. `status --url \"\" --json` -> stderr \"SwarmForge: Unable to connect. Is the computer able to access the url?\", exit 1 (default endpoint attempted, no usage error). With SWARMFORGE_URL=http://127.0.0.1:9/mcp the empty override is discarded entirely, same message/exit. `status --config \"\"` -> \"Cannot read <cwd>: EISDIR\", exit 1; `status --env-file \"\"` -> \"Cannot read environment file <cwd>: EISDIR\", exit 1.",
+      "recommendation": "In value() refuse an empty next token: `if (next.value === \"\") throw new UsageError(`${flag} requires ${noun}`)`, restoring the baseline refusal and preventing a silently different endpoint target.",
+      "confidence": "high-reproduced"
+    },
+    {
+      "severity": "LOW",
+      "title": "A flag in a value position is consumed as the value, silently voiding serve --check-config",
+      "file": "src/cli/arguments.ts",
+      "line": 48,
+      "evidence": "value() takes the next token unconditionally (src/cli/arguments.ts:48-53; call sites :66,:68,:70,:93,:94,:95,:118,:119), while the config action position deliberately rejects a leading flag at src/cli/arguments.ts:110. So `serve --config --check-config` parses to {checkConfig:false, configPath:\"--check-config\"} and reaches serveCommand (src/cli.ts:194-206) as a normal serve, contradicting the documented no-state guarantee in the usage text (src/cli.ts:52-53).",
+      "reproduction": "`serve --config --check-config` -> \"SwarmForge: Config file not found: <cwd>/--check-config\", exit 1; `serve --env-file --check-config` -> \"Environment file not found: <cwd>/--check-config\", exit 1; `status --url --json` -> \"Client endpoint must use http or https: --json\", exit 1 (the --json request is lost). Correct orders (`--check-config --config FILE`, `--config FILE --check-config`) both parse checkConfig:true. Verified no database/lock/listener was created (state dir stayed empty).",
+      "recommendation": "Treat a next token beginning with '-' as a missing value inside value(), mirroring src/cli/arguments.ts:110; the same guard also fixes the empty-value case.",
+      "confidence": "high-reproduced"
+    },
+    {
+      "severity": "LOW",
+      "title": "--version/--help discard all remaining arguments; -h/-V undocumented",
+      "file": "src/cli/arguments.ts",
+      "line": 144,
+      "evidence": "parseArguments returns {kind:\"version\"} at src/cli/arguments.ts:145 and {kind:\"help\"} at :144 (and :106-108 for `config --help`) before the rest of argv is scanned, so trailing unknown arguments are silently ignored (exit 0), unlike the strict unknown-argument refusal elsewhere. usage (src/cli.ts:37-38,54-55) lists only --version/--help although -V/-h are accepted (src/cli/arguments.ts:41,145).",
+      "reproduction": "Pure parser probe: parseArguments([\"-V\",\"--nonsense\"]) = {kind:\"version\"}; parseArguments([\"--version\",\"status\"]) = {kind:\"version\"}; both exit 0 through src/cli.ts:314-321.",
+      "recommendation": "Reject leftover arguments after help/version with a usage error, or document that they are ignored, and list -h/-V in usage.",
+      "confidence": "high-reproduced"
+    }
+  ],
+  "notes": [
+    "Repeats: --url/--config are last-wins silently (undocumented but conventional); --json/--no-interactive/--check-config idempotent; --env-file accumulates in order as documented.",
+    "No --flag=value form and no `--` terminator are accepted; `--url=http://a/mcp` and `-- --json` are refused. Consistency observation only.",
+    "mcpEndpoint no longer validates the scheme itself (src/cli.ts:138-142) but resolveClientSettings still rejects non-http/https (src/settings/load.ts:874-887), preserving baseline behaviour for ftp://host/mcp.",
+    "config path|show|validate correctly refuse a missing action, a flag in the action position, an unknown action and a second action."
+  ],
+  "tests": {
+    "command": "bun test tests/commands.test.ts && bun test tests/cli.test.ts; bun run /tmp/rev39/probe/parse.ts; 9 bounded `bun src/cli.ts ...` invocations",
+    "ran": true,
+    "passed": true,
+    "summary": "Bun 1.4.2 (/tmp/rev39/bun-linux-x64/bun): tests/commands.test.ts exit 0, 15 pass / 0 fail, 223 expect() calls; tests/cli.test.ts exit 0, 2 pass / 0 fail, 10 expect() calls. Parser probe 37 argv cases exit 0. CLI probes exit codes 1 as quoted; HOME/XDG/db path redirected to /tmp/rev39, placeholder settings only, no provider or network calls.",
+    "logs": [
+      "/workspace/.swarmforge/logs/rev39-commands-test.log",
+      "/workspace/.swarmforge/logs/rev39-cli-test.log"
+    ]
+  },
+  "limitations": [
+    "No full-suite run (whole-suite reviewer's scope); no packaging build.",
+    "Windows/PowerShell argv handling not probed (Linux + Bun 1.4.2 only).",
+    "The 'silently started server' variant of finding 2 was not reproduced (requires a valid file literally named --check-config); it is a code-evidenced consequence of checkConfig:false reaching serveCommand.",
+    "The wrong-server consequence of finding 1 is derived from the resolver trace plus the observed fallback, not from a run against a live instance.",
+    "No real cloud or model provider contacted; no credentials used or emitted."
+  ]
+}

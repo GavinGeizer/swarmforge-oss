@@ -1,0 +1,80 @@
+{
+  "target": "d428e0f730ed5649485732e95d39c32f5d6a8895",
+  "scope": "Terminal dashboard input/render/lifecycle/control confirmations, race handling, untrusted terminal control characters (src/cli/tui.ts, src/cli/overview.ts, src/cli/client.ts, CLI dashboard path in src/cli.ts)",
+  "sanitized": "Yes. Sanitized with the target's production Redactor plus generic userinfo-URL and credential-query rules, iterated to a fixed point. Probe fixture endpoint literals (userinfo component and credential query parameter) are described structurally only; no secret literals remain.",
+  "findings": [
+    {
+      "severity": "HIGH",
+      "title": "Interactive dashboard re-prints the raw, unredacted MCP endpoint after every refresh",
+      "file": "src/cli/tui.ts",
+      "line": 56,
+      "evidence": "cli.ts:160 scrubs data.url once via scrub(settings, endpoint) before runDashboard; tui.ts:56 replaces the whole data object with client.overview() on the first poll (5s default, cli.ts:167) or on 'r'. client.ts:88 returns url straight from the connectSwarmForge closure, i.e. the raw endpoint. renderOverview prints it at overview.ts:156, and overview.ts:211-213 applies neither redaction nor control-char sanitization. resolveClientSettings (settings/load.ts:871-891) validates only the scheme, so userinfo and credential query parameters are accepted; cli.ts:157-159 and tests/settings.test.ts:949 confirm this shape is deliberately scrubbed elsewhere. Probe g2.ts used a fixture endpoint carrying both a userinfo component and a credential query parameter: frame 1's header equalled the production Redactor output (both components replaced by its placeholder) while every post-poll frame equalled the raw fixture, and both raw components were present in the post-refresh byte stream, redrawn every second. Consequence: the credential is printed in clear text, defeating the CLI's own redaction.",
+      "reproduction": "cd /tmp/opencode/rev-42/probe && bun run g2.ts (fake MCP client, no server/network); exits 0 and reports frame1 redacted, post-refresh frame unredacted.",
+      "recommendation": "Keep the display endpoint out of the refreshable payload: drop url from OverviewData in client.ts and pass the scrubbed display URL from cli.ts into runDashboard, or re-apply the scrub in tui.refresh() (data = { ...(await client.overview()), url: displayUrl }).",
+      "confidence": "high"
+    },
+    {
+      "severity": "MEDIUM",
+      "title": "renderOverview applies no terminal control-character sanitization",
+      "file": "src/cli/overview.ts",
+      "line": 212,
+      "evidence": "overview.ts:211-213 only clips lines (and skips clipping any line containing ESC[). safeTerminalText (overview.ts:81) is applied to every detail line (overview.ts:274) and to message (tui.ts:48) but never to the overview body. Probes D/H confirmed raw ESC/OSC survives renderOverview. Reachability against a compliant server is constrained and stated honestly: idSchema (domain.ts:24-28) restricts worker_id/team_id/task_id, state is an enum, and the WHATWG URL parser rejects an endpoint containing raw control bytes (verified), so today's reachable vector is a non-SwarmForge or compromised MCP endpoint accepted via --url; reported as defense-in-depth, not a live injection against SwarmForge itself.",
+      "reproduction": "cd /tmp/opencode/rev-42/probe && bun run tui-probe.ts (probe D) and bun run url-probe.ts (probe H); both exit 0 with raw ESC in the rendered overview.",
+      "recommendation": "Map overview lines through safeTerminalText before clipping (as the detail view does) and sanitize the header data.url the same way.",
+      "confidence": "medium"
+    },
+    {
+      "severity": "MEDIUM",
+      "title": "Terminal state (alt screen, hidden cursor, raw mode) restored only on the keypress quit path",
+      "file": "src/cli/tui.ts",
+      "line": 136,
+      "evidence": "The enter sequence is written at tui.ts:121 and the restore sequence exists only inside stop() at tui.ts:136, reachable only from the keypress handler (tui.ts:140). The await at tui.ts:123 is not wrapped in try/finally and no process signal handlers exist. Probe E: process.listenerCount for SIGTERM, SIGINT, exit and uncaughtException was 0 before and during an active dashboard session. In raw mode Ctrl-C arrives as a keypress, so the keypress handler is the only exit path.",
+      "reproduction": "cd /tmp/opencode/rev-42/probe && bun run tui-probe.ts (probe E); exits 0 and prints the listener counts.",
+      "recommendation": "Register SIGTERM/SIGHUP handlers that call the existing idempotent stop() (the stopped flag already prevents a double restore) and wrap the render/interval work in try/finally so the terminal is restored on any exit.",
+      "confidence": "high"
+    },
+    {
+      "severity": "LOW",
+      "title": "Confirmed control action can be overwritten by an older in-flight poll snapshot",
+      "file": "src/cli/tui.ts",
+      "line": 60,
+      "evidence": "A poll refresh passes the !busy check at tui.ts:60 and blocks inside await client.worker(id) (line 63) while the user confirms a destroy. control() then calls refresh() at tui.ts:107, which no-ops because refreshing is already true, so control() finishes first and the older snapshot is written afterwards at tui.ts:65. The !busy re-check at line 64 is evaluated after the await that already started, so it cannot order the writes; the id guard only prevents a worker switch.",
+      "reproduction": "cd /tmp/opencode/rev-42/probe && bun run tui-probe.ts (probe A, gated fake client.worker); exits 0 and reports the last detail frame matching /RUNNING/ and containing 'p pause' after a confirmed destroy.",
+      "recommendation": "Stamp detail refreshes with a monotonic sequence number and discard results older than the last applied one, or ignore state/last_activity_at regressions for the same worker.",
+      "confidence": "high"
+    },
+    {
+      "severity": "LOW",
+      "title": "Destroy confirmation is never re-validated against the current worker state",
+      "file": "src/cli/tui.ts",
+      "line": 144,
+      "evidence": "The confirmation branch calls control('destroy') directly (tui.ts:145), bypassing the availableActions(detail.worker.state) check used by every other action key at tui.ts:177. confirmation is cleared only by n/escape (line 146) and at the start of control() (line 102); nothing invalidates it when detail changes.",
+      "reproduction": "cd /tmp/opencode/rev-42/probe && bun run url-probe.ts (probe C2, poll interval 10ms); exits 0, reporting 5 consecutive frames still asking to destroy a destroyed worker and control calls === ['destroy'].",
+      "recommendation": "Clear confirmation in refresh() when the refreshed state no longer offers destroy, and re-check availableActions in the confirmation branch before dispatching.",
+      "confidence": "high"
+    },
+    {
+      "severity": "LOW",
+      "title": "Ctrl-D in the detail view arms the destroy confirmation",
+      "file": "src/cli/tui.ts",
+      "line": 184,
+      "evidence": "Action matching tests key.name === 'd' with no key.ctrl check; the guard at tui.ts:140 special-cases only ctrl+c and q. readline reports Ctrl-D as {name:'d', ctrl:true} (verified with node:readline emitKeypressEvents over a PassThrough). The confirmation prompt names no worker, so the target is not identifiable at the moment of the decision; damage still requires y.",
+      "reproduction": "cd /tmp/opencode/rev-42/probe && bun run ctrld2.ts; exits 0 and reports Ctrl-D armed the destroy confirmation.",
+      "recommendation": "Ignore keys with key.ctrl || key.meta in the action branches and include the worker id in the confirmation prompt.",
+      "confidence": "high"
+    }
+  ],
+  "tests": {
+    "ran": true,
+    "command": "bun test tests/overview.test.ts (10 pass, 0 fail, exit 0, bun 1.3.14); bun test tests/cli.test.ts (0 pass, 1 fail, exit 1: module resolution error for '@modelcontextprotocol/sdk/client/index.js' - no node_modules in the disposable clone and Bun 1.3.14 cannot read lockfileVersion 2, so dependencies were not installed, reported not retried); local fake-client probes tui-probe.ts, url-probe.ts, g2.ts, misc.ts, ctrld.ts, ctrld2.ts all exit 0.",
+    "summary": "Targeted dashboard test file passes; one unrelated test file could not run for missing dependencies. All six findings reproduced with local fake clients/streams or verified by direct code trace. No real MCP server, provider, VM or network was contacted; full suite, typecheck/compile and the billable smoke were not run (out of scope)."
+  },
+  "limitations": [
+    "Scope limited to the terminal dashboard surface; server-side control paths and packaging were not assessed.",
+    "F1 and F6 reproduced with fake clients/streams rather than a live MCP server; both have short, unambiguous code traces.",
+    "F2's reachable vector is narrow against a compliant server (idSchema, enum state, WHATWG URL parsing) and is reported as defense-in-depth.",
+    "Interactive behaviours needing a real TTY (alt-screen entry, cursor visibility, wrapping) were reasoned from the emitted byte stream, not observed in a terminal emulator.",
+    "Read-only review: no fixes, commits, pushes, merges, tags, releases, worker spawning or configuration changes. /workspace/repo left at baseline 5672ead and clean; disposable clone /tmp/opencode/rev-42/checkout clean at the exact target.",
+    "All probe inputs were synthetic local values; no real credential and no secret file was read, and none is present in this file."
+  ]
+}

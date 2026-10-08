@@ -1,0 +1,13 @@
+{
+  "worker_id": "w-b670b59e-1f4f-4201-80e2-942f2a425d0b",
+  "task_id": "23-artifact-paths",
+  "target": "d428e0f730ed5649485732e95d39c32f5d6a8895",
+  "review_status": "INCOMPLETE",
+  "initial_run_status": "failed: deadline",
+  "recovery_run_id": "8a8c9de1-94f0-43bd-9067-ea337b0a8a10",
+  "recovery_status": "failed: missing or malformed structured result",
+  "artifact_report_preserved": true,
+  "structured_result_available": false,
+  "source_state": "Independent live VM Git checks confirmed clean baseline 5672ead2a526e07fea9ed11e58b3725e42013527; actual remote master matched.",
+  "cleanup_state": "destroyed"
+}

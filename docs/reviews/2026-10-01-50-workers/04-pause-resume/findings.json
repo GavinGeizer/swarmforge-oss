@@ -1,0 +1,37 @@
+{
+  "target": "d428e0f730ed5649485732e95d39c32f5d6a8895",
+  "scope": "Pause/resume ordering, timeout suspension, retries and pending intents under concurrent operations (src/coordinator.ts, src/store.ts, src/domain.ts, src/mcp.ts, src/providers/opencode.ts)",
+  "findings": [
+    {
+      "severity": "MEDIUM",
+      "title": "Control intent recorded during an in-flight step is applied after that step settles the worker, regressing a terminal state to paused",
+      "file": "src/coordinator.ts",
+      "line": 440,
+      "evidence": "runControl (src/coordinator.ts:833-834) stores the intent durably then calls exclusive(id, step); exclusive (:251-257) returns the in-flight step promise, so the control never runs its own step. store.finish (src/store.ts:291) and the settled fail transition (src/coordinator.ts:800-804) leave w.intent set, and runTick (:345) admits any worker with an intent regardless of state, so applyControl (:837-856) pauses an already-terminal worker. Reproduced: state regressed completed -> paused with previous_state 'completed' (events worker.completed -> worker.paused) and recovery_required -> paused with previous_state 'recovery_required'.",
+      "reproduction": "tests/helpers.ts doubles only. /tmp/rev-scope/probe/pause-race.test.ts PROBE 1: run to running, agent.complete, gate agent.inspect mid-monitor(), call control(id,'pause') while the step holds the lock, release. Output: after completion {state:completed,intent:pause}, after one tick {state:paused,previous_state:completed}; a follow-up message is answered {state:paused,delivery:queued} and stays dispatch state 'pending' with submitted still 1 after two more ticks. PROBE 2: same race with no reply, so the in-flight monitor fails the worker as ambiguous delivery -> {state:recovery_required,intent:pause} then {state:paused,previous_state:recovery_required}. Real window: agent.inspect (2 guest calls, 30s bound each) and pushBranch (120s bound).",
+      "recommendation": "Do not let an intent survive a terminal transition: re-validate in step before applyControl (only cancel/destroy should act on terminal states) and clear intent in store.finish and in fail's settled transitions, so a stale intent cannot regress completed/recovery_required to paused. Report the resulting state to the caller instead of silently regressing.",
+      "confidence": "high"
+    },
+    {
+      "severity": "LOW",
+      "title": "Follow-up queued while a paused worker holds a terminal previous_state inflates the post-resume provisioning window by up to the pause duration",
+      "file": "src/coordinator.ts",
+      "line": 235,
+      "evidence": "queueMessage stamps provision_started_at: Date.now() (src/coordinator.ts:235) while the worker is paused, and applyControl resume then adds elapsed = Date.now() - paused_at to that stamp (:863-865), double counting the already-elapsed part of the pause. The boot guard at src/coordinator.ts:444-451 (SWARMFORGE_PROVISION_TIMEOUT_SECONDS=300) therefore cannot fire for that duration.",
+      "reproduction": "/tmp/rev-scope/probe/provision-window.test.ts PROBE 3: complete the worker, pause it, set paused_at 1h in the past, send a follow-up, resume. Output: after message {state:paused,previous_state:ready,provision_started_at_in:0}; after resume {state:ready,provision_started_at_in_s:3600,boot_window_remaining_s:3900} instead of the configured 300s.",
+      "recommendation": "Do not overwrite provision_started_at with Date.now() in queueMessage while paused, or clamp the resume shift to the time actually elapsed since the stamp, so the configured provision window is not silently extended.",
+      "confidence": "medium"
+    }
+  ],
+  "tests": {
+    "ran": true,
+    "command": "cd /tmp/rev-scope/checkout && /tmp/rev-scope/bun142/bin/bun install --frozen-lockfile (exit 0) && /tmp/rev-scope/bun142/bin/bun test tests/lifecycle.test.ts tests/token-idle.test.ts tests/wait.test.ts (58 pass, 0 fail, 221 assertions, exit 0) && /tmp/rev-scope/bun142/bin/bun test /tmp/rev-scope/probe/pause-race.test.ts (2 pass, 0 fail) && /tmp/rev-scope/bun142/bin/bun test /tmp/rev-scope/probe/provision-window.test.ts (2 pass, 0 fail)",
+    "notes": "Bun 1.4.2 installed under /tmp/rev-scope/bun142 because the snapshot Bun 1.3.14 cannot read lockfileVersion 2; the lockfile was not rewritten. Probes use the repository's own fake provider/agent and :memory: SQLite only - no network, no real provider or model calls."
+  },
+  "limitations": [
+    "Read-only review: no source, test, lockfile or config change; /workspace/repo unchanged and clean, experiments confined to the disposable /tmp/rev-scope checkout.",
+    "Findings use the repository's fake provider/agent, so the ordering is proven from the code path plus a gated-double reproduction rather than a production incident; window size is inferred from configured timeouts.",
+    "tearingDown/exclusive interaction reviewed statically only; no concurrency stress run.",
+    "Full test suite not run (reserved for the whole-suite reviewer); CLI/serve, config/redaction, packaging, git-handoff and metrics were not assessed."
+  ]
+}

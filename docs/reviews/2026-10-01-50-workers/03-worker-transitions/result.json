@@ -1,0 +1,37 @@
+{
+  "worker_id": "w-97018f1c-1382-4adf-9f82-f033a4d55152",
+  "result": {
+    "worker_id": "w-97018f1c-1382-4adf-9f82-f033a4d55152",
+    "task_id": "03-worker-transitions",
+    "run_id": "f6ad0e96-0ca1-4989-93cf-6f5d2cf0a11a",
+    "status": "completed",
+    "summary": "Verdict FINDINGS. Reviewed target d428e0f730ed5649485732e95d39c32f5d6a8895 (branch feature/binary-config-serve-20260930) in a detached /tmp clone, scope: lifecycle transitions and state invariants with adversarial state-machine traces. 1 HIGH, 1 MEDIUM, 1 LOW. HIGH: a permanently failing pause/resume leaves a durable intent (coordinator.ts:828-829, :848, :859) that makes every other control op including force-destroy throw, skips the deadline check (:440-443) and suppresses reconciliation (:407), wedging the worker and its capacity slot; reproduced with local fakes. MEDIUM: pause_worker escapes terminal states (:851) and recover() then overwrites the settled reason (:420, :429-432); reproduced. LOW: cancel settles as cancelled when quiescence is unproven (:890) unlike fail/destroy. Baseline: 81 pass/0 fail over 6 lifecycle test files; probes 6 pass. Reports: /workspace/.swarmforge/artifacts/review.md and findings.json.",
+    "details": "HIGH (reproduced, src/coordinator.ts): applyControl pause (:848) and resume (:859) call the provider with no absence handling, unlike cancel (:882-889 vmMissing) and destroy (:913 getWorker). step's catch (:510-517) only patches error, so intent stays durable; runControl (:828-829) then refuses any different intent before the redundant-pause early return (:832), step checks intent before the deadline (:440-443 vs :452-455), and recover skips intent-bearing workers (:407) so absence is never recorded and capacity is never freed. probe4 variant 1 (pause failing, guest alive): state running with an expired deadline still ignored, cancel and destroy both throw, guest still running. Variant 2 (paused, guest deleted out of band, resume): stuck paused/intent=resume, vm_missing never set, send_worker_message still acknowledged delivery=queued for an undeliverable dispatch, force destroy throws. MEDIUM (reproduced): pause_worker is ungated in MCP (mcp.ts:127-140) while the CLI gates it to ready/running/waiting (cli/overview.ts:277-283); completed/failed/cancelled/recovery_required all become paused with previous_state terminal, then recover() (which exempts only terminal.has(w.state), :420) relabels a stopped VM as recovery_required and replaces error ('test suite red: 3 failures' -> 'VM stopped; inspect before resuming'), after which resume is refused. LOW (code-evidenced): quiesce() 'paused' (:739-744) maps to recovery_required in fail (:785-798) and destroy (:918-926) but cancel (:890) settles cancelled with no error. Checked and not reported: MAX_QUEUE race in spawn, createWorker slug idempotency, transition same-state event suppression, documented pending-intent semantics. Artifacts: /workspace/.swarmforge/artifacts/review.md, findings.json; logs in /workspace/.swarmforge/logs. Experiments only in /tmp (rv03t clone, probes, bun 1.4.2 toolchain); no source changes, commits or pushes.",
+    "files_changed": [],
+    "tests": {
+      "ran": true,
+      "passed": true,
+      "command": "cd /tmp/rv03t && /tmp/bun142/bin/bun install --frozen-lockfile (exit 0) && /tmp/bun142/bin/bun test tests/lifecycle.test.ts tests/wait.test.ts tests/restart.test.ts tests/session-status.test.ts tests/token-idle.test.ts tests/core.test.ts (exit 0; 81 pass, 0 fail, 302 assertions) && /tmp/bun142/bin/bun test /tmp/probes/probe1.test.ts /tmp/probes/probe2.test.ts /tmp/probes/probe4.test.ts (exit 0; 6 pass). Note: /tmp/probes/probe3.test.ts exits 1 due to my own probe sequencing, superseded by probe4.test.ts.",
+      "summary": "Target baseline lifecycle-related suites pass (81/81) with official Bun 1.4.2 at /tmp/bun142/bin/bun (snapshot Bun 1.3.14 cannot parse lockfileVersion 2; lockfile never rewritten). My six diagnostic probe tests pass and print the reproduced traces. Full suite not run (whole-suite reviewer's scope); no real provider, smoke or credential access; local fakes only."
+    },
+    "git": {
+      "workspace": "/workspace/repo",
+      "branch": "swarmforge/repo-review-50-20260930/03-worker-transitions/w-97018f1c-1382-4adf-9f82-f033a4d55152",
+      "commit": "5672ead2a526e07fea9ed11e58b3725e42013527",
+      "base_commit": "5672ead2a526e07fea9ed11e58b3725e42013527",
+      "review_url": "https://github.com/GavinGeizer/swarmforge-oss/compare/5672ead2a526e07fea9ed11e58b3725e42013527...swarmforge%2Frepo-review-50-20260930%2F03-worker-transitions%2Fw-97018f1c-1382-4adf-9f82-f033a4d55152",
+      "dirty": false,
+      "persisted": true
+    },
+    "warnings": [
+      "No code fixes, commits, pushes, merges, tags, releases or config changes were made; /workspace/repo is unchanged at the assigned baseline 5672ead2a526e07fea9ed11e58b3725e42013527 with a clean tree.",
+      "Reviewer experiments exist only outside the source checkout: /tmp/rv03t (detached clone of target d428e0f730ed5649485732e95d39c32f5d6a8895 plus node_modules), /tmp/probes/probe1..probe4.test.ts, /tmp/bun142/bin/bun, /tmp/buninstall.sh.",
+      "Bun 1.4.2 was installed to /tmp because the snapshot Bun 1.3.14 fails on lockfileVersion 2; dependencies were installed only into the disposable /tmp clone.",
+      "LOW finding (cancel settling as cancelled when quiescence is unproven) is code-evidenced only; it reuses the fake setup of tests/lifecycle.test.ts:505 and was not separately executed.",
+      "probe3.test.ts exits 1 because of my own probe ordering, not a product defect; probe4.test.ts reproduces both intended behaviors correctly.",
+      "No real cloud/model provider, infrastructure smoke test or credential access was used; no credential-shaped values appear in the artifacts."
+    ],
+    "needs_followup": true,
+    "followup_reason": "HIGH finding needs a coordinator fix: make applyControl pause/resume detect a confirmed-absent guest (vmMissing) and settle, allow cancel/destroy to supersede a pending pause/resume intent in runControl, and stop letting the w.intent early return in recover() skip the absence check. MEDIUM: gate pause_worker against terminal states or keep the settled state authoritative in recover(). LOW: align cancel with fail/destroy on unproven quiescence. Reports: /workspace/.swarmforge/artifacts/review.md and findings.json."
+  }
+}

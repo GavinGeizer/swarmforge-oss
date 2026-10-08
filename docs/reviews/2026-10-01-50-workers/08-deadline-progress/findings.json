@@ -1,0 +1,46 @@
+{
+  "target": "d428e0f730ed5649485732e95d39c32f5d6a8895",
+  "scope": "Worker deadlines, token-progress idle detection, scheduler quiescence and false recovery detection (src/coordinator.ts, src/store.ts, src/providers/opencode.ts, src/config.ts, src/domain.ts, src/safety.ts; tests/token-idle.test.ts, tests/session-status.test.ts, tests/lifecycle.test.ts; docs/ENVIRONMENT.md)",
+  "findings": [
+    {
+      "severity": "HIGH",
+      "title": "A durable-but-unappliable control intent permanently disables the task deadline and token-idle quiescence and cannot be cleared",
+      "file": "src/coordinator.ts",
+      "line": 440,
+      "evidence": "step() returns from `if (w.intent) { await this.applyControl(w); return; }` before the deadline check (line 452) and before monitor()/the token-idle budget (lines 612-626). runControl persists `intent` at line 833; when applyControl throws, step's catch (lines 510-526) only patches `error` and never clears the intent. runRecover skips workers with a pending intent (line 407), and a different intent is refused at lines 828-829, so cancel/destroy cannot clear it and no restart can. control() resolves successfully because step swallows the error, so pause_worker/resume_worker answer as applied while get_worker still shows state running with pending_control (src/security.ts:144).",
+      "reproduction": "Reproduced with local fakes in /tmp/rev08/probe/deadline-intent.test.ts (6/6 probes pass). pauseWorker always throws; control(id,'pause') resolves with state 'running' and intent 'pause'; after setting deadline_at and token_progress_at to 10x the idle budget in the past, 5 further ticks leave state 'running', intent 'pause', no `systemctl stop`, resume/cancel/destroy all refused ('Another worker control operation is pending'), and a queued message is never submitted. Control test with no intent pending shows the deadline path does fire (state failed, stop issued). A second probe shows the same for a stuck resume intent on a paused worker (deadline stays expired and unenforced); a third shows a completed run flipped to paused/previous_state completed by the leftover intent.",
+      "recommendation": "Clear or escalate the intent when applyControl throws (record intent_since and move to recovery_required with the provider error after N attempts), evaluate the deadline and idle budget before the intent branch for non-teardown intents, and have control() report the unapplied intent instead of resolving.",
+      "confidence": "high"
+    },
+    {
+      "severity": "MEDIUM",
+      "title": "A turn that already settled is discarded as 'Worker task timed out' instead of completed",
+      "file": "src/coordinator.ts",
+      "line": 452,
+      "evidence": "The deadline check (lines 452-455) runs before the running/waiting branch reaches monitor() (lines 486-509), which is the only path that settles a turn and collects the result (structured reply or run_id-matched result.json at lines 588-609 and 673-691). The token-idle budget deliberately does the opposite and is documented to apply only to an active dispatch without a result (lines 610-611). claimDispatch starts the deadline at claim (src/store.ts:251-264), so delivery and Git time also consume the budget.",
+      "reproduction": "Reproduced in /tmp/rev08/probe/deadline-settle.test.ts: run to running, agent.complete(), then deadline_at = Date.now()-1; one tick yields state failed/recovery_required with error 'Worker task timed out', store.result() null and the dispatch cancelled. The control probe (unexpired deadline, identical snapshot) yields state completed with the result.",
+      "recommendation": "Let monitor() run before enforcing the deadline, or gate the deadline on the dispatch being unsettled, so a settled turn with a valid result completes and only an unsettled one is quiesced (matching docs/ENVIRONMENT.md).",
+      "confidence": "high"
+    },
+    {
+      "severity": "LOW",
+      "title": "Deadline and idle enforcement latency is serialized behind the periodic reconcile",
+      "file": "src/coordinator.ts",
+      "line": 311,
+      "evidence": "runTick awaits this.recover() (lines 308-315) before the per-worker step fan-out (lines 340-353). runRecover awaits listWorkers() and one getWorker() per worker, each bounded by SWARMFORGE_API_TIMEOUT_MS (default 30s), so a degraded provider API blocks every deadline check, token-idle quiesce and dispatch delivery for roughly two API timeouts, while the `ticking` guard skips the intervening polls.",
+      "reproduction": "Not reproduced: the reconcile only runs 30s after the previous one, so a deterministic probe needs a 30s wait. The ordering is code-evident (await at line 311 precedes the step fan-out).",
+      "recommendation": "Run the reconcile concurrently with or after the step fan-out and bound it below SWARMFORGE_POLL_INTERVAL_MS so it cannot starve deadline enforcement.",
+      "confidence": "medium"
+    }
+  ],
+  "tests": {
+    "baseline": "bun 1.4.2 (installed at /tmp/opencode/bun): bun test tests/token-idle.test.ts tests/session-status.test.ts -> 25 pass / 0 fail, exit 0 (logs/rev08-baseline-tests.log)",
+    "probes": "bun test /tmp/rev08/probe/ -> 6 pass / 0 fail, exit 0 (logs/rev08-probe-all.log); probes live outside the source checkout",
+    "not_run": "no full suite, no build/packaging, no real provider/model calls, no VM"
+  },
+  "limitations": [
+    "Findings validated against injected fakes only; provider-side behaviour (persistent Freestyle pause failures, VM state reporting, OpenCode /session/status shapes) is inferred from code contracts.",
+    "The 30s reconcile gating finding is code-evidenced, not executed.",
+    "The target delta vs baseline 5672ead only adds shutdown/tick tracking in coordinator.ts; deadline, idle and quiescence logic is unchanged, so findings are existing-code defects."
+  ]
+}

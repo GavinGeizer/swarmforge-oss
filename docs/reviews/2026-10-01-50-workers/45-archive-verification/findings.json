@@ -1,0 +1,58 @@
+{
+  "target": "d428e0f730ed5649485732e95d39c32f5d6a8895",
+  "scope": "Archive entry validation/extraction, digest/mode/metadata checks, hostile archive risks, release asset selection",
+  "findings": [
+    {
+      "severity": "HIGH",
+      "title": "verifyArchive accepts non-regular archive members and executes an out-of-tree symlink target",
+      "file": "scripts/package.ts",
+      "line": 187,
+      "evidence": "archiveListing (126) parses only tar -tzf names; stat() at 187 follows symlinks; run([binary,'--version']) at 232 and [binary,'--help'] at 237 execute whatever the path resolves to. Reproduced: archive with swarmforge -> /tmp/sf-probe/outside/swarmforge plus matching SHA256SUMS/metadata returned VERIFIED_OK (exit 0), and the out-of-tree target appended OUTSIDE-EXEC to a marker file twice while verification ran.",
+      "reproduction": "tar member 'swarmforge' of type symlink to an out-of-tree 0755 file; SHA256SUMS/metadata computed over the link target; bun -e \"verifyArchive({archivePath, expectedVersion:'0.1.0'})\" exits 0. Probes /tmp/sf-probe/hostile.tar.gz, probe1.ts, probe5.ts (log: .swarmforge/logs/review-45-archive-verification.log).",
+      "recommendation": "Before extraction, reject any member whose tar type is not a regular file; after extraction assert lstat().isFile() for every expected path and never stat/exec through a link. Keep GNU tar's traversal rejection as defence in depth.",
+      "confidence": "reproduced"
+    },
+    {
+      "severity": "MEDIUM",
+      "title": "Permission check masks setuid/setgid/sticky bits, certifying a setuid-root binary as 0755",
+      "file": "scripts/package.ts",
+      "line": 187,
+      "evidence": "(await stat(binary)).mode & 0o777 strips 0o4000/0o2000/0o1000 before comparing to 0o755; metadata mode at 224 is a string comparison against the literal '0755'. Reproduced: 4755 archive verified OK (SETUID_ARCHIVE_VERIFIED), extracted file is -rwsr-xr-x while metadata.executable.mode says 0755.",
+      "reproduction": "Package a member with mode 4755 plus self-consistent SHA256SUMS/metadata; verifyArchive returns success and `stat -c %a` on the extracted tree shows 4755.",
+      "recommendation": "Compare the full mode (mode & 0o7777) to 0o755 and reject any archive whose recorded member mode carries setuid/setgid/sticky.",
+      "confidence": "reproduced"
+    },
+    {
+      "severity": "LOW",
+      "title": "Whitespace-only archive members are dropped, so the exact three-file listing check can be bypassed",
+      "file": "scripts/package.ts",
+      "line": 134,
+      "evidence": "Names are .trim()ed then filtered to length > 0 before comparison at 170. Reproduced: archive with the three expected members plus a member named '  ' extracted successfully and verified, returning files=[SHA256SUMS, metadata-0.1.0.json, swarmforge].",
+      "reproduction": "Add a fourth tar member whose name is two spaces; verifyArchive still reports the archive as containing exactly the expected files.",
+      "recommendation": "Normalize names without trimming to empty and explicitly reject any member whose normalized name is empty instead of filtering it away.",
+      "confidence": "reproduced"
+    },
+    {
+      "severity": "MEDIUM",
+      "title": "prepareReleaseAssets never checks the loose SHA256SUMS/metadata against the verified archive, and findFile selection is readdir-ordered and recursive",
+      "file": "scripts/package.ts",
+      "line": 388,
+      "evidence": "findFile (356) returns the first name match at any depth. Reproduced: a directory holding a valid archive plus an all-zero-digest SHA256SUMS and a 1-byte metadata-0.1.0.json returned PREPARED_OK with all three listed as release assets; a second probe selected nested/SHA256SUMS over the flat layout. The draft job then uploads those loose files (release.yml:153-159).",
+      "reproduction": "Build an asset directory from a valid archive and replace the standalone SHA256SUMS/metadata with self-inconsistent content; prepareReleaseAssets succeeds and reports them as the assets to publish.",
+      "recommendation": "Digest-compare the loose SHA256SUMS and metadata JSON against the copies extracted from the verified archive and reject any mismatch; restrict findFile to the flat download-artifact layout with deterministic ordering and duplicate rejection.",
+      "confidence": "reproduced"
+    }
+  ],
+  "tests": {
+    "command": "/tmp/bun142/bun-linux-x64/bun test tests/packaging.test.ts -t \"archive verification\" ; /tmp/bun142/bun-linux-x64/bun test tests/packaging.test.ts -t \"release assets\"",
+    "results": "archive verification: 7 pass, 0 fail (exit 0); release assets: 4 pass, 0 fail (exit 0); 8 local hostile-archive probes against target verifyArchive/prepareReleaseAssets, all reproduced",
+    "toolchain": "Bun 1.4.2 unpacked at /tmp/bun142 (snapshot bun is 1.3.14 and rejects bun.lock lockfileVersion 2); --frozen-lockfile honoured, lockfile unmodified"
+  },
+  "limitations": [
+    "Read-only review; no fixes, commits, pushes, merges, tags or workflow changes. /workspace/repo remains at baseline 5672ead2a526e07fea9ed11e58b3725e42013527 and clean; target checked out detached at /tmp/sf-rev.",
+    "Full test suite not run (whole-suite reviewer's scope); only the archive-verification and release-assets describes plus bounded local probes.",
+    "Hostile archives and probes live only in /tmp/sf-probe; no cloud, model provider or infrastructure was contacted.",
+    "Release-workflow exposure is code-evidenced; no live GitHub Actions or artifact-handling run was performed.",
+    "No credentials or secret files were inspected or emitted."
+  ]
+}

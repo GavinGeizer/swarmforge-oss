@@ -1,0 +1,62 @@
+{
+  "target": "d428e0f730ed5649485732e95d39c32f5d6a8895",
+  "scope": "Artifact path canonicalization, traversal/symlinks/TOCTOU, size/range boundaries and filesystem reads",
+  "findings": [
+    {
+      "severity": "MEDIUM",
+      "title": "TOCTOU between the symlink prefix walk and the read makes the artifact allowlist advisory",
+      "file": "src/files.ts",
+      "line": 24,
+      "evidence": "checked() (files.ts:24-31) calls noSymlinks() (files.ts:32-40), which issues one provider.stat per path prefix, then a separate stat for size/isFile; readArtifact (files.ts:92-101) then performs a third, independent provider.readFile. No verified directory entry is bound to the bytes actually returned. A guest process that rewrites a checked prefix into a symlink after the walk makes SwarmForge return bytes from an arbitrary guest path as a worker artifact, contradicting docs/MCP-API.md ('Traversal and symlink paths are rejected'). Content redaction at files.ts:103-106 still applies, so this is a confinement failure rather than a proven secret disclosure.",
+      "reproduction": "Reproduced locally with the repository's FakeProvider (no real guest). /tmp/rv-probe/probe.test.ts probe E: provider.stat returns a clean non-symlink file for every prefix during the checking phase; provider.readFile flips the fake to the post-check phase and returns /etc/shadow-shaped content. Observed: readArtifact returned that content with no error. Why guards/tests miss it: tests/api.test.ts:185 forces provider.stat to always report isSymlink=true, which only proves the check fires when stat itself is hostile; no test mutates the path between the walk and the read.",
+      "recommendation": "Stop treating prefix stat results as a capability. Either re-verify the prefixes after the read and discard on mismatch, or have the provider resolve and read in one guest-side operation that opens each component with O_NOFOLLOW/equivalent so a single call both reads and rejects symlinked prefixes. If only mitigating, perform the walk and the read inside one bounded provider call and document the residual guest-side race.",
+      "confidence": "high - reproduced against the target code via the repository's own fake-provider seam; guest-side read behavior not observed against a real Freestyle guest"
+    },
+    {
+      "severity": "LOW",
+      "title": "readArtifact omits the credential-shaped-path rejection that artifact() enforces",
+      "file": "src/files.ts",
+      "line": 83,
+      "evidence": "artifact() rejects a path whose redacted form differs from the input (files.ts:69-71, 'Artifact path contains credentials'). readArtifact() (files.ts:83-108), the function actually bound to the MCP resources/read template (src/mcp.ts:329-336), calls checked() directly and never repeats that check. A path refused by get_worker_artifact can still be read through resources/read, so the guard is advisory on the path that matters. File contents are still credential-checked at files.ts:103-106, bounding the impact.",
+      "reproduction": "Reproduced locally with FakeProvider. /tmp/rv-probe/probe.test.ts probe D created a file under the artifacts root whose name is the configured model API key. Observed: artifact() -> 'Artifact path contains credentials' (rejected); readArtifact() -> ACCEPTED, returned the file contents. Why guards/tests miss it: tests/api.test.ts:101 covers traversal and secret contents but never asserts readArtifact rejects a credential-shaped path; the two entry points are tested independently.",
+      "recommendation": "Extract the path precondition from files.ts:70 into a shared helper and call it from readArtifact as well, so both entry points share one gate.",
+      "confidence": "high for the behavioral asymmetry (reproduced); security impact bounded by content-level redaction"
+    },
+    {
+      "severity": "LOW",
+      "title": "One artifact request amplifies into hundreds of sequential provider stat round trips",
+      "file": "src/files.ts",
+      "line": 32,
+      "evidence": "noSymlinks() issues one provider.stat per path prefix, each individually wrapped by this.c.bounded() at files.ts:36, reached from files.ts:24-31 (readArtifact/artifact) and files.ts:50 (artifacts listing). The only length guard is path.length > 1024 at files.ts:13; nothing bounds the number of path segments. The consequence is provider-call cost and MCP request latency amplification, not traversal or disclosure.",
+      "reproduction": "Reproduced locally with FakeProvider. /tmp/rv-probe/amp.test.ts used a 1023-character path with 512 single-character segments: readArtifact issued stat=516 and readFile=0; artifact issued stat=516. A 501-segment path produced stat=4 before the fake's own missing-file error, confirming per-prefix fan-out. Why guards/tests miss it: tests/api.test.ts uses only single-segment paths, so fan-out is never measured.",
+      "recommendation": "Bound the segment count (for example reject more than 32) next to the existing length check, or resolve the artifacts root once per request instead of re-walking every prefix on every call.",
+      "confidence": "high for the fan-out (reproduced); severity capped by the existing 1024-byte length limit"
+    },
+    {
+      "severity": "LOW",
+      "title": "UNVERIFIED: SWARMFORGE_WORKSPACE may end in a slash, yielding a double-slash artifact root",
+      "file": "src/config.ts",
+      "line": 72,
+      "evidence": "The workspace regex /^\\/(?:[a-zA-Z0-9_.-]+\\/?)*$/ permits a trailing slash, and src/files.ts:22 and files.ts:45 interpolate the value directly, so SWARMFORGE_WORKSPACE=/workspace/ yields /workspace//.swarmforge/artifacts/<path>. The ..-and-empty-segment guard at files.ts:17-19 applies only to the caller-supplied relative path, so the doubled separator is not caught. noSymlinks splits on / and filters empties, so its walk normalizes while the path handed to the guest does not.",
+      "reproduction": "NOT REPRODUCED. A loadConfig probe to print the composed path was started but aborted at the review deadline with no output. No real guest was contacted. Treated as an unverified hypothesis, not a confirmed defect.",
+      "recommendation": "Normalize the workspace once at config validation (strip trailing slashes) or compose the artifact root with node:path.join/resolve so the result is canonical regardless of the configured form.",
+      "confidence": "low - code-evidenced only, deliberately not counted as a confirmed defect"
+    }
+  ],
+  "tests": {
+    "ran": true,
+    "passed": true,
+    "command": "bun 1.4.2 (official release at /tmp/opencode/bun-linux-x64; snapshot Bun 1.3.14 cannot read lockfileVersion 2). In the disposable /tmp/rv-artifact-paths detached clone: bun install --frozen-lockfile (exit 0); bun test tests/api.test.ts -> exit 0, 8 pass / 0 fail, 32 expect() calls. Reviewer probes outside the checkout: bun test /tmp/rv-probe/probe.test.ts (probes A-F) -> exit 0, 6 pass / 0 fail; bun test /tmp/rv-probe/amp.test.ts -> exit 0, 1 pass / 0 fail. bun test /tmp/rv-probe/canon.test.ts (finding F4) -> NOT COMPLETED, aborted at the review deadline, no output. Full suite deliberately not run (out of scope). No real cloud/model/infrastructure provider contacted; all probes used the in-process FakeProvider seam. bun.lock unmodified; /workspace/repo never installed into or written to.",
+    "summary": "8/8 targeted repository artifact tests pass (exit 0). 7/7 reviewer probes pass (exit 0): amplification probe measured 516 provider stat calls for a 1023-char/512-segment path; TOCTOU probe E demonstrated an out-of-root read after a post-walk swap; probe D showed artifact() rejects a credential-shaped path while readArtifact() accepts it; probes B/C/F confirmed range and redaction-overlap arithmetic is bounded and self-consistent. The F4 canonicalization probe did not complete, so that entry is an unverified hypothesis. The full suite was not run."
+  },
+  "limitations": [
+    "The review exceeded its 30-minute budget and was recovered in bounded mode: the F4 canonicalization probe did not finish and no further code was inspected after the deadline.",
+    "All findings are evidenced through the WorkerProvider seam (repository FakeProvider), not against a real Freestyle guest. Guest-side read behavior for symlinks, and normalization of a double-slash path prefix, were not observed.",
+    "F4 is an unverified hypothesis and is not presented as a confirmed defect.",
+    "F1's security impact is a confinement failure; the credential content redaction at files.ts:103-106 still applies, so it is not a demonstrated secret-disclosure path.",
+    "Severity of F3 is capped by the existing 1024-byte path length guard, making the amplification bounded rather than unbounded.",
+    "The full test suite was intentionally not run; only tests/api.test.ts and bounded reviewer probes were executed.",
+    "Exported artifacts were sanitized by running the production Redactor (src/security.ts) to a fixed point with the repository's test-default credentials plus dummy canaries, and residual-literal checks were asserted programmatically.",
+    "No code changes were made; /workspace/repo remains at its assigned baseline 5672ead2a526e07fea9ed11e58b3725e42013527, clean, with nothing committed or pushed."
+  ]
+}

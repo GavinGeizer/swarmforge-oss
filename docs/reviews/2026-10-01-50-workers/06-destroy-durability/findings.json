@@ -1,0 +1,49 @@
+{
+  "target": "d428e0f730ed5649485732e95d39c32f5d6a8895",
+  "scope": "Normal/forced destruction safety, preservation checks, missing-VM handling, stale Git metadata, retryable destruction",
+  "findings": [
+    {
+      "severity": "HIGH",
+      "title": "Persistence probe always reports unsafe when SWARMFORGE_GIT_TREE is an absolute local path, permanently blocking non-forced destroy and routing failures to recovery_required",
+      "file": "src/safety.ts",
+      "line": 14,
+      "evidence": "The scan roots include SWARMFORGE_GIT_TREE whenever it startsWith('/') (src/safety.ts:14), so the configured source tree is walked as if it were worker output. For a bare repository, `git -C root rev-parse --show-toplevel` fails (src/safety.ts:28) so os.walk runs and the first directory's files trigger `files outside a Git repository` (src/safety.ts:35). A non-bare local path also fails, via `commits not represented by remote refs` (src/safety.ts:41). Absolute local paths are a documented option (docs/CONFIGURATION.md:79 'Clone URL, local path, or none[:tree]'; docs/ENVIRONMENT.md:15). Local probe with a real bare tree and a clean, fully mirrored workspace: GIT_TREE=<abs bare path> -> {safe:false, reason:'files outside a Git repository'}; GIT_TREE=<ssh URL> -> {safe:true}; GIT_TREE=<abs work tree> -> {safe:false, reason:'commits not represented by remote refs'}.",
+      "reproduction": "/tmp/opencode/rev06/probes/safety-bare.ts (exit 0): seeds a git repo, bare-clones it to an absolute path, clones it into a workspace root, commits, sets refs/remotes/origin/<branch> as pushBranch does; `git status --porcelain --untracked-files=all` is empty and `git rev-list --count --branches HEAD --not --remotes` is 0, yet inspectPersistence returns safe:false for the absolute tree forms.",
+      "recommendation": "Scan only roots the worker owns (SWARMFORGE_WORKSPACE and result.git.workspace). Treat the configured tree as read-only input, or detect a non-work-tree root (`git -C root rev-parse --is-bare-repository`) and skip it, instead of walking it as worker output.",
+      "confidence": "high - reproduced locally with real git; coordinator consequence is code-evident (src/coordinator.ts:952 refuses destroy; src/coordinator.ts:802 routes fail() to recovery_required). Existing tests never exercise it: tests/safety.test.ts uses SWARMFORGE_GIT_TREE 'opaque-tree' with a single workspace root, and tests/lifecycle.test.ts fakes the verdict via FakeProvider.dirty."
+    },
+    {
+      "severity": "MEDIUM",
+      "title": "A persistence probe that exceeds SWARMFORGE_API_TIMEOUT_MS leaves destroy permanently pending instead of refusing into recovery_required",
+      "file": "src/coordinator.ts",
+      "line": 944,
+      "evidence": "The destroy path awaits `this.bounded(inspectPersistence(...))` with no catch (src/coordinator.ts:944-951). bounded() rejects on the outer promise, so inspectPersistence's internal catch (src/safety.ts:48) never converts it to safe:false; step() swallows the error (src/coordinator.ts:510-518) and leaves intent:'destroy' durable, retried every poll tick (src/coordinator.ts:340-353) with no backoff. The identical call on the failure path does catch it and produces recovery_required (src/coordinator.ts:788-798). The reported error 'Provider or OpenCode operation failed; retrying within deadline' is also inaccurate because step() returns on a pending intent before the deadline check (src/coordinator.ts:440-443). The Git script itself can exceed the bound: several subprocess.run(timeout=15) Git calls per root (src/safety.ts:22-41) against a default 30000ms API bound (src/config.ts:89).",
+      "reproduction": "/tmp/opencode/rev06/probes/destroy-timeout.ts (exit 0) with FakeProvider and SWARMFORGE_API_TIMEOUT_MS=40 whose GIT_CHECK exec never settles: control(id,'destroy') resolved without throwing; after 3 ticks state='running', intent='destroy', error='Provider or OpenCode operation failed; retrying within deadline', VM still present. Same timeout via the deadline path: state='recovery_required', intent=null.",
+      "recommendation": "Mirror the fail() handling: catch the bounded rejection and store.transition(id,'recovery_required',{intent:null, deadline_at:null, error:'Persistence check timed out'}) so an unverifiable probe refuses instead of looping.",
+      "confidence": "high - reproduced with the fake provider; the trigger (large or slow workspace) is inferred from the script's own 15s-per-command bound. tests/lifecycle.test.ts:135 covers a failing destroyWorker only, and no test asserts that destroy settles into recovery_required when the probe is unavailable."
+    },
+    {
+      "severity": "LOW",
+      "title": "Forced destruction leaves no API-visible or durable trace that persistence checks were skipped",
+      "file": "src/security.ts",
+      "line": 126,
+      "evidence": "force_destroy is persisted on the worker record (src/coordinator.ts:833) and consulted at src/coordinator.ts:912, but publicWorker (src/security.ts:126-157) exposes only pending_control (line 144) and never force_destroy; the destroyed transition passes no marker (src/coordinator.ts:969-974) and store.transition emits worker.destroyed with empty event data (src/store.ts:166). The CLI always sends force:false (src/cli/client.ts:119), so the case is reachable through the MCP destroy_worker tool (src/mcp.ts:144-146).",
+      "reproduction": "Code trace only: grep of src/ shows force_destroy written and read only inside coordinator.ts/domain.ts; no reader in publicWorker, list_workers or get_worker_logs.",
+      "recommendation": "Expose force_destroy from publicWorker and include it in the worker.destroyed event data so an incident reviewer can distinguish a verified destroy from an authorized loss.",
+      "confidence": "high - code-evidenced, not probe-verified; no test asserts forced-destroy observability."
+    }
+  ],
+  "tests": {
+    "command": "bun test tests/safety.test.ts tests/lifecycle.test.ts (Bun 1.4.2 at /tmp/opencode/rev06/bun142/bun, deps installed in the disposable clone with --frozen-lockfile)",
+    "ran": true,
+    "passed": true,
+    "summary": "36 pass, 0 fail, 120 expect() calls, exit 0. Probes: probes/safety-bare.ts exit 0, probes/destroy-timeout.ts exit 0. No full suite run (out of scope), no compilation."
+  },
+  "limitations": [
+    "F1 reproduces only for absolute local SWARMFORGE_GIT_TREE values; GitHub/SSH clone URLs are unaffected. A mounted bare tree inside a real guest was not exercised.",
+    "F2 was reproduced by simulating an unresponsive guest probe, not by a genuinely large repository.",
+    "F3 is code-evidenced only.",
+    "Out of scope and not assessed: reconciliation/orphan adoption, cancel/pause semantics, quota accounting, config, packaging and CLI surfaces.",
+    "Reviewer experiments exist only under /tmp/opencode/rev06 (disposable clone plus two probes); /workspace/repo was neither modified nor committed."
+  ]
+}

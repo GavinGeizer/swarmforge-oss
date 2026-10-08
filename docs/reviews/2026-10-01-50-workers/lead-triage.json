@@ -1,0 +1,108 @@
+[
+  {
+    "finding": "41-cli-diagnostics-F3",
+    "status": "not_a_defect",
+    "reason": "serve --check-config is deliberately read-only settings validation; checking live DB locks/instance ownership requires resources and cannot guarantee a later startup succeeds."
+  },
+  {
+    "finding": "41-cli-diagnostics-F4",
+    "status": "not_a_server_validation_defect",
+    "reason": "config validate is documented to validate server configuration; an unrelated client endpoint does not determine whether serve can start."
+  },
+  {
+    "finding": "18-serve-drain-F2",
+    "status": "not_a_defect",
+    "reason": "Repeated signals are intentionally idempotent and the documented supervisor timeout must exceed the command deadline. An incorrectly shorter supervisor timeout is configuration error."
+  },
+  {
+    "finding": "46-release-workflow-F3",
+    "status": "not_demonstrated_vulnerability",
+    "reason": "A malicious maintainer changing a tagged workflow is inside the release source trust boundary. No bypass by an untrusted contributor was demonstrated; tag protections are unverified."
+  },
+  {
+    "finding": "43-metrics-F2",
+    "status": "deployment_hardening",
+    "lead_severity": "MEDIUM",
+    "reason": "Unauthenticated metrics are documented and unchanged from baseline; default loopback binding limits exposure. Public shared host exposes labels/counters and should be hardened; HIGH overstates demonstrated impact."
+  },
+  {
+    "finding": "28-opencode-protocol-F1",
+    "status": "robustness_gap",
+    "lead_severity": "MEDIUM",
+    "reason": "Malformed upstream response accepted as idle is reproduced, but invalid response shapes were synthetic and live-provider occurrence unverified."
+  },
+  {
+    "finding": "45-archive-verification-F1",
+    "status": "accepted_hardening",
+    "lead_severity": "MEDIUM",
+    "reason": "Type validation follows symlinks contrary to regular-file contract. verifyArchive already intentionally executes the untrusted executable it verifies, so code execution alone is not a new arbitrary-code trust boundary."
+  },
+  {
+    "finding": "06-destroy-durability-F1",
+    "status": "accepted_compatibility_bug",
+    "lead_severity": "MEDIUM",
+    "reason": "Scanning configured input bare repositories blocks safe normal cleanup in documented local-tree setups; conservative refusal protects data rather than causing data loss. HIGH is overstated."
+  },
+  {
+    "finding": "50-architecture-scale-F2",
+    "status": "duplicate",
+    "canonical": "43-metrics-F1",
+    "reason": "Same missing events indexes and repeated per-worker aggregate scans reported by reviewers12,43,50."
+  },
+  {
+    "finding": "12-sqlite-retention-F1",
+    "status": "duplicate",
+    "canonical": "43-metrics-F1",
+    "reason": "Same scrape scalability mechanism."
+  },
+  {
+    "finding": "03-worker-transitions-F1",
+    "status": "duplicate",
+    "canonical": "08-deadline-progress-F1",
+    "reason": "Same durable failed-intent wedge; independently reproduced by lead."
+  },
+  {
+    "finding": "10-followup-protocol-F1",
+    "status": "duplicate",
+    "canonical": "02-dispatch-delivery-F1",
+    "reason": "Same paused terminal-state revival leaving stale predecessor dispatch."
+  },
+  {
+    "finding": "42-cli-tui-F1",
+    "status": "duplicate",
+    "canonical": "40-cli-status-F1",
+    "reason": "Same TUI refresh dropping endpoint redaction."
+  },
+  {
+    "finding": "24-artifact-screening-F1",
+    "status": "lead_reproduced",
+    "reason": "Synthetic5000-byte API token: readArtifact offset4196 returned804 credential bytes. No real credentials used."
+  },
+  {
+    "finding": "22-mcp-contract-F1",
+    "status": "lead_reproduced",
+    "reason": "Identical caller arguments/request_id rejected after default timeout changes by1second."
+  },
+  {
+    "finding": "29-opencode-idle-F1",
+    "status": "lead_reproduced",
+    "reason": "Busy fake session plus inspect error and run-matching mid-turn file transitioned to completed without idle evidence."
+  },
+  {
+    "finding": "08-deadline-progress-F1",
+    "status": "lead_reproduced",
+    "reason": "Persistent fake pause failure bypassed expired deadline and cancel was refused."
+  },
+  {
+    "finding": "30-opencode-tokens-F1",
+    "status": "lead_reproduced",
+    "lead_severity": "HIGH",
+    "reason": "excerptText redacts before removing U+200B; a known synthetic credential split by that character emerges intact in the returned excerpt."
+  },
+  {
+    "finding": "31-git-persistence-F1",
+    "status": "lead_reproduced",
+    "lead_severity": "HIGH",
+    "reason": "Exact shell clean-state predicate returned success when a stubbed git status exited128. Reviewer additionally reproduced with real corrupt-index git and bare remote."
+  }
+]

@@ -1,0 +1,44 @@
+{
+  "team": "repo-review-50-20260930",
+  "target": "d428e0f730ed5649485732e95d39c32f5d6a8895",
+  "reports_preserved": 50,
+  "destroyed": 50,
+  "remaining_cleanup": 0,
+  "status": "review and cleanup complete",
+  "initial_runs_completed": 45,
+  "initial_runs_timed_out": 5,
+  "incomplete_scopes": [
+    "21-http-limits",
+    "23-artifact-paths"
+  ],
+  "review_tokens": {
+    "input": 5587197,
+    "output": 2921111,
+    "reasoning": 0,
+    "cache_read": 184672396,
+    "cache_write": 0,
+    "total": 193180704
+  },
+  "swarm_snapshot": {
+    "states": {
+      "destroyed": 167
+    },
+    "tokens": {
+      "input": 13407392,
+      "output": 6136703,
+      "reasoning": 42133,
+      "cache_read": 434395269,
+      "cache_write": 0,
+      "total": 453981497
+    },
+    "limits": {
+      "workers": 400,
+      "provisioning": 400
+    },
+    "metrics": {
+      "enabled": true,
+      "port": 9090
+    },
+    "inference_requests_active": 0
+  }
+}

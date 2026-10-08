@@ -1,0 +1,37 @@
+{
+  "worker_id": "w-00dd94fa-dcc7-4cf0-b7c4-b42661d163e4",
+  "result": {
+    "worker_id": "w-00dd94fa-dcc7-4cf0-b7c4-b42661d163e4",
+    "task_id": "45-archive-verification",
+    "run_id": "eacd84ed-d8af-4200-b0e1-5210027de337",
+    "status": "completed",
+    "summary": "Verdict FINDINGS at target d428e0f730ed5649485732e95d39c32f5d6a8895. Scope: archive entry validation/extraction, digest/mode/metadata checks, hostile-archive risk, release asset selection in scripts/package.ts (plus build.ts, release.yml). 4 reproduced defects: HIGH verifyArchive accepts non-regular tar members and executes an out-of-tree symlink target (names-only listing; stat :187 follows links; :232/:237 run the path); MEDIUM mode check masks setuid/setgid so 4755 is certified 0755; MEDIUM findFile/prepareReleaseAssets (:356,:388) never compare the loose SHA256SUMS/metadata to the verified archive and pick by readdir order at any depth; LOW whitespace-only members are trimmed away, bypassing the exact-file check (:134). Tests: archive verification 7 pass/0 fail, release assets 4 pass/0 fail on Bun 1.4.2, plus 8 local hostile-archive probes. Read-only; /workspace/repo clean at baseline 5672ead. Report: .swarmforge/artifacts/review.md, findings.json.",
+    "details": "Scope: scripts/package.ts (archiveListing :126, verifyArchive :158-251, findFile :356, prepareReleaseAssets :380-404, releaseTagMismatch :414), scripts/build.ts, .github/workflows/release.yml, README install block, tests/packaging.test.ts.\n\nF1 HIGH (reproduced): a tar whose 'swarmforge' member is a symlink to an out-of-tree 0755 file, with SHA256SUMS and metadata computed over the link target, is accepted by verifyArchive (exit 0). The link target was executed: it appended OUTSIDE-EXEC to a marker file twice (--version and --help). Guards fail because the name/duplicate checks at :137 and :170 are string-only; GNU tar rejects ../ traversal and hardlink escapes (both confirmed rejected), so symlink is the surviving type. Fix: reject non-regular member types before extraction and assert lstat().isFile() on each expected path before any stat/digest/exec.\n\nF2 MEDIUM (reproduced): (await stat(binary)).mode & 0o777 at :187 discards setuid/setgid/sticky, so a 4755 member verifies and extracts as -rwsr-xr-x while metadata.executable.mode (literal '0755' at :102, string-compared at :224) claims 0755. Fix: compare mode & 0o7777 to 0o755.\n\nF3 LOW (reproduced): listing names are trim()ed and empty entries filtered (:134), so a fourth member named '  ' is invisible and the documented exactly-three-files invariant does not hold. Fix: reject members that normalize to empty.\n\nF4 MEDIUM (reproduced): findFile returns the first name match at any depth and prepareReleaseAssets never digest-compares the standalone SHA256SUMS/metadata against the verified archive's own copies (verifyArchive only inspects the extracted copies). An asset directory with a valid archive plus an all-zero SHA256SUMS and a 1-byte metadata JSON returned PREPARED_OK and listed all three for publication (release.yml:153-159). A nested/SHA256SUMS was also selected. Fix: cross-compare digests and constrain findFile to the flat download-artifact layout.\n\nGuard coverage: existing tests/packaging.test.ts covers truncated, edited payload, edited metadata, lost execute bit, wrong commit, missing archive, non-archive junk; nothing covers entry types, setuid bits, whitespace names, or loose-vs-archived manifest drift, which is why all four pass the current suite. Traversal and hardlink escape attempts were correctly rejected by GNU tar.\n\nEnvironment: snapshot bun is 1.3.14 and cannot parse bun.lock lockfileVersion 2, so official Bun 1.4.2 was unpacked at /tmp/bun142; install used --frozen-lockfile and the lockfile was never rewritten. Disposable detached checkout at /tmp/sf-rev verified at the target SHA. No cloud/model provider or infrastructure was contacted; probes use local fake executables only. No credentials or secret files inspected; report sanitized.",
+    "files_changed": [],
+    "tests": {
+      "ran": true,
+      "passed": true,
+      "command": "/tmp/bun142/bun-linux-x64/bun test tests/packaging.test.ts -t \"archive verification\" (7 pass/0 fail, exit 0) and /tmp/bun142/bun-linux-x64/bun test tests/packaging.test.ts -t \"release assets\" (4 pass/0 fail, exit 0); plus 8 bounded local probes in /tmp/sf-probe calling target verifyArchive/prepareReleaseAssets on hostile archives",
+      "summary": "11 targeted tests passed, 0 failed; all four findings reproduced against the target code with Bun 1.4.2. Full suite intentionally not run."
+    },
+    "git": {
+      "workspace": "/workspace/repo",
+      "branch": "swarmforge/repo-review-50-20260930/45-archive-verification/w-00dd94fa-dcc7-4cf0-b7c4-b42661d163e4",
+      "commit": "5672ead2a526e07fea9ed11e58b3725e42013527",
+      "base_commit": "5672ead2a526e07fea9ed11e58b3725e42013527",
+      "review_url": "https://github.com/GavinGeizer/swarmforge-oss/compare/5672ead2a526e07fea9ed11e58b3725e42013527...swarmforge%2Frepo-review-50-20260930%2F45-archive-verification%2Fw-00dd94fa-dcc7-4cf0-b7c4-b42661d163e4",
+      "dirty": false,
+      "persisted": true
+    },
+    "warnings": [
+      "HIGH: verifyArchive executes an out-of-tree symlink target and certifies archives whose 'swarmforge' member is not a regular file (scripts/package.ts:187, :232, :237).",
+      "MEDIUM: mode check masks setuid/setgid/sticky; a 4755 binary is certified and reported as 0755 (scripts/package.ts:187).",
+      "MEDIUM: release asset selection cross-checks neither the loose SHA256SUMS/metadata nor limits findFile to the flat artifact layout (scripts/package.ts:356, :388).",
+      "LOW: whitespace-only tar members are trimmed out of the listing, bypassing the exact-file check (scripts/package.ts:134).",
+      "Local bun is 1.3.14 and cannot read bun.lock lockfileVersion 2; Bun 1.4.2 was unpacked at /tmp/bun142 and the lockfile was not rewritten.",
+      "Reviewer hostile-archive probes live only in /tmp/sf-probe (outside the checkout); no real cloud, model provider or infrastructure was contacted."
+    ],
+    "needs_followup": true,
+    "followup_reason": "Four reproducible defects in scripts/package.ts warrant a fix pass: reject non-regular archive entry types before extraction/exec (HIGH), compare full permission bits so setuid is not certified as 0755 (MEDIUM), digest-compare the loose release SHA256SUMS/metadata against the verified archive and restrict findFile to the flat artifact layout (MEDIUM), and reject archive members that normalize to an empty name (LOW)."
+  }
+}

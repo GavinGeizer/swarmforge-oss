@@ -1,0 +1,40 @@
+{
+  "target": "d428e0f730ed5649485732e95d39c32f5d6a8895",
+  "scope": "Dispatch pending/sending/sent/completed transitions, exactly-once and idempotent delivery boundaries, message loss/duplication, crash recovery (src/coordinator.ts, src/store.ts, src/domain.ts, src/providers/opencode.ts, src/mcp.ts, tests/helpers.ts, tests/lifecycle.test.ts, tests/restart.test.ts)",
+  "findings": [
+    {
+      "severity": "HIGH",
+      "title": "A follow-up acknowledged as queued is never delivered and wedges the worker permanently after pause of an ambiguous-delivery worker",
+      "file": "src/coordinator.ts",
+      "line": 226,
+      "evidence": "queueMessage() handles a paused worker whose previous_state is terminal (lines 226-237) by only patching previous_state to 'booting' and enqueueing the new run; it never cancels the predecessor run. The cancelDispatches(id) that would do so is gated on w.state being 'failed'/'recovery_required' (lines 220-224), and here w.state is 'paused'. The ambiguous-delivery path that creates this situation, monitor() at lines 568-579, moves the worker to recovery_required without calling cancelDispatches, so the run stays 'sending'. store.dispatch() (src/store.ts:236-240) returns the OLDEST non-terminal run, so step()'s ready branch (src/coordinator.ts:475-484) selects the stale 'sending' run instead of the newly queued 'pending' one, takes the monitor path, and re-escalates to recovery_required on the next tick. Because recovery_required is terminal (src/domain.ts:14-19), runTick filters the worker out (lines 344-349) and runRecover returns early (line 420), so nothing can ever clear it.",
+      "reproduction": "Local fakes only, Bun 1.4.2, /tmp/probe/tests/rev-dispatch-finding.test.ts (log /workspace/.swarmforge/logs/dispatch-probe.log, exit 1, 1 fail/1 pass). Steps: run worker to 'running'; set the run to state 'sending' with sent_at aged 120s and an empty idle snapshot (the exact shape claimDispatch commits before a crash); tick -> recovery_required; control(pause) -> paused with previous_state 'recovery_required'; message() returns {delivery:'queued', state:'paused'}; control(resume); 30 further ticks. Observed: 'after 30 ticks -> recovery_required | submits: 1 | runs: sending,pending' and the acknowledged follow-up run remains 'pending'. The control case in the same file, identical but without the pause, cancels the stale run and reaches 'submits: 2'. A second triage probe showed a second follow-up is also accepted and also never delivered; an explicit cancel clears both.",
+      "recommendation": "In the w.state === 'paused' && terminal.has(w.previous_state) branch, call store.cancelDispatches(id) before enqueue() whenever previous_state is terminal and not 'cancelled' (the predecessor turn is over, so any still-open run is undeliverable and only store.dispatch() can reselect it). Alternatively refuse or report recovery_required instead of returning delivery 'queued' when store.dispatch(id) is not the run just enqueued. Apply the same treatment to the quiesce recovery_required path at lines 919-926, which also reaches a terminal state with open runs. A throwaway fix-candidate test in /tmp confirmed the cancelDispatches variant makes the follow-up submit.",
+      "confidence": "high"
+    },
+    {
+      "severity": "LOW",
+      "title": "send_worker_message has no idempotency key, so a client retry enqueues the same instruction as a second turn",
+      "file": "src/coordinator.ts",
+      "line": 192,
+      "evidence": "Coordinator.message()/queueMessage() (lines 192-250) unconditionally inserts a new run via Store.enqueue (src/store.ts:213-228), which mints a fresh run_id and message_id. The MCP tool schema is only { worker_id, message } (src/mcp.ts:120-126). Unlike spawn_worker, which documents request_id-based retry collapsing and enforces a body fingerprint (src/mcp.ts:73, src/store.ts:75-85), no caller-supplied key exists for follow-up messages.",
+      "reproduction": "Code-evidenced; not separately executed. store.enqueue has no conditional insert, so two identical send_worker_message calls always create two runs, and each is delivered to OpenCode with its own messageID (src/providers/opencode.ts:96).",
+      "recommendation": "Accept an optional request_id on send_worker_message and collapse retries on it, mirroring Store.create with a UNIQUE(worker_id, request_id) index plus an argument fingerprint check. Flagged so the delivery boundary is explicit: docs/MCP-API.md:29 only prescribes request_id reuse for creation, so this is at-least-once by design rather than a regression.",
+      "confidence": "low"
+    }
+  ],
+  "tests": {
+    "existing_in_scope": "bun test tests/lifecycle.test.ts tests/restart.test.ts tests/wait.test.ts tests/session-status.test.ts tests/token-idle.test.ts tests/core.test.ts -> exit 0, 81 pass, 0 fail, 302 assertions (Bun 1.4.2 at /tmp/bun142). Log /workspace/.swarmforge/logs/inscope-tests.log",
+    "reviewer_probe": "bun test tests/rev-dispatch-finding.test.ts -> exit 1, 1 pass, 1 fail; the failure is the reproduced HIGH finding (defect case plus a passing control case). Log /workspace/.swarmforge/logs/dispatch-probe.log",
+    "environment": "Repo-pinned Bun is 1.3.14 and cannot read this lockfile; official Bun 1.4.2 was unpacked to /tmp and the lockfile was not rewritten. Experiment copy /tmp/probe, disposable clone /tmp/rev-d428. /workspace/repo left clean at baseline 5672ead."
+  },
+  "limitations": [
+    "No full-suite run and no compile/package step; those belong to the whole-suite and packaging scopes. bun run check was not executed.",
+    "All reproduction used the repository's own FakeProvider/FakeAgent doubles. No real provider, model endpoint, VM or network service was contacted.",
+    "The post-crash 'sending' state was constructed through Store.saveDispatch because a real crash cannot be staged in-process; it is the exact persisted shape Store.claimDispatch commits.",
+    "The 'sent'-state variant of the HIGH finding was observed with a hand-built recovery_required state rather than by driving the full destroy/quiesce sequence, so that sub-case is lower severity and partly unverified.",
+    "Real-world timing of the 30s ambiguity escalation and OpenCode's messageID idempotency behaviour are code-evidenced only, not verified against a live OpenCode server.",
+    "Baseline-to-target delta in this scope is confined to shutdown tracking in src/coordinator.ts; src/store.ts, src/domain.ts and src/providers/opencode.ts are unchanged from baseline 5672ead, so the dispatch logic is long-standing rather than newly introduced.",
+    "No credentials or credential-shaped example values appear in these artifacts."
+  ]
+}

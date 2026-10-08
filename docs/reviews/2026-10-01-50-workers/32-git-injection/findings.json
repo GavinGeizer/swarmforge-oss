@@ -1,0 +1,49 @@
+{
+  "target": "d428e0f730ed5649485732e95d39c32f5d6a8895",
+  "scope": "Git URL/branch/author/command shell boundaries, escaping, credential handling and path injection",
+  "findings": [
+    {
+      "severity": "HIGH",
+      "title": "Worker-writable .swarmforge/git-base is the sole trust anchor for push verification",
+      "file": "src/providers/freestyle.ts",
+      "line": 255,
+      "evidence": "prepare() writes the base commit to ${SWARMFORGE_WORKSPACE}/.swarmforge/git-base (line 140) inside the workspace the worker owns and runs as root in (exec linuxUser root at lines 116/143; the systemd unit at line 173 declares no User=). pushBranch re-reads that file and uses it as the merge-base ancestor and as the reported base_commit: `base=$(cat '<ws>/.swarmforge/git-base'); ... git merge-base --is-ancestor \"$base\" \"$commit\"; ... printf '%s\\n%s\\n' \"$base\" \"$commit\"`. The clean-tree check only inspects the repository, and the persistence scan explicitly excludes .swarmforge (src/safety.ts:38).",
+      "reproduction": "Local probe in /tmp/probe/g2 with a real bare remote, running the exact command string from line 255: after the 'worker' overwrote git-base with its own HEAD, the full push + ls-remote verification exited 0 and printed base_commit == commit (5d321e759eaed3472a00eab6deb52128c00ecf8c for both) although the real clone base was a different commit.",
+      "recommendation": "Persist the base commit in control-plane state when prepare() checks out the branch (worker record or SQLite setting) and pass it to the push command as a literal; if the guest file must remain for crash recovery, compare it against the stored value and fail closed on mismatch.",
+      "confidence": "reproduced at shell-command level plus code trace; live provider not exercised"
+    },
+    {
+      "severity": "MEDIUM",
+      "title": "none:-prefixed absolute trees are excluded from the persistence safety scan",
+      "file": "src/safety.ts",
+      "line": 14,
+      "evidence": "roots includes the external tree only when `c.SWARMFORGE_GIT_TREE.startsWith(\"/\")`, tested against the raw config value. gitTree() (src/config.ts:165-169) accepts the documented `none:/abs/path` form (docs/ENVIRONMENT.md:15) and workerEnvironment (src/config.ts:178) hands the worker the stripped /abs/path, so the scanned root and the real tree diverge.",
+      "reproduction": "Ran the generated script (rebuilt from src/safety.ts lines 17-42) against a clean workspace plus a dirty external tree: absolute form returned {\"safe\": false, \"files outside a Git repository\"}; the none:-prefixed form returned {\"safe\": true, \"reason\": \"no obvious unpersisted work\"}. Emitted roots: [\"/workspace\",\"/mnt/tree\"] vs [\"/workspace\"].",
+      "recommendation": "Derive the scan root from gitTree(c.SWARMFORGE_GIT_TREE).target and include any absolute target; add a none:/abs case to tests/safety.test.ts.",
+      "confidence": "reproduced locally with the exact generated script"
+    },
+    {
+      "severity": "LOW",
+      "title": "Git handoff credentials (App installation token, SSH private key) are outside every redaction set",
+      "file": "src/security.ts",
+      "line": 43,
+      "evidence": "redactorFor (src/security.ts:43-50) knows only the Freestyle token, model key, MCP bearer token and worker passwords; commandRedactor (src/serve-command.ts:45-52) additionally knows SWARMFORGE_GIT_PUSH_URL. Neither knows the per-push GitHub App installation token (src/git-handoff.ts:74) nor the SSH private key read at src/providers/freestyle.ts:210-218, yet the artifact guard at src/files.ts:70 and src/files.ts:103 relies on redactorFor. Redactor's URL regex also covers only https?:// userinfo.",
+      "reproduction": "Probe with FakeProvider: WorkerFiles.readArtifact returned 58 bytes for a fake 'BEGIN OPENSSH PRIVATE KEY' artifact and 33 bytes for a 'ghs_...' token artifact, neither blocked. A Redactor probe showed ssh://user:pass@host/... survives text().",
+      "recommendation": "Thread the App token and SSH key (and the push URL) into the redactor used by files.ts, coordinator.ts and runtime.ts for the duration of a push, and extend the Redactor URL regex to ssh:// and other userinfo schemes.",
+      "confidence": "code-evidenced and probe-confirmed at the redaction layer; production leak not observed"
+    }
+  ],
+  "tests": {
+    "ran": true,
+    "passed": true,
+    "command": "cd /tmp/rv32 && /tmp/bun142/bin/bun test tests/git-handoff.test.ts tests/safety.test.ts tests/settings.test.ts",
+    "summary": "67 pass, 0 fail across 3 files (exit 0); an earlier run of git-handoff+safety alone was 11 pass, 0 fail. Disposable probes under /tmp (quote() escaping, gitTree/safety-roots divergence, real-git push verification with forged git-base, readArtifact guard with SSH key and App token, Redactor ssh:// handling) all completed; /tmp/rv32 left clean and /workspace/repo untouched at baseline 5672ead."
+  },
+  "limitations": [
+    "No full-suite run; out of scope for this reviewer.",
+    "No cloud, model-provider or real-infrastructure calls; local fake providers and local Git repos only.",
+    "F1 not executed against a live provider; reproduced at the shell-command level with the exact target command string.",
+    "F3 confirmed at the redaction layer only.",
+    "Bun 1.4.2 installed under /tmp/bun142; repository lockfile never rewritten."
+  ]
+}

@@ -1,0 +1,48 @@
+{
+  "target": "d428e0f730ed5649485732e95d39c32f5d6a8895",
+  "scope": "Result parsing/schema bounds, fallback identity/run IDs, structured JSON handling, stale result rejection (src/domain.ts resultSchema; src/coordinator.ts monitor/identify/fallback/complete/step catch; src/store.ts finish/result/dispatches; src/mcp.ts get_worker_result; src/providers/opencode.ts structured/parseJsonText/bootstrap; src/security.ts Redactor; src/safety.ts inspectPersistence use of result.git.workspace; docs/WORKER-PROTOCOL.md result contract)",
+  "findings": [
+    {
+      "severity": "MEDIUM",
+      "title": "A schema-valid result is discarded at completion when Git push metadata is merged, and the push is then retried every tick",
+      "file": "src/coordinator.ts",
+      "line": 707,
+      "evidence": "Ingest validates the agent payload with resultSchema.safeParse (line 589) or resultSchema.parse in fallback (line 684), but complete() re-validates at line 707 AFTER merging git metadata at line 703 (branch/commit/base_commit/review_url/persisted/dirty, measured +181 bytes) and after Redactor.value, which can also grow strings (a short-userinfo URL https://<redacted>@host becomes https://[REDACTED]@host, +7 bytes; src/security.ts:8-31). The 60 KiB refine at src/domain.ts:71-73 is therefore applied to a different, larger value than the one accepted, so any result in roughly the 61259-61440 byte band throws 'Structured result exceeds 60 KiB; place large reports in artifacts'. store.finish (line 708) and the guest mirror (lines 710-718) never run, so the run is never recorded. The catch block at lines 510-525 only short-circuits for GitHandoffError (line 518), so a ZodError re-enters fallback()->complete()->pushBranch on every poll tick.",
+      "reproduction": "Local fakes only, probes at /tmp/sfrev/probe/probe2.test.ts and probe5.test.ts (Bun 1.4.2, in-memory SQLite). A 61178-byte resultSchema-valid payload: push=github-app -> state=running, err=[{message:'Structured result exceeds 60 KiB; place large reports in artifacts'}]; identical payload with SWARMFORGE_GIT_PUSH_MODE=none -> state=completed, err=none. With a 1s deadline and 1.6s of ticking: pushBranch calls = 1343, final state = failed, error = 'Worker task timed out', store.result() = null, no result.received event, guest result.json mirror never written. Tracked 61 bytes of headroom vs the 181-byte git addition.",
+      "recommendation": "Do not make a post-merge re-parse fatal. Either validate once on the value that will be stored (validate before line 703 and merge git after), or clamp/trim and record a distinct warning when the merged result exceeds 61440 bytes instead of throwing. Additionally add a GitHandoffError-style early return (or a one-shot attempt latch) around any post-push failure so the catch block cannot re-push every tick.",
+      "confidence": "high - reproduced deterministically; only the payload size band is narrow (0.3% of the cap)"
+    },
+    {
+      "severity": "LOW",
+      "title": "The 60 KiB result cap is enforced but never disclosed to the producer, and its rejection is unattributable",
+      "file": "src/domain.ts",
+      "line": 71,
+      "evidence": "resultSchema.toJSONSchema() (1,462 bytes as emitted at src/providers/opencode.ts:51) contains maxLength for every field but no trace of the .refine; probed: 'mentions 60 KiB: false', because refinements are not representable in JSON Schema. The advertised bounds sum to about 330 KB (summary 4000 + details 16000 + files_changed 200x1024 + warnings 50x2000 + followup_reason 4000), while the enforced total is 61440 bytes. An over-cap result is rejected at ingest and the worker is failed with the generic text 'Missing or malformed structured result' (src/coordinator.ts:597-600); no size hint reaches the model, the worker record, or the operator, even though docs/WORKER-PROTOCOL.md:27 states the 60 KiB cap.",
+      "reproduction": "Probes /tmp/sfrev/probe/probe4.test.ts (emitted schema inspection) and /tmp/sfrev/probe/probe6.test.ts: a per-field-valid 200657-byte result gives schema ok = false and 'state = failed | error = Missing or malformed structured result'.",
+      "recommendation": "State the total-size cap in the bootstrap() text beside the schema and/or add a description to the emitted JSON Schema, and include the resultSchema issue path (size exceeded) in the failure text so the producer can self-correct and the operator can triage. This also removes most of F1's exposure by keeping generated results well below the band.",
+      "confidence": "high - reproduced"
+    },
+    {
+      "severity": "LOW",
+      "title": "An assistant message carrying both an error and a parseable structured payload completes the run and drops the error",
+      "file": "src/coordinator.ts",
+      "line": 589,
+      "evidence": "reply is selected as the newest completed assistant message with 'm.result !== undefined || m.error' (line 585), then resultSchema.safeParse(reply.result) is attempted before any check of reply.error (lines 589-599). The SDK declares structured?: unknown on the assistant message independently of error (node_modules/@opencode-ai/sdk/dist/v2/gen/types.gen.d.ts:243), so the combination is representable, and the mapped snapshot preserves both (src/providers/opencode.ts, result: info.structured ?? parseJsonText(text), error: info.error?.name). A parseable payload therefore wins over the error and is stored as a completed run with error = null; the provider/session error is never recorded in the worker record or events.",
+      "reproduction": "Probe /tmp/sfrev/probe/probe6.test.ts (second test): a completed assistant message given error = 'ProviderOverloadedError' plus a valid structured payload yields 'state = completed | error = null' with the payload stored as the run result.",
+      "recommendation": "When reply.error is set, take the failure path unless the adopted result came from the current-run result.json fallback, or at minimum log both the session error and the adopted result so the error is not silently dropped.",
+      "confidence": "medium - coordinator logic reproduced; whether OpenCode 1.18.31 actually populates structured on an errored message is unverified (needs a live server, out of scope)"
+    }
+  ],
+  "tests": {
+    "ran": true,
+    "command": "cd /tmp/sfrev/repo && /tmp/bun142/bun-linux-x64/bun test tests/lifecycle.test.ts tests/core.test.ts tests/session-status.test.ts",
+    "summary": "Baseline at target: 56 pass, 0 fail, 191 expect calls, exit 0. bun install --frozen-lockfile in the /tmp clone: 125 packages, exit 0, lockfile unmodified (Bun 1.4.2 unpacked at /tmp/bun142 because the preinstalled 1.3.14 cannot read lockfileVersion 2). Reviewer probes /tmp/sfrev/probe/probe{1..6}.test.ts: probe2 3 pass, probe3 3 pass, probe4 3 pass, probe5 1 pass, probe6 2 pass; probe1 3 pass/1 fail where the single failure was my own wrong boundary arithmetic in the probe, corrected in probe2. All probes use FakeProvider/FakeAgent and in-memory SQLite; no cloud, model provider, network or real-VM call."
+  },
+  "limitations": [
+    "Read-only review: no repository file was modified, added, committed or pushed; git.workspace stayed at baseline 5672ead2a526e07fea9ed11e58b3725e42013527 and clean. All experiments are disposable and live in /tmp/sfrev.",
+    "Full suite, packaging/compile and any real OpenCode or Freestyle interaction were not run (other reviewers' scope), so F3's runtime trigger remains unverified.",
+    "Hypotheses refuted during review and therefore not reported: the 65536-byte fallback read bound is not practically reachable by pretty-printed JSON (inflation only 130-330 bytes at 20-60 KB), and untrusted result.git.workspace cannot escape the persistence script in src/safety.ts (double JSON.stringify, probed with an injection-shaped value, no side effect).",
+    "Assessed as sound: stale result.json rejection (run_id must match, src/coordinator.ts:685), authoritative identity overwrite in identify(), get_worker_result run_id pass-through with send_worker_message returning the new run_id, duplicate-completion no-op in store.finish, and unknown-key stripping.",
+    "No credentials or credential-shaped literals are included; probe examples were reduced to https://<redacted>@host form."
+  ]
+}

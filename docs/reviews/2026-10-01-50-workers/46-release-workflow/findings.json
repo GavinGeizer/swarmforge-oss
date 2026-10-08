@@ -1,0 +1,57 @@
+{
+  "target": "d428e0f730ed5649485732e95d39c32f5d6a8895",
+  "scope": "GitHub Actions trust boundaries, tag/input injection, job permissions, artifact reuse and draft release gates (.github/workflows/release.yml, scripts/package.ts, scripts/build.ts, tests/packaging.test.ts, README.md install/verify flow)",
+  "verdict": "FINDINGS",
+  "findings": [
+    {
+      "severity": "MEDIUM",
+      "title": "No digest is published for the downloadable archive; release notes tell users to verify with a manifest that cannot check the downloaded files",
+      "file": ".github/workflows/release.yml",
+      "line": 156,
+      "evidence": "scripts/package.ts:75-77 checksums() emits exactly one line for the extracted executable ('<64 hex>  swarmforge'); :304 writes dist/SHA256SUMS from it; :315-319 copies the same into the archive; :242 and :351 compute PackagedRelease.archiveSha256 but only return it on stdout - it is never written to any file under dist/. release.yml:157-159 attaches only swarmforge-v${version}-linux-x64-glibc.tar.gz, SHA256SUMS and metadata-${version}.json. Neither the manifest nor the metadata mentions the .tar.gz.",
+      "reproduction": "Local /tmp probe (no compile): checksums({sha256:'b'*64,...}) returns \"bbbb...bbbb  swarmforge\\n\". Synthesized the exact 3-file release-asset directory and ran 'sha256sum -c SHA256SUMS' -> exit 1, 'swarmforge: FAILED open or read' / 'No such file or directory'; grep -c 'tar.gz' over SHA256SUMS and metadata-1.2.3.json -> 0 and 0.",
+      "recommendation": "Emit an archive-level digest during packaging (add a swarmforge-v${version}-linux-x64-glibc.tar.gz entry to dist/SHA256SUMS, or write dist/<archive>.sha256), attach it in the gh release create step, and have prepareReleaseAssets re-check the downloaded archive against it before the draft is created; reword the notes to distinguish 'verify the archive digest' from 'SHA256SUMS verifies the extracted executable'.",
+      "confidence": "high - reproduced locally for the manifest content and the failing sha256sum -c, and code-evidenced for the asset list",
+      "why_not_caught": "verifyArchive (scripts/package.ts:158-251) and prepareReleaseAssets (:380-404) only prove things inside the tarball. tests/packaging.test.ts:763-836 asserts asset file names and :1000-1045 asserts workflow substrings; no test requires a published digest to cover the downloadable archive. README.md:51/63 is self-consistent (verification inside the extracted tree), so the gap is specific to the release notes wording plus the missing archive digest."
+    },
+    {
+      "severity": "MEDIUM",
+      "title": "Third-party action pinned to a mutable tag runs inside the only job holding contents: write, after the write-scoped token was persisted on disk",
+      "file": ".github/workflows/release.yml",
+      "line": 125,
+      "evidence": "release.yml:118-119 grants contents: write to draft-release; :121-123 checkout@v4 sets no persist-credentials (default true, so the job token is written to .git/config as an http.https://github.com/.extraheader basic-auth header); :125-127 then runs oven-sh/setup-bun@v2, a non-GitHub action pinned to a mutable tag. GH_TOKEN is only set on the final gh step, which does not contain the exposure because the token is already readable from .git/config by any later step.",
+      "reproduction": "Not reproducible locally; requires the upstream v2 tag to be moved or compromised. Code-evidenced from the workflow text at the exact target (quoted above). No attempt was made to contact or influence upstream.",
+      "recommendation": "Pin third-party (and ideally actions/*) refs to a full 40-hex commit SHA with the version in a trailing comment, and add persist-credentials: false to the draft-release checkout so the write-scoped token is not left in .git/config for later steps.",
+      "confidence": "medium-high - code-evidenced workflow configuration; the compromise precondition is unverified",
+      "why_not_caught": "tests/packaging.test.ts:932-953 only asserts that contents: write and github.token do not appear in the build job; it asserts nothing about action pinning or credential persistence, and no step sets persist-credentials: false."
+    },
+    {
+      "severity": "MEDIUM",
+      "title": "Workflow definition is taken from the tagged commit, so the draft-only gate is not a trusted boundary",
+      "file": ".github/workflows/release.yml",
+      "line": 7,
+      "evidence": "on: push: tags 'v*' accepts a tag on any ref. The only gates are the event-name check (:45, :115) and 'bun scripts/package.ts tag' (:48, :132), both inside the workflow file that GitHub loads from the tagged commit. Nothing requires the tagged commit to be reachable from the protected default branch; no github.ref_protected check, no environment approval, no separate trusted-definer workflow.",
+      "reproduction": "Code-evidenced control flow; not executed (would require publishing a release, which this review must not do). A collaborator with branch-write access could tag a branch commit whose release.yml drops --draft, turning branch write into an immediate published release - and README.md:34-57 documents releases as the install channel, so installers would fetch attacker binaries from a trusted release page. The package.ts tag version check does not defend this: it lives in the same attacker-supplied workflow file.",
+      "recommendation": "Add a repository ruleset / tag-protection rule requiring release tags to target commits reachable from the protected default branch; as defense in depth gate draft-release on 'if: github.ref_protected == true' (or verify github.sha is contained in the default branch) and put the write step behind a protected environment with required reviewers.",
+      "confidence": "medium - workflow-level behaviour is code-evidenced, but reachability depends on repository rulesets, tag protection and default workflow permissions that were not inspected (read-only review, no infrastructure calls). Mitigated at the platform layer if tag protection is configured.",
+      "why_not_caught": "tests/packaging.test.ts:1000-1045 asserts '--draft' present and '--publish' absent in the file at the reviewed commit; it cannot constrain the file at an arbitrary tag."
+    },
+    {
+      "severity": "LOW",
+      "title": "Published SHA256SUMS/metadata are the loose top-level copies, never digest-compared with the copies inside the verified archive",
+      "file": "scripts/package.ts",
+      "line": 402,
+      "evidence": "verifyArchive checks the manifest and metadata extracted from the tarball; prepareReleaseAssets (:388-390) resolves the loose files by recursive findFile and returns them as 'assets', and release.yml:157-159 attaches exactly those paths. The loose copies are never compared with the archive's own copies.",
+      "reproduction": "Code trace only - not demonstrated reachable. packageCli writes both copies from the same in-memory content (:303-304 then :315-319) and the build job uploads a single artifact, so they are identical today.",
+      "recommendation": "Have prepareReleaseAssets read the manifest and metadata out of the verified archive and compare digests with the loose copies before returning them as assets.",
+      "confidence": "low - explicitly an unverified hypothesis / hardening gap, not a live bug",
+      "why_not_caught": "No test asserts the loose and in-archive copies agree; the current construction makes them identical."
+    }
+  ],
+  "tests": {
+    "ran": true,
+    "command": "cd /tmp/probe46 && bun p1.ts (exit 0); synthesized release-asset dir + sha256sum -c SHA256SUMS (exit 1, expected); python3 yaml.safe_load of .github/workflows/release.yml (exit 0)",
+    "summary": "Three bounded local probes, exit codes 0/1(as intended)/0, logs in /workspace/.swarmforge/logs/rev46-probe-{p1,sha,yaml}.log. Tag-mismatch matrix confirmed releaseTagMismatch rejects all injection shapes; checksums()/buildMetadata() output captured; workflow YAML triggers/permissions/if-graph confirmed. Not run by design: full bun test suite (whole-suite reviewer) and bun run build/package (packaging scope; sandbox Bun is 1.3.14 and compilation needs 1.4.2 - not needed since no finding depends on a compiled binary). tests/packaging.test.ts read as code evidence, not executed."
+  },
+  "limitations": "No repository settings, rulesets, tag-protection or default-workflow-permission inspection (read-only review, no infrastructure calls), so F3's platform precondition and F2's compromise precondition are unverified. actions/upload-artifact@v4 least-common-ancestor behaviour for the mixed glob path list at release.yml:101-105 could not be executed locally; a nested layout would still be verified recursively and would fail closed at gh release create, so not filed. No cloud/model providers or real infrastructure smoke invoked; no credentials read, used or emitted. Reviewer experiments lived only in /tmp/rev46 (detached target checkout) and /tmp/probe46."
+}

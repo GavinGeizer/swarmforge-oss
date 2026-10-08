@@ -1,0 +1,56 @@
+{
+  "target": "d428e0f730ed5649485732e95d39c32f5d6a8895",
+  "scope": "Idle/busy detection, absent session status, interrupted assistant messages and false completion: src/providers/opencode.ts (inspect/sessionStatus/inference_active), src/coordinator.ts (monitor settle gate, step catch-path recovery, fallback/complete, token-idle, pause/resume clock), src/domain.ts AgentSnapshot.status, src/metrics.ts:80, src/cli/overview.ts:246, src/providers/freestyle.ts:173 and :88-95; tests/session-status.test.ts, tests/token-idle.test.ts, relevant tests/lifecycle.test.ts cases.",
+  "findings": [
+    {
+      "severity": "MEDIUM",
+      "title": "A thrown status/inspect error completes a run from a result file with no idle evidence, bypassing the 'settles only on reported idle' guard",
+      "file": "src/coordinator.ts",
+      "line": 519,
+      "evidence": "In step()'s catch block, any throw while the worker is running/waiting (30s bounded()/AbortSignal.timeout on every OpenCode request at src/providers/opencode.ts:68-74, connection reset during the OpenCode unit's Restart=on-failure at src/providers/freestyle.ts:173, 4xx/5xx from /session/status or /session/messages with throwOnError:true at src/providers/opencode.ts:64, or a Freestyle getWorker error at src/coordinator.ts:487) leads to fallback()+complete() at lines 522-523 without ever polling status. This contradicts the invariant documented at src/coordinator.ts:556-560 and enforced in monitor() at line 560 (settled) and 603-609. fallback() only matches run_id/worker_id (src/coordinator.ts:685-686), so a result.json written mid-turn is indistinguishable from the final one. Consequence: the run is stored as completed, the branch is pushed and remote-verified with persisted=true when push mode is github-app/ssh (lines 693-704), or completes with no push under the default SWARMFORGE_GIT_PUSH_MODE=none (src/config.ts:50-52), while the session may still be generating; the worker becomes terminal so later text, usage and commits are never collected. tests/session-status.test.ts:234 and :257 assert this guard for the monitor path only, and no test combines a thrown inspect with a mid-turn file; no warning marks the completion as unconfirmed.",
+      "reproduction": "Reproduced in /tmp/opencode/rev29/probe (outside the source checkout) with the repo's own doubles. probe-a: spawn, run to running, write a result file with the current run_id, set the snapshot to status:'busy' with an incomplete (completed:false) assistant message, set agent.broken=true so inspect() throws, tick() -> observed state 'completed', error null, result.summary 'written mid-turn' (1 pass, exit 0). probe-b/C: same setup, then the probe recovers and tick() again -> state stays 'completed', inference gauge cleared, the busy session never polled again (2 pass, exit 0).",
+      "recommendation": "In the catch path, re-poll the session status once and complete only on an idle report; or require that the last observed snapshot for this dispatch was settled before recovering from the file; or at minimum append a warnings entry such as 'completed from a result file while session status was unavailable'. Keep tests/lifecycle.test.ts:212 (crash after a genuinely final file) passing.",
+      "confidence": "high"
+    },
+    {
+      "severity": "LOW",
+      "title": "A lost turn (session vanished with an unfinished assistant message) is recorded as a healthy 'waiting' turn and explained only 5 minutes later by an unrelated error",
+      "file": "src/coordinator.ts",
+      "line": 627,
+      "evidence": "When /session/status stops listing the session (OpenCode restart per src/providers/freestyle.ts:173, abort, or resume after pause) while the last assistant message has no time.completed (src/providers/opencode.ts:140, 162-164 -> inference_active 1), the settled fallback at 603-609 finds no result file and the transition at 627-634 records state 'waiting' with error:null (only status 'retry' produces text). The CLI then labels the stranded excerpt 'RESPONSE partial' (src/cli/overview.ts:246), identical to a live turn. The only later signal is 'No token progress for 300s; worker quiesced' (lines 620-623), which never mentions the vanished session or the unfinished message. inference_active is computed per snapshot but used only for the metric gauge (line 542, src/metrics.ts:80); tests/session-status.test.ts:123-133 asserts the estimate and :275-293 asserts the end state without any diagnosis.",
+      "reproduction": "Reproduced in /tmp/opencode/rev29/probe/probe-b.test.ts (probe B): snapshot status:'idle', inference_active:1, assistant message completed:false with text, no result file, one tick() -> observed 'state: waiting | error: null | excerpt_partial: true | excerpt_text: \"cut off mid sentence by the restart\"' (2 pass, exit 0).",
+      "recommendation": "When settled is true but the newest assistant reply for the dispatch is incomplete (inference_active === 1), record a distinct error on the transition, e.g. 'OpenCode no longer reports the session and the last assistant message is unfinished; the turn may have been lost', and mark the excerpt as stranded rather than a live partial.",
+      "confidence": "medium-high"
+    }
+  ],
+  "tests": [
+    {
+      "command": "bun install --frozen-lockfile (in /tmp clone, lockfile untouched)",
+      "exit_code": 0,
+      "result": "125 packages installed"
+    },
+    {
+      "command": "bun test tests/session-status.test.ts tests/token-idle.test.ts tests/lifecycle.test.ts",
+      "exit_code": 0,
+      "result": "59 pass, 0 fail, 192 expect() calls"
+    },
+    {
+      "command": "bun test probe/probe-a.test.ts",
+      "exit_code": 0,
+      "result": "1 pass, 0 fail (false completion reproduced)"
+    },
+    {
+      "command": "bun test probe/probe-b.test.ts",
+      "exit_code": 0,
+      "result": "2 pass, 0 fail (waiting/error:null/partial excerpt; stuck completion)"
+    }
+  ],
+  "limitations": [
+    "No real OpenCode 1.18.31 server, VM, model or cloud provider was used; all behavior came from the repository's injected doubles and the wrapper code.",
+    "The premise that /session/status omits sessions with no work is taken from src/providers/opencode.ts:177-182 and the repo tests, not from a live server; findings depend on it only for state frequency, not for the code paths.",
+    "Provider-specific error shapes (Freestyle/OpenCode) are inferred from wrapper code (bounded(), throwOnError, AbortSignal.timeout) and were not observed.",
+    "Bun 1.4.2 was installed under /tmp/opencode/bunhome because the ambient bun 1.3.14 cannot read this lockfileVersion 2 lockfile; the lockfile was never rewritten.",
+    "Targeted tests only: the whole suite, compilation/packaging and scripts/smoke.ts were intentionally not run; the branch delta (baseline 5672ead -> target) touches none of the reviewed files, so all findings pre-date the branch.",
+    "The assigned workspace /workspace/repo was left unchanged and clean at baseline 5672ead; git.commit reports that baseline, not the target."
+  ]
+}

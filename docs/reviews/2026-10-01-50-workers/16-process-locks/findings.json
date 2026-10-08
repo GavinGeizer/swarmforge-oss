@@ -1,0 +1,48 @@
+{
+  "target": "d428e0f730ed5649485732e95d39c32f5d6a8895",
+  "scope": "Advisory lock, stale lock, PID reuse, competing servers, database ownership and path edge cases (src/runtime.ts acquireProcessLock, src/serve.ts startup/shutdown, src/serve-command.ts exit policy, scripts/smoke.ts, DB path validation, docs/SERVE.md ordering)",
+  "findings": [
+    {
+      "severity": "LOW",
+      "title": "Single-owner process lock is keyed to the configured DB path string, so two aliases of one database file each take their own flock",
+      "file": "src/serve.ts",
+      "line": 126,
+      "evidence": "src/serve.ts:126 builds the lock as `${config.SWARMFORGE_DB_PATH}.lock` from the raw configured string; src/runtime.ts:150 flocks that path. No canonicalisation exists: host_path is plain text (src/settings/load.ts:376) and SWARMFORGE_DB_PATH is only z.string().min(1) (src/config.ts:77). SQLite, however, resolves the path (it follows a final-component symlink and a hardlink), so two spellings of one file get two lock inodes. The second line of defence is inert: SWARMFORGE_INSTANCE_ID defaults to \"default\" (src/config.ts:37-39), so the persisted-owner check at src/serve.ts:163-165 compares \"default\" to \"default\" and passes. Probe /tmp/opencode/r16/probes/ownership.ts (Bun 1.4.2, exit 0): holding acquireProcessLock(<real>.lock) then calling acquireProcessLock(<symlink alias>.lock) returned ACQUIRED instead of refusing; a Store opened on the alias read the row written through the real path and its write was visible from the real path. A hardlink alias behaved the same. Control: a symlinked *directory* alias correctly REFUSED (one lock inode).",
+      "reproduction": "Bun 1.4.2 in /tmp: create <dir>/sub/db.sqlite via Store, symlink <dir2>/db.sqlite -> <dir>/sub/db.sqlite, keep unlock1=acquireProcessLock('<dir>/sub/db.sqlite.lock'), then acquireProcessLock('<dir2>/db.sqlite.lock') => ACQUIRED (expected refusal). See logs r16-ownership in /workspace/.swarmforge/logs.",
+      "recommendation": "Key the lock to the file, not the spelling: canonicalise the parent with realpathSync before deriving the lock path, and/or record the database's dev+ino in the lock file at acquire time and refuse when a live lock names a different inode. Otherwise name the lock path in the refusal message so an alias is visible.",
+      "confidence": "high on the reproduced lock split; medium on operational likelihood (requires an aliased SWARMFORGE_DB_PATH, and README/ENVIRONMENT.md already require one server process per database), hence LOW not higher"
+    },
+    {
+      "severity": "LOW",
+      "title": "Lock refusal message carries no lock path and no holder PID even though the holder PID is durably recorded",
+      "file": "src/runtime.ts",
+      "line": 153,
+      "evidence": "src/runtime.ts:153 throws a bare \"Another SwarmForge process owns this database\", while src/runtime.ts:160 writes `${process.pid}` into the lock file. No code under src/ reads that file back (grep for lock readers returns nothing), so the recorded PID exists only for an operator to cat by hand. Triggered on every refused start: a healthy owner, a scripts/smoke.ts run, or a process left holding the lock after the forced exit at src/serve-command.ts:120-130.",
+      "reproduction": "Code trace plus ownership.ts probe: while one process holds the lock, a second acquireProcessLock throws the bare message, and the owner's PID content in the lock file is intact and readable at that moment (before === after, mtime unchanged), i.e. the identifying data is available exactly when the diagnostic is emitted.",
+      "recommendation": "Include the lock path and the recorded PID in the refusal message, passed through the existing command redactor (src/serve-command.ts:38-53).",
+      "confidence": "high (code-evidenced, reproduced message and preserved PID); impact limited to operability"
+    },
+    {
+      "severity": "LOW",
+      "title": "docs/SERVE.md inverts the listener and log-interval order that src/serve.ts implements (documentation only)",
+      "file": "docs/SERVE.md",
+      "line": 40,
+      "evidence": "docs/SERVE.md:40 states the rollback order as \"flush and stop the periodic logger, stop the metrics listener, stop the API listener, ...\", and docs/SERVE.md:48 says shutdown step 1 is \"the readiness gate closes, then the log interval is cleared\". src/serve.ts:141-146 does the opposite: clearInterval(logTimer) (141), gate.close() (142), api.stop(true) (143), metricsServer.stop(true) (145). The code order is the safer one (no flush can run after admission closes; the API listener stops before metrics).",
+      "reproduction": "Line-by-line comparison of docs/SERVE.md:40 and :48 against src/serve.ts:140-157 at the target; no runtime impact.",
+      "recommendation": "Correct both sentences to match the implementation, or change the code if the documented order is the intended contract.",
+      "confidence": "high (documentation-only; existing tests assert effects such as existsSync(lock)===false, openDatabaseHandles===0 and port reuse, never the order)"
+    }
+  ],
+  "tests": {
+    "command": "bun install --frozen-lockfile (Bun 1.4.2) && bun test tests/process-lock.test.ts && bun test tests/serve.test.ts tests/commands.test.ts; probes bun run paths.ts and bun run ownership.ts in /tmp/opencode/r16/probes",
+    "summary": "All ran in the disposable /tmp checkout at the exact target. install exit 0 (125 packages, lockfile untouched; Bun 1.3.14 in the snapshot refuses lockfileVersion 2 so official Bun 1.4.2 was unpacked to /tmp/opencode/bun142). tests/process-lock.test.ts exit 0: 3 pass / 0 fail, 11 assertions. tests/serve.test.ts + tests/commands.test.ts exit 0: 35 pass / 0 fail, 334 assertions. Both probes exit 0. No full-suite run and no compile step (out of scope)."
+  },
+  "limitations": [
+    "Scope-limited review: no full-suite run and no packaging/compile step.",
+    "No real cloud or model provider was contacted; server-level checks used the repository's fake provider/agent doubles.",
+    "Finding 1 was demonstrated at the lock + SQLite layer, not by running two full startServer instances on aliased paths.",
+    "Filesystem-specific flock behaviour (NFS, FUSE, overlayfs) could not be exercised; a silent no-op flock on a network filesystem is an unverified hypothesis and is not reported as a finding (docs/ENVIRONMENT.md:61 already requires a persistent local volume).",
+    "Verified-correct areas with no finding: crash/SIGKILL stale lock recovery, stale lock containing a live unrelated PID, refused contender not disturbing the owner's lock file, 5-way single-owner race, port-conflict/failed-recovery/foreign-instance rollback releasing lock+SQLite+both ports, SQLite -wal/-shm sidecar permissions (0600), file:-shaped DB path not desyncing the lock, status/config commands never taking the lock.",
+    "No secret files inspected; no credentials in this report or in /workspace/.swarmforge/logs."
+  ]
+}

@@ -1,0 +1,252 @@
+[
+  {
+    "task_id": "01-scheduler-admission",
+    "scope": "Capacity accounting, spawn admission, queued/provisioning limits, fairness and oversubscription at 50/400 workers. src/coordinator.ts, runtime.ts, domain.ts; deterministic fake-provider probes only.",
+    "request_id": "audit50-20260930-01"
+  },
+  {
+    "task_id": "02-dispatch-delivery",
+    "scope": "Dispatch pending/sending/sent/completed transitions, exactly-once/idempotent delivery boundaries, message loss/duplication and crash recovery.",
+    "request_id": "audit50-20260930-02"
+  },
+  {
+    "task_id": "03-worker-transitions",
+    "scope": "Lifecycle transition correctness and state invariants across queued/ready/running/waiting/completed/failed. State-machine adversarial traces.",
+    "request_id": "audit50-20260930-03"
+  },
+  {
+    "task_id": "04-pause-resume",
+    "scope": "Pause/resume ordering, timeout suspension, retries and pending intents under concurrent operations.",
+    "request_id": "audit50-20260930-04"
+  },
+  {
+    "task_id": "05-cancel-ordering",
+    "scope": "Cancellation races against dispatch/messages/results, lost acknowledged messages and quiesce semantics.",
+    "request_id": "audit50-20260930-05"
+  },
+  {
+    "task_id": "06-destroy-durability",
+    "scope": "Normal/forced destruction safety, preservation checks, missing-VM handling, stale Git metadata and retryable destruction.",
+    "request_id": "audit50-20260930-06"
+  },
+  {
+    "task_id": "07-startup-recovery",
+    "scope": "Restart recovery, interrupted dispatch/provisioning/control intents, stale sessions and stranded workers.",
+    "request_id": "audit50-20260930-07"
+  },
+  {
+    "task_id": "08-deadline-progress",
+    "scope": "Worker deadlines, token-progress idle detection, scheduler quiescence and false recovery detection.",
+    "request_id": "audit50-20260930-08"
+  },
+  {
+    "task_id": "09-result-validation",
+    "scope": "Result parsing/schema bounds, fallback identity/run IDs, structured JSON handling and stale result rejection.",
+    "request_id": "audit50-20260930-09"
+  },
+  {
+    "task_id": "10-followup-protocol",
+    "scope": "Follow-up queue/session identity, per-run result metadata, ordering after completed turns and message queue caps.",
+    "request_id": "audit50-20260930-10"
+  },
+  {
+    "task_id": "11-sqlite-transactions",
+    "scope": "SQLite transactions and atomic invariants, error rollback, concurrent control mutations; src/store.ts.",
+    "request_id": "audit50-20260930-11"
+  },
+  {
+    "task_id": "12-sqlite-retention",
+    "scope": "Schema/migrations, query indexes, growing events/results/history, pagination cost and retention at large scale.",
+    "request_id": "audit50-20260930-12"
+  },
+  {
+    "task_id": "13-event-replay",
+    "scope": "Durable events, SSE reconnect/replay, cursors, truncation and missed/duplicate transitions; store/http.",
+    "request_id": "audit50-20260930-13"
+  },
+  {
+    "task_id": "14-state-waits",
+    "scope": "wait_for_state_change filters/cursors/timeouts/cancellation/listener cleanup and lost wakeups under concurrency.",
+    "request_id": "audit50-20260930-14"
+  },
+  {
+    "task_id": "15-overview-queries",
+    "scope": "Overview aggregation, counts/latest result/current run/token accounting correctness and pagination.",
+    "request_id": "audit50-20260930-15"
+  },
+  {
+    "task_id": "16-process-locks",
+    "scope": "Advisory lock, stale lock, PID reuse, competing servers, database ownership and path edge cases.",
+    "request_id": "audit50-20260930-16"
+  },
+  {
+    "task_id": "17-serve-startup",
+    "scope": "Server resource acquisition, readiness/mutation gate, startup abort and bind-failure reverse cleanup.",
+    "request_id": "audit50-20260930-17"
+  },
+  {
+    "task_id": "18-serve-drain",
+    "scope": "SIGTERM/SIGINT/repeated stop, outstanding coordinator operations, shutdown deadline, SQLite close races.",
+    "request_id": "audit50-20260930-18"
+  },
+  {
+    "task_id": "19-http-auth",
+    "scope": "HTTP bearer authentication, public-host policy, timing/error paths, auth consistency across health/events/MCP.",
+    "request_id": "audit50-20260930-19"
+  },
+  {
+    "task_id": "20-http-origin",
+    "scope": "Host/origin validation, DNS/IPv6 handling, forwarding headers, rebinding protection and transport options.",
+    "request_id": "audit50-20260930-20"
+  },
+  {
+    "task_id": "21-http-limits",
+    "scope": "Request size/concurrency bounds, malformed JSON, connection lifecycle, resource exhaustion and error status semantics.",
+    "request_id": "audit50-20260930-21"
+  },
+  {
+    "task_id": "22-mcp-contract",
+    "scope": "MCP tool registration/input/output schemas/error handling and API contract consistency.",
+    "request_id": "audit50-20260930-22"
+  },
+  {
+    "task_id": "23-artifact-paths",
+    "scope": "Artifact path canonicalization, traversal/symlinks/TOCTOU, size/range boundaries and filesystem reads.",
+    "request_id": "audit50-20260930-23"
+  },
+  {
+    "task_id": "24-artifact-screening",
+    "scope": "Credential screening and sanitizer behavior, binary chunking, false negatives, multi-chunk leakage and false positives.",
+    "request_id": "audit50-20260930-24"
+  },
+  {
+    "task_id": "25-freestyle-create",
+    "scope": "Freestyle VM creation, endpoint/bootstrap failure cleanup, provider retries/timeouts and orphan prevention.",
+    "request_id": "audit50-20260930-25"
+  },
+  {
+    "task_id": "26-freestyle-controls",
+    "scope": "Freestyle pause/resume/cancel/destroy/isRunning behavior, ambiguous provider state and disappearances.",
+    "request_id": "audit50-20260930-26"
+  },
+  {
+    "task_id": "27-guest-bootstrap",
+    "scope": "Bootstrap/launcher/systemd permissions, quoting, environment isolation and guest credential boundaries; never read actual credentials.",
+    "request_id": "audit50-20260930-27"
+  },
+  {
+    "task_id": "28-opencode-protocol",
+    "scope": "OpenCode request/response/session semantics, errors, history/status interpretation and compatibility assumptions.",
+    "request_id": "audit50-20260930-28"
+  },
+  {
+    "task_id": "29-opencode-idle",
+    "scope": "Idle/busy detection, absent session status, interrupted assistant messages and false completion.",
+    "request_id": "audit50-20260930-29"
+  },
+  {
+    "task_id": "30-opencode-tokens",
+    "scope": "Token accounting/progress/excerpt sanitation, cumulative vs per-run usage and misleading inference counts.",
+    "request_id": "audit50-20260930-30"
+  },
+  {
+    "task_id": "31-git-persistence",
+    "scope": "Automatic Git handoff, remote SHA verification, digest guards, clean-state checks and branch durability.",
+    "request_id": "audit50-20260930-31"
+  },
+  {
+    "task_id": "32-git-injection",
+    "scope": "Git URL/branch/author/command shell boundaries, escaping, credential handling and path injection.",
+    "request_id": "audit50-20260930-32"
+  },
+  {
+    "task_id": "33-redactor-core",
+    "scope": "src/security.ts generic and known-secret redaction; escaping/fragments/short values/URLs and diagnostic leak paths.",
+    "request_id": "audit50-20260930-33"
+  },
+  {
+    "task_id": "34-worker-secrets",
+    "scope": "Worker environment allowlist, model/provider/API token isolation, child-process environments and accidental logging.",
+    "request_id": "audit50-20260930-34"
+  },
+  {
+    "task_id": "35-config-discovery",
+    "scope": "XDG paths, HOME fallback, relative overrides, foreign CWD independence and config selection.",
+    "request_id": "audit50-20260930-35"
+  },
+  {
+    "task_id": "36-config-precedence",
+    "scope": "TOML/env-file/process/flags precedence, empty values, path anchoring and legacy database compatibility.",
+    "request_id": "audit50-20260930-36"
+  },
+  {
+    "task_id": "37-config-parser",
+    "scope": "Strict TOML schema/version/key validation, env file parser/interpolation/quoting and malformed-input errors.",
+    "request_id": "audit50-20260930-37"
+  },
+  {
+    "task_id": "38-config-redaction",
+    "scope": "WeakMap context, overwritten credentials, cross-client/server inspection, error provenance/path redaction.",
+    "request_id": "audit50-20260930-38"
+  },
+  {
+    "task_id": "39-cli-parser",
+    "scope": "CLI grammar, argument ambiguity, repeats/missing values/unknown flags, defaults and backward-compatible status flags.",
+    "request_id": "audit50-20260930-39"
+  },
+  {
+    "task_id": "40-cli-status",
+    "scope": "Client HTTP/MCP connection/error/close handling, token redaction, URL output and noninteractive JSON semantics.",
+    "request_id": "audit50-20260930-40"
+  },
+  {
+    "task_id": "41-cli-diagnostics",
+    "scope": "config path/show/validate and serve --check-config behavior, partial-invalid settings and filesystem side effects.",
+    "request_id": "audit50-20260930-41"
+  },
+  {
+    "task_id": "42-cli-tui",
+    "scope": "Terminal dashboard input/render/lifecycle/control confirmations, race handling and untrusted terminal control characters.",
+    "request_id": "audit50-20260930-42"
+  },
+  {
+    "task_id": "43-metrics",
+    "scope": "Prometheus listener configuration, auth exposure, labels/cardinality, correctness and bind/shutdown behavior.",
+    "request_id": "audit50-20260930-43"
+  },
+  {
+    "task_id": "44-build-runtime",
+    "scope": "Bun compilation options, ambient file autoload exclusion, version/commit definitions, target/runtime support.",
+    "request_id": "audit50-20260930-44"
+  },
+  {
+    "task_id": "45-archive-verification",
+    "scope": "Archive entry validation/extraction, digest/mode/metadata checks, hostile archive risks and release asset selection.",
+    "request_id": "audit50-20260930-45"
+  },
+  {
+    "task_id": "46-release-workflow",
+    "scope": "GitHub Actions trust boundaries, tag/input injection, job permissions, artifact reuse and draft release gates.",
+    "request_id": "audit50-20260930-46"
+  },
+  {
+    "task_id": "47-install-docs",
+    "scope": "README/config/serve/environment instructions accuracy, checksum install safety, PATH/service guidance and migration traps.",
+    "request_id": "audit50-20260930-47"
+  },
+  {
+    "task_id": "48-test-quality",
+    "scope": "Test coverage gaps, ineffective assertions, fake divergence, isolated startup flake, random port races and fixture cleanup.",
+    "request_id": "audit50-20260930-48"
+  },
+  {
+    "task_id": "49-whole-suite",
+    "scope": "Independent full suite/static verification on exact target with Bun1.4.2; report actual failure evidence, no retry-until-green. Run no cloud smoke.",
+    "request_id": "audit50-20260930-49"
+  },
+  {
+    "task_id": "50-architecture-scale",
+    "scope": "Cross-system review for 50/400-worker operational limits: scheduler complexity, provider/model backpressure, per-worker locks, event loop/resource bottlenecks; reason from code and bounded fake probes, no real load deployment.",
+    "request_id": "audit50-20260930-50"
+  }
+]

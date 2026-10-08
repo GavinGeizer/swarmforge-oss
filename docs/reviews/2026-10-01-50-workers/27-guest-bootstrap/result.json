@@ -1,0 +1,37 @@
+{
+  "worker_id": "w-3ffa1709-53ad-4c73-98c1-63da6877a547",
+  "result": {
+    "worker_id": "w-3ffa1709-53ad-4c73-98c1-63da6877a547",
+    "task_id": "27-guest-bootstrap",
+    "run_id": "563cd2b4-3910-4b4b-810f-a146f5a205a1",
+    "status": "completed",
+    "summary": "FINDINGS at target d428e0f730ed5649485732e95d39c32f5d6a8895. Reviewed bootstrap/launcher/systemd permissions, quoting, environment isolation and guest credential boundaries. 1 reproduced LOW finding: src/runtime.ts:208 appendFileSync(...,{mode:0o600}) only applies the mode at creation and never re-asserts it, so a pre-existing <DB_PATH>.log keeps its mode and keeps receiving worker prompts, while the sibling DB is re-tightened to 0600 every start (src/store.ts:21). No CRITICAL/HIGH/MEDIUM. Verified sound: SQLite -wal/-shm inherit 0600; FREESTYLE_API_TOKEN and SWARMFORGE_API_TOKEN never reach the guest; the systemd unit holds no secrets (they live in a 0700 start.sh); quote() is correct POSIX escaping; withGitAuth removes temp Git credentials even on failure; config/env-file redaction holds under indirection; the binary disables all Bun autoloads. 8 test files pass (142 tests, 0 fail) plus 4 local probes. Artifacts: /workspace/.swarmforge/artifacts/review.md, findings.json.",
+    "details": "Target verified by disposable detached clone at /tmp/sfrev/tgt with git rev-parse HEAD = d428e0f730ed5649485732e95d39c32f5d6a8895. /workspace/repo left unchanged and clean on the assigned branch at baseline 5672ead2a526e07fea9ed11e58b3725e42013527 (baseline is not the target). No source changes, commits, pushes, merges, tags or worker spawning; no production/system config changes; no real cloud or model provider contacted.\n\nFINDING 1 (LOW, reproduced) src/runtime.ts:208, reached from src/serve.ts:192. appendFileSync(path, line, {mode:0o600}) applies the mode only when the file is created, and the append path has no chmod, so an existing <DB_PATH>.log retains its mode; renameSync at src/runtime.ts:207 copies that same mode onto the rotated .1. Appended lines carry event payloads including worker prompts. Trigger: a backup restore or copy of the database directory, or SWARMFORGE_DB_PATH placed in a non-0700 directory. Why guards miss it: the database is deliberately re-tightened on every start via chmodSync(path,0o600) at src/store.ts:21, but the log is not. Impact is bounded in the default layout because src/store.ts:19 creates the parent directory 0700; it becomes real when the DB sits in a non-0700 directory, where the DB is 0600 while the adjacent prompt-bearing log is world-readable. Prompts are credential-free by design, so this is a permissions/consistency defect, not a credential leak. Reproduced with a local probe: DB/-wal/-shm 0600, dir 0700, log 0644 retained across three flushes. Fix: chmod the log to 0o600 when present and the rotated .1 after rename, mirroring src/store.ts:21.\n\nReviewed and judged sound: SQLite sidecar modes (verified 0600 under umask 0022); O_NOFOLLOW plus inode revalidation in acquireProcessLock; guest credential boundary (canaries for FREESTYLE_API_TOKEN and SWARMFORGE_API_TOKEN absent from all generated guest files and exec commands); systemd unit carries no Environment= and no secrets, so systemctl cat/show are clean; pinned freestyle@0.2.13 defaults writeTextFile mode to existing-or-0600; quote() is correct POSIX single-quote escaping, confirmed with a hostile SWARMFORGE_GIT_AUTHOR_NAME; branchFor and idSchema restrict branch components; withGitAuth removes temp Git credentials and rethrows the original failure only after a confirmed cleanup; guest firewall rule is egress-allow with ingress constrained by tls.rules; per-worker server password is two randomUUIDs; config/env-file redaction holds for a credential reachable only via $VAR expansion and under a non-resolved key name; the compiled binary disables all Bun autoload flags and CI exercises it under env -i; CI passes RELEASE_TAG as quoted argv with no credentials in tags or notes. Guest mkdir without explicit mode is noted but crosses no boundary (single-principal guest, artifacts read via the provider API).\n\nLIMITATIONS: static reading plus local fakes only; no guest VM, no real Freestyle control plane, no in-guest systemd, no real model provider, so runtime-only vm.fs mode handling and in-guest systemctl behaviour are unverified; the guest runtime view was not observed. Reviewer experiments live outside the checkout at /tmp/sfrev (detached clone, probes, throwaway instrumented copy) and /tmp/bun142. All credential-shaped strings are synthetic local canaries; no secret file was inspected. Full suite and binary compilation not run (other reviewers' scope).",
+    "files_changed": [],
+    "tests": {
+      "ran": true,
+      "passed": true,
+      "command": "Bun 1.4.2 (official, unpacked to /tmp/bun142; sandbox bun 1.3.14 cannot read this lockfileVersion2 lockfile; lockfile never rewritten). bun test tests/settings.test.ts tests/inspect.test.ts tests/commands.test.ts -> exit 0, 76 pass/0 fail/646 expect, 3 files. bun test tests/serve.test.ts tests/adapters.test.ts tests/safety.test.ts tests/lifecycle.test.ts tests/process-lock.test.ts -> exit 0, 66 pass/0 fail/261 expect, 5 files. Probes: p1 Store on-disk modes exit 0; p2 prepare() with fake client + credential canaries + hostile author name exit 0; p3 config/env-file redaction with indirect credential exit 0; p6 event log mode exit 0 (reproduced the finding). Not run: full suite, binary compilation, SWARMFORGE_RUN_SMOKE.",
+      "summary": "142 tests across 8 in-scope files pass with 0 failures; 4 local probes exit 0, one reproducing the LOW finding."
+    },
+    "git": {
+      "tree": "d428e0f730ed5649485732e95d39c32f5d6a8895",
+      "workspace": "/workspace/repo",
+      "branch": "swarmforge/repo-review-50-20260930/27-guest-bootstrap/w-3ffa1709-53ad-4c73-98c1-63da6877a547",
+      "commit": "5672ead2a526e07fea9ed11e58b3725e42013527",
+      "base_commit": "5672ead2a526e07fea9ed11e58b3725e42013527",
+      "review_url": "https://github.com/GavinGeizer/swarmforge-oss/compare/5672ead2a526e07fea9ed11e58b3725e42013527...swarmforge%2Frepo-review-50-20260930%2F27-guest-bootstrap%2Fw-3ffa1709-53ad-4c73-98c1-63da6877a547",
+      "dirty": false,
+      "persisted": true
+    },
+    "warnings": [
+      "Assigned branch /workspace/repo sits at baseline 5672ead2a526e07fea9ed11e58b3725e42013527, which is NOT the review target; the target d428e0f730ed5649485732e95d39c32f5d6a8895 was reviewed in a disposable detached clone at /tmp/sfrev/tgt.",
+      "git.commit reports the assigned baseline commit, not the target, per handoff instructions.",
+      "Sandbox bun is 1.3.14 and cannot read this lockfileVersion2 lockfile; official Bun 1.4.2 was used from /tmp/bun142. The lockfile was never rewritten and no dependency was upgraded.",
+      "No guest VM, real Freestyle control plane, in-guest systemd or real model provider was exercised; guest-side runtime behaviour of vm.fs.writeTextFile mode handling is unverified and inferred from the pinned freestyle@0.2.13 SDK contract.",
+      "Full test suite and binary compilation were intentionally not run (whole-suite and packaging scopes respectively).",
+      "One discarded false lead: an early probe appeared to show a dropped env-file key; the cause was a mistyped key in my own /tmp fixture, confirmed by instrumenting a throwaway copy, not a repository defect. No finding was recorded from it."
+    ],
+    "needs_followup": true
+  }
+}

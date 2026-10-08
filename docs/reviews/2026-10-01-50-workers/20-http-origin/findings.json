@@ -1,0 +1,85 @@
+{
+  "target": "d428e0f730ed5649485732e95d39c32f5d6a8895",
+  "scope": "Host/origin validation, DNS/IPv6 handling, forwarding headers, rebinding protection and transport options (src/http.ts, src/config.ts, src/serve.ts, src/serve-command.ts, src/runtime.ts, src/cli.ts, src/cli/client.ts, src/metrics.ts, src/settings/{load,inspect}.ts)",
+  "verdict": "FINDINGS",
+  "findings": [
+    {
+      "id": "F1",
+      "severity": "MEDIUM",
+      "title": "SWARMFORGE_ALLOWED_HOSTS entries are matched case-sensitively, so valid hostname spellings (uppercase, trailing root dot, embedded port) are silently dead and every request returns a bare 403",
+      "file": "src/http.ts",
+      "line": 18,
+      "evidence": "src/http.ts:9-19 builds the allowlist Set from the raw config strings (SWARMFORGE_HOST at line 13, split/trim of SWARMFORGE_ALLOWED_HOSTS at lines 14-16) and compares with `hosts.has(url.hostname)` at line 18. WHATWG URL lowercases the authority, so `new URL(request.url).hostname` is always lower-case and never contains a port. src/config.ts:10-12 (`loopbackHosts`/`isLoopbackHost`) lowercases for its own comparison, proving case-insensitivity is the intended semantics. src/config.ts:16-24 (`acceptedHosts`) only checks that a token exists; it never checks that an entry is matchable.",
+      "reproduction": "Real Bun.serve listener, valid bearer on every request, only the allowed_hosts spelling varies (/tmp/opencode/review20/probe/allowlist-probe.ts, log /workspace/.swarmforge/logs/host-allowlist-probe.log): allowed_hosts=\"MCP.Example.Test\" with Host: MCP.Example.Test -> HTTP/1.1 403 Forbidden; allowed_hosts=\"Mcp.Example.Test\" -> 403; allowed_hosts=\"mcp.example.test\" -> 200 OK; allowed_hosts=\"mcp.example.test:8787\" -> 403. Control isolating the cause: Host: LOCALHOST reaches 200 OK against the default config whose allowlist holds only lowercase `localhost` (/workspace/.swarmforge/logs/host-wire-probe.log), proving normalisation happens on the wire side only.",
+      "consequence": "A reverse-proxy deployment configured exactly as docs/ENVIRONMENT.md:33 instructs accepts the value, enforces the token, then refuses /health, /events and /mcp with 403 and no log or startup diagnostic, so the operator diagnoses a credential or networking fault instead of the accepted-host list.",
+      "recommendation": "Lower-case and strip a trailing root dot from each config entry when building the set in src/http.ts (normalise IPv6 entries to bracketed form), and add a superRefine issue on SWARMFORGE_ALLOWED_HOSTS in src/config.ts rejecting any entry containing ':', differing from its own lower-case form, or ending in '.', so `swarmforge config validate` and startup fail loudly. Newly exposed as `server.allowed_hosts` at src/settings/load.ts:272-277.",
+      "confidence": "high"
+    },
+    {
+      "id": "F2",
+      "severity": "MEDIUM",
+      "title": "Origin is compared against url.origin, so any TLS-terminating reverse proxy - the documented deployment shape - rejects every request that carries an Origin header",
+      "file": "src/http.ts",
+      "line": 31,
+      "evidence": "src/http.ts:30-32: `const origin = request.headers.get(\"origin\"); if (origin && origin !== url.origin) return 403`. `url.origin` is derived from the plaintext listener connection plus the forwarded Host, so it is always the http backend origin. No Forwarded / X-Forwarded-Proto handling exists anywhere in the repo. The SDK's own `enableDnsRebindingProtection` is left at its default false (node_modules/@modelcontextprotocol/sdk/dist/esm/server/webStandardStreamableHttp.js:79), so nothing downstream compensates.",
+      "reproduction": "Real listener, allowed host and valid bearer on every request, only Host/Origin pairing varies (/tmp/opencode/review20/probe/allowlist-probe.ts, log /workspace/.swarmforge/logs/host-allowlist-probe.log): Host: mcp.example.test + Origin: https://mcp.example.test -> 403; Host: mcp.example.test:443 + Origin: https://mcp.example.test -> 403; control Host: mcp.example.test + Origin: http://mcp.example.test -> 406 Not Acceptable, i.e. it passed the origin check and reached the MCP transport, proving the 403 is the origin comparison.",
+      "consequence": "For the TLS-terminating proxy that docs/ENVIRONMENT.md:33 ('for a reverse proxy') and the README ('Deploy TLS ... externally') direct operators to use, every origin-aware client gets 403 on all routes including /health and /events, since the check precedes routing. No diagnostic distinguishes a TLS terminator from a hostile origin.",
+      "recommendation": "Derive accepted origins from configuration instead of the plaintext connection: either treat Origin as advisory once the host allowlist has pinned the authority and a bearer token is configured, or add an explicit SWARMFORGE_ALLOWED_ORIGINS list and/or opt-in X-Forwarded-Proto/Forwarded scheme trust restricted to already-bearer-authenticated requests (trimming default :443/:80). If neither, document at docs/ENVIRONMENT.md:33 that a terminating proxy must rewrite Origin, and add the missing positive test.",
+      "confidence": "high"
+    },
+    {
+      "id": "F3",
+      "severity": "LOW",
+      "title": "The metrics listener enforces neither the host allowlist nor the bearer token on the same bind host the config validator protects",
+      "file": "src/serve.ts",
+      "line": 179,
+      "evidence": "src/serve.ts:177-191 binds metrics to config.SWARMFORGE_HOST and serves /metrics from an inline fetch with no host validation and no credential check, unlike the API handler at src/http.ts:9-29. src/config.ts:135-141 raises the non-loopback token requirement based on acceptedHosts, which covers only the MCP surface.",
+      "reproduction": "Real startServer with SWARMFORGE_HOST=0.0.0.0 and SWARMFORGE_API_TOKEN set (/tmp/opencode/review20/probe/metrics-probe.ts, log /workspace/.swarmforge/logs/host-metrics-probe.log): API listener 18787 -> Host: 127.0.0.1 = 401, Host: evil.example = 403; metrics listener 19090 -> Host: 127.0.0.1 = 200, Host: evil.example = 200, Host: attacker-controlled.example = 200, all with no credential, exposing team labels and worker/inference/token counters from src/metrics.ts.",
+      "consequence": "A deployment satisfying every documented configuration check can still leave Prometheus telemetry world-readable on a wildcard bind; the 401/403 on the API surface creates a false impression that the deployment is authenticated.",
+      "recommendation": "Route the metrics fetch through the same host allowlist (403 on a non-allowlisted Host) and/or require an explicit opt-in before binding metrics to a non-loopback SWARMFORGE_HOST; add a 403 test for an arbitrary Host on the metrics port. Documented at docs/ENVIRONMENT.md:45 ('Protect externally if public'), hence LOW rather than higher.",
+      "confidence": "high"
+    },
+    {
+      "id": "F4",
+      "severity": "LOW",
+      "title": "Startup banner prints an invalid URL for IPv6 binds, including the wildcard ::",
+      "file": "src/runtime.ts",
+      "line": 53,
+      "evidence": "src/runtime.ts:50-56 interpolates the raw host: line 50 special-cases 0.0.0.0 only, line 53 emits `http://${host}:${info.port}/mcp`. Reached from src/serve-command.ts:148-161, which passes config.SWARMFORGE_HOST unchanged while taking the port from the correctly bracketed handle.url. Contrast src/serve.ts:110-113, whose origin() brackets IPv6.",
+      "reproduction": "/tmp/opencode/review20/probe/ipv6-probe.ts against the real modules (log /workspace/.swarmforge/logs/host-ipv6-probe.log): real renderStartup gives host=::1 -> 'MCP       http://::1:8787/mcp' and host=:: -> 'MCP       http://:::8787/mcp'; a real startServer bound to ::1 reports handle.url = http://[::1]:8787 while the banner says http://::1:8787/mcp, and fetch to http://[::1]:port/health returns 200 {\"status\":\"ok\"} - so the server is correct and only the rendered URL is unparseable.",
+      "consequence": "On a TTY the operator cannot copy the advertised endpoint for an IPv6 or IPv6-wildcard deployment; the `bun run status` hint cannot be acted on.",
+      "recommendation": "Share one IPv6-bracketing helper between renderStartup and serve.ts:origin(), and map :: to [::1] in the same way line 50 maps 0.0.0.0 to 127.0.0.1. Pre-existing at the target, not introduced by this branch; tests/serve.test.ts binds only 127.0.0.1 so IPv6 rendering is never exercised.",
+      "confidence": "high"
+    }
+  ],
+  "tests": {
+    "command": "cd /tmp/opencode/review20/repo && /tmp/opencode/bun142/bun-linux-x64/bun test tests/http.test.ts tests/serve.test.ts",
+    "ran": true,
+    "passed": true,
+    "summary": "Official Bun 1.4.2 (snapshot 1.3.14 cannot read lockfileVersion 2; lockfile not rewritten). bun install --frozen-lockfile exit 0, 125 packages. bun test tests/http.test.ts exit 0: 2 pass, 0 fail, 15 assertions. bun test tests/http.test.ts tests/serve.test.ts exit 0: 22 pass, 0 fail, 126 assertions, 4.53s. Five reviewer probe scripts under /tmp/opencode/review20/probe all exited 0: host-probe (21-case handler matrix), wire-probe (node:net raw sockets, 3 configs x 10 requests), allowlist-probe (allowlist normalisation + proxy origin pairing), ipv6-probe (real startServer on ::1), metrics-probe (real startServer comparing API vs metrics listener). Logs: /workspace/.swarmforge/logs/host-probe-1.log, host-wire-probe.log, host-allowlist-probe.log, host-ipv6-probe.log, host-metrics-probe.log. No failures or retries.",
+    "full_suite_run": false,
+    "lint_typecheck_run": false
+  },
+  "limitations": [
+    "Full `bun test` not run; whole-suite scope belongs to another reviewer. Only tests/http.test.ts and tests/serve.test.ts executed.",
+    "tsc --noEmit and biome check not run; this review made no source change.",
+    "F1 and F2 reproduced against the real handler on a real listener; F1's operator impact and F2's browser leg rest on the documented deployment in docs/ENVIRONMENT.md:33 and the README. No real TLS-terminating proxy or browser was used, so the browser-Origin path is code-traced plus socket-reproduced rather than end-to-end verified.",
+    "F3 and F4 reproduced end-to-end against a real startServer.",
+    "Not probed: HTTP/2 :authority handling, HTTP/3 cleartext, idleTimeout interaction with the /events SSE stream beyond existing tests, and non-loopback interface binds other than 0.0.0.0.",
+    "No cloud, model or network provider contacted; no smoke test; no secret file inspected. No credentials in this report, the logs or the probes."
+  ],
+  "verified_good": [
+    "Exact url.hostname allowlist evaluated on the wire authority before routing and before /health, /events and /mcp; Host: evil.example -> 403 in every configuration probed.",
+    "Duplicate Host headers: the first wins and is what is validated (Host: evil.example first, Host: localhost second -> 403).",
+    "Absolute-form request-target authority is what is validated (RFC 9112 3.2.2): GET http://localhost/health with Host: evil.example -> 403.",
+    "X-Forwarded-Host, X-Forwarded-Proto and X-Forwarded-For are ignored entirely - no spoofable forwarding-header trust.",
+    "Ordering is host (403) then bearer (401) then origin (403), so an unlisted host is not probed for credentials.",
+    "Wire Host is case-insensitive (URL lowercases), so Host: LOCALHOST matches the lowercase allowlist entry."
+  ],
+  "artifacts": {
+    "review": "/workspace/.swarmforge/artifacts/review.md",
+    "findings": "/workspace/.swarmforge/artifacts/findings.json",
+    "probes": "/tmp/opencode/review20/probe",
+    "checkout": "/tmp/opencode/review20/repo"
+  }
+}

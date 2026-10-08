@@ -1,0 +1,38 @@
+{
+  "target": "d428e0f730ed5649485732e95d39c32f5d6a8895",
+  "scope": "Follow-up queue/session identity, per-run result metadata, ordering after completed turns and message-queue caps (src/coordinator.ts, src/store.ts, src/domain.ts, src/mcp.ts, src/security.ts, src/providers/opencode.ts, related docs and lifecycle/session-status/core tests). Read-only review; probes only in /tmp/opencode/rev10 with the repository's fake provider/agent doubles.",
+  "findings": [
+    {
+      "severity": "HIGH",
+      "title": "send_worker_message to a paused worker acknowledges a follow-up that is queued behind a stale dispatch and is later silently cancelled",
+      "file": "src/coordinator.ts",
+      "line": 220,
+      "evidence": "queueMessage decides whether to discard the worker's dead run with `if (w.state === \"failed\" || w.state === \"recovery_required\")` (coordinator.ts:220) and calls cancelDispatches only there. A worker that is `paused` with previous_state `recovery_required` skips that block; the branch at coordinator.ts:226-237 only rewrites previous_state to booting/ready and returns delivery:\"queued\" (coordinator.ts:244-249). The stale unresolved dispatch exists because the reconciliation paths do not cancel dispatches: coordinator.ts:429-432 (VM stopped -> recovery_required) and coordinator.ts:573-578 (ambiguous delivery). step() at state ready (coordinator.ts:475-484) then selects store.dispatch(id), i.e. the oldest unresolved row (store.ts:236-240, ORDER BY rowid), so the acknowledged run stays pending and when the token-idle watchdog quiesces the blocked run, fail() -> cancelDispatches (coordinator.ts:799) cancels the acknowledged follow-up too.",
+      "reproduction": "/tmp/opencode/rev10/probes/followup-order.test.ts (repo harness, in-memory SQLite, FakeProvider/FakeAgent, token idle timeout 1s). Setup: run worker to running, set the fake VM state to stopped, coordinator.recover() -> recovery_required with an unresolved `sent` dispatch; then pause_worker, send_worker_message, resume_worker + ticks. Observed: message acknowledged with delivery:\"queued\"; dispatches = `sent:Implement a feature`, `pending:<new message>`; after resume, submissions after the acknowledged message = 0; final state failed with \"No token progress for 1s; worker quiesced\" and the acknowledged dispatch state = \"cancelled\". Control test A (same setup without pause) behaves correctly: head dispatch is the new run and state becomes booting.",
+      "recommendation": "Key the stale-dispatch cancellation on the effective state, e.g. `const effective = w.state === \"paused\" ? w.previous_state : w.state;` and apply the existing vm_id/opencode_session_id check plus store.cancelDispatches(id) when `effective` is `failed` or `recovery_required`, before enqueueing. Add a regression test covering pause -> message -> resume on a recovery_required worker that still holds an unresolved dispatch.",
+      "confidence": "high"
+    },
+    {
+      "severity": "LOW",
+      "title": "get_worker_result without run_id can return an earlier run's success as the latest result for a failed current run",
+      "file": "src/store.ts",
+      "line": 300,
+      "evidence": "Store.result() filters dispatches to those that already have a result and returns the last one (store.ts:300-306); get_worker_result returns only {worker_id, result} (mcp.ts:150-162), so no worker state or latest dispatch run_id accompanies it. Runs that settle without a structured result (deadline/token-idle quiesce, provider failure, unresolved recovery_required) leave no row, so the payload describes an earlier run.",
+      "reproduction": "/tmp/opencode/rev10/probes/stale-result.test.ts: run 1 completes with a structured result, follow-up run 2 is queued and then fails via the deadline path; store.get(id).state === 'failed' while store.result(id) returns summary 'run one ok', run_id c1422aa7, status 'completed' (actual latest run fbb50a1c). Reported run_id !== latest run.",
+      "recommendation": "When run_id is omitted, also return the worker state and the latest dispatch run_id (or an explicit is_latest_run flag) so staleness is checkable from a single response.",
+      "confidence": "medium"
+    }
+  ],
+  "tests": {
+    "command": "bun test tests/lifecycle.test.ts (34 pass/0 fail, exit 0); bun test tests/session-status.test.ts tests/core.test.ts (22 pass/0 fail, exit 0); probes: bun test ../probes/followup-order.test.ts, ../probes/stale-result.test.ts, ../probes/cap.test.ts, ../probes/rollback.test.ts",
+    "ran": true,
+    "summary": "Targeted tests only, all passing, on official Bun 1.4.2 in a disposable /tmp copy of the target with bun install --frozen-lockfile (no lockfile rewrite). 4 probe files: followup-order.test.ts tests B and C fail their assertions by design to demonstrate finding 1; stale-result.test.ts fails its assertion to demonstrate finding 2; cap.test.ts (queue cap = 100 unresolved, matching docs) and rollback.test.ts pass. No full suite, no compile, no real provider or smoke test."
+  },
+  "limitations": [
+    "No full-suite run (reserved for the whole-suite reviewer) and no packaging/compile step.",
+    "Findings demonstrated with the repository's fake provider/agent; real Freestyle/OpenCode behaviour is inferred from the code path.",
+    "Token-idle quiescing accelerated with a 1s configured timeout instead of waiting 300s.",
+    "Artifact chunking, redaction, CLI/TUI, metrics and packaging scopes not reviewed.",
+    "Reviewer experiments live only in /tmp/opencode/rev10 (copy + probes) with copies of the probe sources in /workspace/.swarmforge/logs; /workspace/repo was left at baseline 5672ead and clean."
+  ]
+}

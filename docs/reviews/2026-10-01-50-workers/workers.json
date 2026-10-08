@@ -1,0 +1,306 @@
+{
+  "team": "repo-review-50-20260930",
+  "target": "d428e0f730ed5649485732e95d39c32f5d6a8895",
+  "workers": [
+    {
+      "worker_id": "w-7284f366-d02c-4cd4-9e79-78ac9bf6cb38",
+      "task_id": "01-scheduler-admission",
+      "team_id": "repo-review-50-20260930",
+      "state": "queued"
+    },
+    {
+      "worker_id": "w-95630630-3a22-4002-8492-82e7abefd7e2",
+      "task_id": "02-dispatch-delivery",
+      "team_id": "repo-review-50-20260930",
+      "state": "queued"
+    },
+    {
+      "worker_id": "w-97018f1c-1382-4adf-9f82-f033a4d55152",
+      "task_id": "03-worker-transitions",
+      "team_id": "repo-review-50-20260930",
+      "state": "queued"
+    },
+    {
+      "worker_id": "w-d89aad0b-1be3-41f9-b7ea-a0a0aa21f68b",
+      "task_id": "04-pause-resume",
+      "team_id": "repo-review-50-20260930",
+      "state": "queued"
+    },
+    {
+      "worker_id": "w-0761bd76-029a-4750-b709-0239f1f385b8",
+      "task_id": "05-cancel-ordering",
+      "team_id": "repo-review-50-20260930",
+      "state": "queued"
+    },
+    {
+      "worker_id": "w-f849613e-b7d1-4b63-a628-eb9d764739e1",
+      "task_id": "06-destroy-durability",
+      "team_id": "repo-review-50-20260930",
+      "state": "queued"
+    },
+    {
+      "worker_id": "w-3f02f24f-e80d-40bc-b773-ceea9c080bb5",
+      "task_id": "07-startup-recovery",
+      "team_id": "repo-review-50-20260930",
+      "state": "queued"
+    },
+    {
+      "worker_id": "w-e8b92cdf-b8da-4eaf-b3ee-8421e3242e4c",
+      "task_id": "08-deadline-progress",
+      "team_id": "repo-review-50-20260930",
+      "state": "queued"
+    },
+    {
+      "worker_id": "w-8112710d-ea87-4510-a3dc-de68adc0f1da",
+      "task_id": "09-result-validation",
+      "team_id": "repo-review-50-20260930",
+      "state": "queued"
+    },
+    {
+      "worker_id": "w-7848c8f3-7f8d-4a3b-9315-0fabe828833b",
+      "task_id": "10-followup-protocol",
+      "team_id": "repo-review-50-20260930",
+      "state": "queued"
+    },
+    {
+      "worker_id": "w-4382dc0b-3b81-48f5-b0cf-c819fb792629",
+      "task_id": "11-sqlite-transactions",
+      "team_id": "repo-review-50-20260930",
+      "state": "queued"
+    },
+    {
+      "worker_id": "w-fc6fdeb2-ef1f-4ca9-acfa-1bb918296ebe",
+      "task_id": "12-sqlite-retention",
+      "team_id": "repo-review-50-20260930",
+      "state": "queued"
+    },
+    {
+      "worker_id": "w-4e8e705c-5065-4cc8-b33e-7fd972e27191",
+      "task_id": "13-event-replay",
+      "team_id": "repo-review-50-20260930",
+      "state": "queued"
+    },
+    {
+      "worker_id": "w-7139bba5-a577-41f7-9396-b59858dc8a39",
+      "task_id": "14-state-waits",
+      "team_id": "repo-review-50-20260930",
+      "state": "queued"
+    },
+    {
+      "worker_id": "w-ac4ce66f-c7d0-45d6-882b-26aea49d0bc4",
+      "task_id": "15-overview-queries",
+      "team_id": "repo-review-50-20260930",
+      "state": "queued"
+    },
+    {
+      "worker_id": "w-cefbf28c-c70c-4f80-8101-554a5c559b83",
+      "task_id": "16-process-locks",
+      "team_id": "repo-review-50-20260930",
+      "state": "queued"
+    },
+    {
+      "worker_id": "w-120a87db-c9ac-4a0c-b90b-9abcbdd5d393",
+      "task_id": "17-serve-startup",
+      "team_id": "repo-review-50-20260930",
+      "state": "queued"
+    },
+    {
+      "worker_id": "w-349921b4-0416-4419-812a-b4d9341281e0",
+      "task_id": "18-serve-drain",
+      "team_id": "repo-review-50-20260930",
+      "state": "queued"
+    },
+    {
+      "worker_id": "w-aedf661e-6c55-46c9-9d86-10b8c8ba7701",
+      "task_id": "19-http-auth",
+      "team_id": "repo-review-50-20260930",
+      "state": "queued"
+    },
+    {
+      "worker_id": "w-5b2b55c4-2493-44ef-8f97-2e3e4f2fff58",
+      "task_id": "20-http-origin",
+      "team_id": "repo-review-50-20260930",
+      "state": "queued"
+    },
+    {
+      "worker_id": "w-8b07c2f6-a9b9-46cd-a21f-9db4d1dca99b",
+      "task_id": "21-http-limits",
+      "team_id": "repo-review-50-20260930",
+      "state": "queued"
+    },
+    {
+      "worker_id": "w-45b0c5ad-f308-4e39-a702-c07851fc266d",
+      "task_id": "22-mcp-contract",
+      "team_id": "repo-review-50-20260930",
+      "state": "queued"
+    },
+    {
+      "worker_id": "w-b670b59e-1f4f-4201-80e2-942f2a425d0b",
+      "task_id": "23-artifact-paths",
+      "team_id": "repo-review-50-20260930",
+      "state": "queued"
+    },
+    {
+      "worker_id": "w-7bac4b97-ded7-409d-9528-8b006db68e90",
+      "task_id": "24-artifact-screening",
+      "team_id": "repo-review-50-20260930",
+      "state": "queued"
+    },
+    {
+      "worker_id": "w-c71d7879-1d88-4530-aa34-4e52cae568aa",
+      "task_id": "25-freestyle-create",
+      "team_id": "repo-review-50-20260930",
+      "state": "queued"
+    },
+    {
+      "worker_id": "w-8f8fe3e8-3746-4a25-a90c-3599de28033f",
+      "task_id": "26-freestyle-controls",
+      "team_id": "repo-review-50-20260930",
+      "state": "queued"
+    },
+    {
+      "worker_id": "w-3ffa1709-53ad-4c73-98c1-63da6877a547",
+      "task_id": "27-guest-bootstrap",
+      "team_id": "repo-review-50-20260930",
+      "state": "queued"
+    },
+    {
+      "worker_id": "w-829e444e-fcce-436b-88d5-f3ccbb99162e",
+      "task_id": "28-opencode-protocol",
+      "team_id": "repo-review-50-20260930",
+      "state": "queued"
+    },
+    {
+      "worker_id": "w-4de160b8-c0ed-49f0-97bd-5860f169366e",
+      "task_id": "29-opencode-idle",
+      "team_id": "repo-review-50-20260930",
+      "state": "queued"
+    },
+    {
+      "worker_id": "w-4e504604-ccc6-4a4f-805c-6ba19a54c4ac",
+      "task_id": "30-opencode-tokens",
+      "team_id": "repo-review-50-20260930",
+      "state": "queued"
+    },
+    {
+      "worker_id": "w-0f238c7c-56e2-404b-b69a-01000c6884e4",
+      "task_id": "31-git-persistence",
+      "team_id": "repo-review-50-20260930",
+      "state": "queued"
+    },
+    {
+      "worker_id": "w-8897326b-a7bb-4336-bc98-831e33183fca",
+      "task_id": "32-git-injection",
+      "team_id": "repo-review-50-20260930",
+      "state": "queued"
+    },
+    {
+      "worker_id": "w-766313bb-191d-42be-b19a-2e68edf40cfc",
+      "task_id": "33-redactor-core",
+      "team_id": "repo-review-50-20260930",
+      "state": "queued"
+    },
+    {
+      "worker_id": "w-34d199e5-7ba9-4922-b3ba-8968cad3a972",
+      "task_id": "34-worker-secrets",
+      "team_id": "repo-review-50-20260930",
+      "state": "queued"
+    },
+    {
+      "worker_id": "w-95465c2b-eefd-49a7-b170-d38f5aaa7f3a",
+      "task_id": "35-config-discovery",
+      "team_id": "repo-review-50-20260930",
+      "state": "queued"
+    },
+    {
+      "worker_id": "w-e273d57a-b200-4a12-837f-8ecc95a1ca24",
+      "task_id": "36-config-precedence",
+      "team_id": "repo-review-50-20260930",
+      "state": "queued"
+    },
+    {
+      "worker_id": "w-47fb8403-8abd-4738-93b2-6f2b971ffc12",
+      "task_id": "37-config-parser",
+      "team_id": "repo-review-50-20260930",
+      "state": "queued"
+    },
+    {
+      "worker_id": "w-a6ea6438-dab9-4da2-a359-db21823d9ba4",
+      "task_id": "38-config-redaction",
+      "team_id": "repo-review-50-20260930",
+      "state": "queued"
+    },
+    {
+      "worker_id": "w-6dade556-5cf8-4e89-b647-b3fab894df80",
+      "task_id": "39-cli-parser",
+      "team_id": "repo-review-50-20260930",
+      "state": "queued"
+    },
+    {
+      "worker_id": "w-7f2c50b2-a6d2-45ce-8b4b-f2bfba02e618",
+      "task_id": "40-cli-status",
+      "team_id": "repo-review-50-20260930",
+      "state": "queued"
+    },
+    {
+      "worker_id": "w-f9be9bf5-e0ad-4ebb-9138-306d61f1cc17",
+      "task_id": "41-cli-diagnostics",
+      "team_id": "repo-review-50-20260930",
+      "state": "queued"
+    },
+    {
+      "worker_id": "w-9a556902-64cc-4f48-b352-abdd26be8a1e",
+      "task_id": "42-cli-tui",
+      "team_id": "repo-review-50-20260930",
+      "state": "queued"
+    },
+    {
+      "worker_id": "w-cb4bbed2-027f-47a1-bcbd-c8d96594f5da",
+      "task_id": "43-metrics",
+      "team_id": "repo-review-50-20260930",
+      "state": "queued"
+    },
+    {
+      "worker_id": "w-efb67c97-8f4e-4888-86e7-f9cda4385f2c",
+      "task_id": "44-build-runtime",
+      "team_id": "repo-review-50-20260930",
+      "state": "queued"
+    },
+    {
+      "worker_id": "w-00dd94fa-dcc7-4cf0-b7c4-b42661d163e4",
+      "task_id": "45-archive-verification",
+      "team_id": "repo-review-50-20260930",
+      "state": "queued"
+    },
+    {
+      "worker_id": "w-67f05207-ac71-477e-a751-86bc010e9390",
+      "task_id": "46-release-workflow",
+      "team_id": "repo-review-50-20260930",
+      "state": "queued"
+    },
+    {
+      "worker_id": "w-5e6e1801-f229-4d9c-948d-0281c7590402",
+      "task_id": "47-install-docs",
+      "team_id": "repo-review-50-20260930",
+      "state": "queued"
+    },
+    {
+      "worker_id": "w-734be24e-35b5-4e12-9d6b-f8cfdc98a0be",
+      "task_id": "48-test-quality",
+      "team_id": "repo-review-50-20260930",
+      "state": "queued"
+    },
+    {
+      "worker_id": "w-1128cc3e-b861-48ef-a328-4824018b0302",
+      "task_id": "49-whole-suite",
+      "team_id": "repo-review-50-20260930",
+      "state": "queued"
+    },
+    {
+      "worker_id": "w-9b1815b4-6b7f-4c25-9484-a8605195bc58",
+      "task_id": "50-architecture-scale",
+      "team_id": "repo-review-50-20260930",
+      "state": "queued"
+    }
+  ]
+}

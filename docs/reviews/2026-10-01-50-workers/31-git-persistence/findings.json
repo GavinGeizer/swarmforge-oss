@@ -1,0 +1,59 @@
+{
+  "target": "d428e0f730ed5649485732e95d39c32f5d6a8895",
+  "scope": "Automatic Git handoff, remote SHA verification, digest guards, clean-state checks and branch durability (src/providers/freestyle.ts prepare/withGitAuth/pushBranch, src/git-handoff.ts, src/safety.ts inspectPersistence, src/coordinator.ts complete and destroy guards, src/config.ts gitTree/push-mode validation)",
+  "findings": [
+    {
+      "severity": "HIGH",
+      "title": "Clean-state guard passes when git status fails; uncommitted work reported as durably persisted",
+      "file": "src/providers/freestyle.ts",
+      "line": 255,
+      "evidence": "pushBranch runs `test -z \"$(git status --porcelain --untracked-files=all)\"`. A git status that exits nonzero (truncated .git/index, or 'detected dubious ownership') writes nothing to stdout, so the substitution yields an empty string, `test -z \"\"` succeeds and `set -eu` does not abort. The script then pushes only committed content, and coordinator.complete (src/coordinator.ts:703) unconditionally sets persisted:true, dirty:false. src/safety.ts:38-39 handles the same failure class correctly by checking the exit code, so the failure mode is known but unhandled here.",
+      "reproduction": "Reproduced locally under /tmp/probe31/p4 with real git and a real bare remote: commit, branch, commit a change, `git add wip.txt` (uncommitted), then `head -c 40 /dev/urandom > .git/index`. The exact pushBranch body printed 'CLEAN-CHECK PASSED', `git status` exited 128, `git push` created the remote branch, script exit 0; wip.txt content exists nowhere in the remote.",
+      "recommendation": "Capture and validate the status result: `st=$(git status --porcelain --untracked-files=all) || exit 1; test -z \"$st\"`, mirroring src/safety.ts:38-39. Add a test with a nonzero-status git status.",
+      "confidence": "reproduced"
+    },
+    {
+      "severity": "MEDIUM",
+      "title": "base_commit read from a worker-writable file makes the ancestry guard and review_url forgeable",
+      "file": "src/providers/freestyle.ts",
+      "line": 255,
+      "evidence": "pushBranch takes `base=$(cat ${workspace}/.swarmforge/git-base)`, written at :140-142 in the same root-owned workspace where the worker runs (the OpenCode systemd unit declares no User=, and prepare/pushBranch exec with linuxUser:'root'). The only validation of base is `git merge-base --is-ancestor \"$base\" \"$commit\"` inside the same worker-controlled shell, so a worker-chosen base makes it trivially true. review_url at :268-270 is built from that base_commit.",
+      "reproduction": "Reproduced at /tmp/probe31/p3 with real repo and bare remote: after the worker change commit, `printf '%s\\n' \"$COMMIT\" > .swarmforge/git-base` then the exact pushBranch body exits 0 and prints base == commit, so the reported compare range is <commit>...<branch> while the true base differs. A rewritten or unrelated-root history is likewise accepted.",
+      "recommendation": "Treat base as untrusted: record it durably in SQLite at prepare time and compare, or verify remote-side ancestry with git ls-remote on the base branch instead of trusting a workspace file.",
+      "confidence": "reproduced"
+    },
+    {
+      "severity": "MEDIUM",
+      "title": "Destroy-time persistence check trusts forgeable local remote-tracking refs",
+      "file": "src/safety.ts",
+      "line": 41,
+      "evidence": "`git rev-list --count --branches HEAD --not --remotes` subtracts everything reachable from any refs/remotes/*, which the worker can create locally with `git update-ref`. The coordinator persisted-check at src/coordinator.ts:930-941 only guards workers with an active dispatch or a result lacking git.persisted, so a worker that never completed reaches inspectPersistence with no independent proof; the destroy path at :945-955 then proceeds. pushBranch itself fabricates refs/remotes/origin/<branch> at :255, confirming these refs are treated as authoritative.",
+      "reproduction": "Reproduced at /tmp/probe31/sf: cloned repo with an unpushed local commit on the worker branch; after `git update-ref refs/remotes/origin/<branch> HEAD`, rev-list prints 0, and the safety.ts Python extracted verbatim from the target (roots substituted) prints {\"safe\": true, \"reason\": \"no obvious unpersisted work\"} while the bare remote contains only refs/heads/main.",
+      "recommendation": "Verify durability against the real remote with `git ls-remote <target>` or compare against a SwarmForge-recorded pushed SHA persisted in SQLite, instead of local refs/remotes/*.",
+      "confidence": "reproduced"
+    },
+    {
+      "severity": "LOW",
+      "title": "Workspace walk prunes node_modules/.cache and skips the walk when workspace is inside a Git tree, hiding nested repositories",
+      "file": "src/safety.ts",
+      "line": 32,
+      "evidence": "src/safety.ts:32 prunes directory names ['.swarmforge','node_modules','.cache'], skipping any .git beneath them. Separately, :28-29 runs `git rev-parse --show-toplevel` on each root and, on success, does repos.add(top) without ever running the os.walk that would discover nested repositories. Either path lets inspectPersistence return safe:true while unpushed commits exist in a nested repo, so the destroy path at src/coordinator.ts:945-955 destroys the VM without recovery_required.",
+      "reproduction": "Trigger A at /tmp/probe31/nm: a repo under ws/node_modules/vendored with an unpushed commit; the extracted target script prints safe:true. Trigger B at /tmp/probe31/pr2: workspace nested inside a pushed outer repo whose .gitignore covers the workspace; after pushing the outer repo the extracted target script prints safe:true although workspace/repo holds an unpushed commit.",
+      "recommendation": "Bound walk cost by depth or entry count rather than by directory name, and always walk for nested .git even when rev-parse --show-toplevel succeeded. Add a nested-repository test.",
+      "confidence": "reproduced"
+    }
+  ],
+  "tests": {
+    "ran": true,
+    "passed": true,
+    "command": "cd /tmp/rev31 && /tmp/bun142/bin/bun install --frozen-lockfile && /tmp/bun142/bin/bun test tests/git-handoff.test.ts tests/safety.test.ts",
+    "summary": "exit 0; 11 pass, 0 fail, 38 expect() calls, Ran 11 tests across 2 files (616ms). Log at /workspace/.swarmforge/logs/rev31-githandoff-safety.log. Local probe repos under /tmp/probe31 (real git, bare remotes, verbatim-extracted safety.ts script) reproduced F1-F4; no network, no real providers, no credentials. Full suite, typecheck and compile were not run (out of scope)."
+  },
+  "limitations": [
+    "Real Freestyle VMs, OpenCode, GitHub/SSH remotes and the smoke test were not exercised; F2/F3 reachability rests on the code-evidenced fact that the worker service runs as root in the same workspace, not on a live VM probe.",
+    "Only tests/git-handoff.test.ts and tests/safety.test.ts were run, not the full suite; no typecheck or compile.",
+    "This run exceeded its 30-minute review deadline and was finalized in bounded recovery mode; report delivery is complete but no probes beyond those listed were executed.",
+    "F1's 'detected dubious ownership' variant was shown at the git level only, not end to end through pushBranch; the corrupt-index variant was run end to end.",
+    "Disposable artifacts under /tmp/probe31 and /tmp/rev31 were left in place rather than deleted; /workspace/repo is unchanged and clean at baseline 5672ead2a526e07fea9ed11e58b3725e42013527."
+  ]
+}

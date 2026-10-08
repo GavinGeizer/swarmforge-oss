@@ -1,0 +1,50 @@
+{
+  "target": "d428e0f730ed5649485732e95d39c32f5d6a8895",
+  "branch": "feature/binary-config-serve-20260930",
+  "scope": "Freestyle VM creation, endpoint/bootstrap failure cleanup, provider retries/timeouts and orphan prevention",
+  "reviewer_checkout": "/tmp/rev-wc71d/repo (detached, HEAD verified = target)",
+  "findings": [
+    {
+      "severity": "HIGH",
+      "title": "prepare() outer bound is shorter than its own inner budget, so a slow-but-healthy guest livelocks in booting and its endpoint is discarded",
+      "file": "src/coordinator.ts",
+      "line": 462,
+      "evidence": "Outer bound at coordinator.ts:461-467 is SWARMFORGE_GIT_PUSH_TIMEOUT_MS + SWARMFORGE_API_TIMEOUT_MS = 120000+30000 = 150000ms at shipped defaults (config.ts:53,89). prepare() inner per-step timeoutMs budgets are 30000 (freestyle.ts:117 init) + 120000 (freestyle.ts:131 clone) + 30000 (freestyle.ts:144 checkout) + 30000 (freestyle.ts:180 systemctl) = 210000ms worst case. bounded() (coordinator.ts:41-59) uses Promise.race, so it rejects at 150s while the abandoned prepare() keeps running; the endpoint is never stored because store.patch(id,{endpoint}) at coordinator.ts:467 is never reached.",
+      "reproduction": "Executed with Bun 1.4.2 outside the checkout, real Coordinator + local fake provider, shipped default ratios scaled 1:1000 (API=30ms, GIT_PUSH=120ms, outer bound=150ms), polling like the scheduler (/tmp/rev-wc71d/probe/threshold.ts): inner=100ms -> attempts=1 state=waiting endpoint=RECORDED; inner=149ms -> attempts=1 endpoint=RECORDED; inner=160ms -> attempts=16 state=booting endpoint=LOST; inner=210ms -> attempts=16 endpoint=LOST; inner=260ms -> attempts=16 endpoint=LOST. Staged worst-case probe converge.ts: 'prepare() attempts: 16 | completed server-side: 15 | state: booting | endpoint recorded: null'. converge-fast.ts reaches waiting in 1 attempt, isolating the bound as the cause.",
+      "recommendation": "Raise the bound to exceed the sum of inner budgets (e.g. GIT_PUSH_TIMEOUT_MS + 4*API_TIMEOUT_MS), and/or pass an AbortSignal into bounded() so an abandoned attempt is cancelled rather than duplicated. Track in-flight prepare() per worker and skip retries while one is outstanding.",
+      "confidence": "high"
+    },
+    {
+      "severity": "MEDIUM",
+      "title": "Abandoned prepare() retries run concurrently against the same VM and race each other on the shared clone staging dir and temporary Git credential",
+      "file": "src/providers/freestyle.ts",
+      "line": 126,
+      "evidence": "Staging path is derived only from worker_id: `${workspace}/.swarmforge/repo-clone-${w.worker_id}` (freestyle.ts:126); the clone command begins `rm -rf <staging> && git clone ... && mv <staging> <repository>` (freestyle.ts:129); credential files are fixed guest paths ['/opt/swarmforge/git-auth','/opt/swarmforge/git-secret'] (freestyle.ts:193) written before the action and unconditionally `rm -f`'d afterwards (freestyle.ts:229-240). Because Promise.race in F1 leaves the abandoned prepare() running and step() retries on the next tick (coordinator.ts:510-526), two prepare() calls execute concurrently on one VM.",
+      "reproduction": "Executed, Bun 1.4.2, faithful local model of both shared guest paths (/tmp/rev-wc71d/probe/race.ts), inner 660ms vs outer bound 430ms: 'prepare starts: p1,p2 | maxConcurrent: 2 | clone failures: 2 | p1: credential file deleted by a concurrent prepare (owner=p2) | p2: credential file deleted by a concurrent prepare (owner=null)'. stack.ts at sustained scale: 150 attempts over the provisioning window, 'attempts whose rm -rf staging hit a live clone: 1'.",
+      "recommendation": "Apply the single-flight fix from F1, and/or make the staging directory and credential paths attempt-scoped (random suffix) so an abandoned attempt cannot collide with its successor. Have withGitAuth verify the credential still belongs to the current attempt before removing it.",
+      "confidence": "high"
+    },
+    {
+      "severity": "LOW",
+      "title": "createWorker's slug pre-check is not atomic, so a create-timeout can produce duplicate VMs for one worker",
+      "file": "src/providers/freestyle.ts",
+      "line": 46,
+      "evidence": "createWorker does `const existing = await this.getWorker(slug); if (existing) return existing;` (freestyle.ts:46-47) then vms.create (freestyle.ts:48). Check-then-create is racy. The create is bounded by SWARMFORGE_API_TIMEOUT_MS (coordinator.ts:457) while the freestyle SDK backgrounds long requests and polls (node_modules/freestyle/dist/client.js, BACKGROUND_AFTER_SECS=5), so a slow create can outlive the bound and remain running provider-side. The next tick re-enters createWorker; if the first VM is not yet visible to vms.get(slug) the pre-check passes and a second VM is created with the same slug and metadata.worker_id.",
+      "reproduction": "NOT reproduced against the real Freestyle API (would require real infrastructure, out of scope). Coordinator-side mechanism reproduced with a local fake modelling slug-visibility lag (/tmp/rev-wc71d/probe/dup-create.ts): 'VMs created for ONE worker record: 2', 'max concurrent createWorker: 3'. recover() (coordinator.ts:365-396) later surfaces the extra VM as a recovery_required orphan rather than losing it, so residual impact is a duplicate billable VM plus a spurious recovery record.",
+      "recommendation": "Pass an idempotency key to vms.create if supported; otherwise make createWorker single-flight per worker (same fix as F1/F2), and treat a same-slug VM found during recovery as adoption rather than orphan creation.",
+      "confidence": "medium"
+    }
+  ],
+  "tests": {
+    "ran": true,
+    "passed": true,
+    "command": "cd /tmp/rev-wc71d/repo && bun install --frozen-lockfile; bun test tests/lifecycle.test.ts; bun test tests/adapters.test.ts",
+    "summary": "Bun 1.4.2 (/tmp/bun142/bun-linux-x64/bun); system Bun is 1.3.14. Install: 125 packages, lockfile not rewritten. tests/lifecycle.test.ts: 34 pass, 0 fail, 114 expect(), exit 0. tests/adapters.test.ts: 7 pass, 0 fail, 19 expect(), exit 0. Both suites pass unmodified, which is why the defects are not caught: no test drives prepare() slower than the outer bound (tests/helpers.ts:48-51 is instantaneous; tests/adapters.test.ts:138-170 calls provider.prepare() directly with no coordinator and no bound). Targeted probes under /tmp/rev-wc71d/probe/ (outside the checkout) against the real Coordinator with local fake providers: threshold.ts, converge.ts, converge-fast.ts, race.ts, stack.ts, dup-create.ts, overlap.ts, overlap2.ts, concurrent-prepare.ts. Full suite NOT run (reserved for whole-suite reviewer); no packaging/compile performed (out of scope)."
+  },
+  "limitations": [
+    "No real Freestyle/OpenCode/model endpoint contacted, per instructions; F3's real-API slug-visibility behaviour is unverified.",
+    "F1 and F2 are reproduced with local fakes that reproduce the coordinator timing and the guest paths named in source; they demonstrate the coordinator-side mechanism exactly but do not measure how often a real guest exceeds 150s.",
+    "Probe literals are the repository's own non-secret test values; no real credentials appear in this report or probe output.",
+    "/workspace/repo left unchanged at 5672ead2a526e07fea9ed11e58b3725e42013527 and clean; review checkout is disposable under /tmp."
+  ]
+}

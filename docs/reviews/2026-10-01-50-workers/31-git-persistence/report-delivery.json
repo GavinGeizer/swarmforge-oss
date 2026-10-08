@@ -1,0 +1,12 @@
+{
+  "worker_id": "w-0f238c7c-56e2-404b-b69a-01000c6884e4",
+  "task_id": "31-git-persistence",
+  "target": "d428e0f730ed5649485732e95d39c32f5d6a8895",
+  "initial_run_status": "failed: deadline",
+  "recovery_run_id": "754f2998-c0ab-4eef-97a0-c8d6ea92867d",
+  "recovery_result_status": "Missing or malformed structured result",
+  "artifact_report_preserved": true,
+  "structured_result_available": false,
+  "source_state": "Independent live VM Git checks confirmed clean baseline 5672ead2a526e07fea9ed11e58b3725e42013527; actual remote master matched.",
+  "cleanup_state": "destroyed"
+}

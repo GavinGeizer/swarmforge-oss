@@ -1,0 +1,45 @@
+{
+  "target": "d428e0f730ed5649485732e95d39c32f5d6a8895",
+  "branch": "feature/binary-config-serve-20260930",
+  "scope": "restart recovery, interrupted dispatch/provisioning/control intents, stale sessions and stranded workers (src/coordinator.ts, src/store.ts, src/serve.ts, src/serve-command.ts, src/runtime.ts, src/providers/opencode.ts, src/domain.ts)",
+  "verdict": "FINDINGS",
+  "findings": [
+    {
+      "severity": "MEDIUM",
+      "title": "recovery_required is terminal and unresumable even when the coordinator parked the worker on a paused/stopped guest, and the emitted error tells the operator to resume",
+      "file": "src/coordinator.ts",
+      "line": 831,
+      "evidence": "runControl accepts resume only when w.state === 'paused' (:830-831, throws 'Worker is not paused'); recovery_required is in terminal (src/domain.ts:17-23); runRecover returns for terminal states at :420 before the paused/stopped mapping at :421-432, making the !terminal.has guard at :429 dead code; runTick filters terminal states out at :344-349. Entry points reproduced: interrupted submit -> recovery_required 'Prompt delivery ambiguous' on a running idle guest (:561-579, :575); stopped guest -> recovery_required 'VM stopped; inspect before resuming' (:429-432); quiesce that could only pause the guest -> recovery_required (:785-804, :909-926). applyControl can already resume a paused guest (:915-916) and holds resumeWorker (:859), both unreachable for these workers. The retained VM keeps consuming SWARMFORGE_MAX_WORKERS capacity (:317-322).",
+      "reproduction": "Disposable lab /tmp/opencode/rev07/lab with Bun 1.4.2 and tests/helpers FakeProvider/FakeAgent. probes/p1.test.ts P1: worker to running, guest state 'stopped', recover() -> recovery_required, control(id,'resume') -> 'Worker is not paused', second restart + recover + tick unchanged. probes/p1.test.ts P2: agent.abort throws and exec fails for 'systemctl stop' -> recovery_required with guest 'paused'; resume refused again after restart. probes/p2.test.ts P5: dispatch left 'sending' with an idle session and no message -> first tick recovery_required with guest 'running'; resume refused. probes/p3.test.ts P8: send_worker_message does recover it (recovery_required -> booting -> running) but cancels the original dispatch, runs = ['cancelled:Implement a feature','sent:please continue'], so the spawned prompt is never re-delivered. probes/p2.test.ts P4: with SWARMFORGE_MAX_WORKERS=2, two retained-VM workers keep a third spawn 'queued' and provider.created stays 2.",
+      "recommendation": "Make the recovery path match the emitted messages: handle a paused/stopped guest for a terminal recovery_required worker before the terminal return in runRecover (transition to paused with previous_state), or accept resume when state is recovery_required and the guest is paused/stopped (resumeWorker then transition to previous_state ?? 'ready'). Otherwise reword both errors to 'destroy or send a follow-up' and surface the stranded dispatch's message text so the prompt is recoverable.",
+      "confidence": "high"
+    },
+    {
+      "severity": "LOW",
+      "title": "result.json fallback requires the optional run_id, so a schema-valid file result is discarded when the session is unreadable",
+      "file": "src/coordinator.ts",
+      "line": 685,
+      "evidence": "fallback() returns null unless r.run_id === d.run_id (:685), while resultSchema marks run_id optional (src/domain.ts:45) and identify() overwrites run_id with the dispatch's run id anyway (:665-672), so the check is only a staleness guard applied inconsistently with the message path (:589-593).",
+      "reproduction": "probes/p3.test.ts P7: settled session with no reply plus a result file without run_id -> worker 'waiting', store.result() null; the same file with run_id -> 'completed'.",
+      "recommendation": "Treat a missing run_id as matching when it is the only unresolved dispatch for that worker, or record the dispatch run id in the artifact the bootstrap already writes; at minimum report the discarded result in the worker error so a successful report is not silently lost.",
+      "confidence": "medium"
+    }
+  ],
+  "tests": {
+    "toolchain": "official Bun 1.4.2 at /tmp/opencode/bun142/bun-linux-x64/bun (snapshot bun 1.3.14 cannot read this lockfileVersion 2 lockfile); bun install --frozen-lockfile in the disposable lab, lockfile not rewritten",
+    "commands": [
+      "bun test tests/restart.test.ts tests/lifecycle.test.ts -> 35 pass, 0 fail, 118 assertions, exit 0",
+      "bun test probes/p1.test.ts -> 3 pass, 0 fail, exit 0",
+      "bun test probes/p2.test.ts -> 3 pass, 0 fail, exit 0",
+      "bun test probes/p3.test.ts -> 2 pass, 0 fail, exit 0"
+    ],
+    "no_real_providers": true,
+    "full_suite_run": false
+  },
+  "limitations": [
+    "Real Freestyle provider behaviour unverified (no live calls): whether exec/prepare can run against a 'stopped' guest (F1 case 2 follow-up rescue) and whether vms.get(slug) resolves a slug (src/providers/freestyle.ts:44-47 createWorker idempotency) are unverified, not findings.",
+    "No process was SIGKILLed; crash points were simulated by writing the durable state a crash leaves (worker intent, dispatch 'sending'). On-disk SQLite reopen was exercised via tests/restart.test.ts and the probes.",
+    "Full suite not run (whole-suite reviewer scope); no packaging/build compilation; metrics, artifact transfer, CLI/TUI out of scope.",
+    "Artifacts passed through the production Redactor (src/security.ts) before export; no credentials or credential-shaped URLs included."
+  ]
+}

@@ -1,0 +1,37 @@
+{
+  "worker_id": "w-47fb8403-8abd-4738-93b2-6f2b971ffc12",
+  "result": {
+    "worker_id": "w-47fb8403-8abd-4738-93b2-6f2b971ffc12",
+    "task_id": "37-config-parser",
+    "run_id": "2ca61cde-a5f1-4d6e-9880-c89f7430870f",
+    "status": "completed",
+    "summary": "Reviewer 37 (read-only) at target d428e0f730ed5649485732e95d39c32f5d6a8895 (feature/binary-config-serve-20260930). Scope: strict TOML schema/version/key validation and the env-file parser (interpolation, quoting, malformed-input errors) in src/settings/load.ts, plus src/config.ts and docs/CONFIGURATION.md. Verdict FINDINGS: 1 MEDIUM + 3 LOW. MEDIUM: a '#' comment after a quoted env-file value is rejected as 'unterminated quote' (load.ts:583-589), so the example at CONFIGURATION.md:153 fails and serve/validate abort. LOW: '\\\\' before $NAME suppresses interpolation (588/601); env_file=\"\" reads the config dir (EISDIR, 751); client.token allows a 1-char bearer token vs server min(24) (83 vs config.ts:81). Verified sound: strict TOML key/version rejection incl. __proto__, 40/40 keys mapped, no credential leak in 10 canary probes. Tests: bun test tests/settings.test.ts tests/inspect.test.ts = 61 pass 0 fail exit 0 (Bun 1.4.2). No source changes. Report: .swarmforge/artifacts/review.md",
+    "details": "Method: fetched origin/feature/binary-config-serve-20260930, made a disposable detached clone at /tmp/rv-cfg and verified git rev-parse HEAD = d428e0f730ed5649485732e95d39c32f5d6a8895. src/settings/load.ts (897 lines) is entirely new in this branch, so the whole file was reviewed, not just the delta. Bun 1.4.2 was installed under /tmp/bun142 because the snapshot ships 1.3.14, which cannot read lockfileVersion 2; the lockfile was never rewritten.\n\nF1 MEDIUM src/settings/load.ts:583-589. envValue() enters the quote branch when entry[0] is a quote and requires the trimmed value to END with that quote char; nothing strips a trailing comment after a closing quote, so 'export FREESTYLE_API_TOKEN=\"sample-literal-value\"   # trailing comment' fails with env_file_invalid 'unterminated quote'. docs/CONFIGURATION.md:153 documents precisely that line. Consequence: a copy-pasteable documented input aborts startup; fails closed, no wrong value used. The same branch is also lenient the other way: KEY=\"a\"b\" is accepted as a\"b. Not caught because tests/settings.test.ts:692 puts its only trailing comment on an unquoted value and line 728 covers a genuinely unterminated quote. Fix: locate the first unescaped closing quote, allow only whitespace or a '#' comment after it, fail with a distinct 'trailing content after quoted value' reason, and cover both cases.\n\nF2 LOW src/settings/load.ts:588 and :601. unescapeDouble runs after expand, and expand uses a (?<!\\\\) lookbehind, so a literal double backslash before ${NAME} blocks expansion: value becomes the literal a\\${BASE}b instead of a\\<resolved>b, while docs:165 lists '\\\\' as a recognized escape. Fix with a single left-to-right pass so a backslash consumes the next character before '$' is examined.\n\nF3 LOW src/settings/load.ts:751. prepare() checks document?.env_file !== undefined, so env_file = \"\" anchors to the config directory and readFile returns EISDIR; the diagnostic names a directory, not the file. Empty-means-unset is applied everywhere else (setValue line 662) and documented at docs:51. Fix with a non-empty/trimmed guard.\n\nF4 LOW src/settings/load.ts:83 vs src/config.ts:81. client.token is kind 'text' with no bound and resolveClientSettings bypasses loadConfig, so a one-character client bearer token is accepted and sent, while server api_token requires >=24 chars. Fix by validating the client token with the same bound or documenting the exemption.\n\nVerified sound: unknown top-level/nested/subtable keys, missing/2/\"1\" schema_version, duplicate key and duplicate table, TOML syntax errors, bare-scalar and empty documents, __proto__ and constructor keys, and wrong value types are all rejected with config_invalid; all 40 Config keys map 1:1 to config-file paths; 10 credential-canary probes (line-start key, inline table, multi-line string, quoted value containing ' #', bad client scheme) produced no canary in error.message or error.path; CRLF, UTF-8 BOM, unknown-name literals, forward references and inert $(...)/backticks behave as documented; a 128000-space line resolved in ~1 ms.\n\nLimitations: src/serve.ts, src/serve-command.ts and lifecycle code were not assessed; tests/commands.test.ts, tests/serve.test.ts and tests/packaging.test.ts were skimmed for coverage only. Reviewer experiments live only in /tmp/rv-cfg and /tmp/probes, use fake providers and bounded local probes, and made no cloud/model/infrastructure calls; no real credentials appear in any artifact.",
+    "files_changed": [],
+    "tests": {
+      "ran": true,
+      "passed": true,
+      "command": "cd /tmp/rv-cfg && /tmp/bun142/bun-linux-x64/bun test tests/settings.test.ts tests/inspect.test.ts",
+      "summary": "Exit 0. 61 pass, 0 fail, 423 expect() calls, 2 files, 215ms, Bun 1.4.2. Targeted in-scope suites only. Reviewer probes /tmp/probes/p2..p8.ts additionally exercised 26 TOML strictness cases, 18 env-parser cases, 10 credential-canary malformed-input cases and one backtracking timing check. Full suite, typecheck, lint and packaging intentionally not run."
+    },
+    "git": {
+      "tree": "d428e0f730ed5649485732e95d39c32f5d6a8895",
+      "workspace": "/workspace/repo",
+      "branch": "swarmforge/repo-review-50-20260930/37-config-parser/w-47fb8403-8abd-4738-93b2-6f2b971ffc12",
+      "commit": "5672ead2a526e07fea9ed11e58b3725e42013527",
+      "base_commit": "5672ead2a526e07fea9ed11e58b3725e42013527",
+      "review_url": "https://github.com/GavinGeizer/swarmforge-oss/compare/5672ead2a526e07fea9ed11e58b3725e42013527...swarmforge%2Frepo-review-50-20260930%2F37-config-parser%2Fw-47fb8403-8abd-4738-93b2-6f2b971ffc12",
+      "dirty": false,
+      "persisted": true
+    },
+    "warnings": [
+      "Read-only review at target d428e0f730ed5649485732e95d39c32f5d6a8895; the assigned branch in /workspace/repo remains at bootstrap baseline 5672ead and is clean, so no source changes exist and persisted=false pending SwarmForge handoff verification.",
+      "Snapshot Bun is 1.3.14 and cannot read this lockfileVersion 2 lockfile; official Bun 1.4.2 was installed under /tmp/bun142 and used for the targeted tests. The lockfile was not rewritten.",
+      "The MEDIUM finding rejects a line documented verbatim at docs/CONFIGURATION.md:153, so either the code or the documented example is wrong; a follow-up fix should also settle the opposite leniency (KEY=\"a\"b\" accepted).",
+      "Full test suite, typecheck and lint were not run by this reviewer; only tests/settings.test.ts and tests/inspect.test.ts were executed.",
+      "Artifacts contain only fake provider values and descriptive placeholders; no real credentials or credential-shaped URLs were exported."
+    ],
+    "needs_followup": true,
+    "followup_reason": "F1 (MEDIUM) at src/settings/load.ts:583-589 makes the documented env-file example unparseable, so an operator copying docs/CONFIGURATION.md:153 cannot start serve or pass config validate; fix the quoted-value trailing-comment/trailing-content handling and add tests. F2-F4 are low-impact but concrete: escaped-backslash expansion suppression (line 588/601), env_file = \"\" producing a misleading EISDIR (line 751), and the missing minimum length on the client bearer credential (line 83 vs src/config.ts:81)."
+  }
+}

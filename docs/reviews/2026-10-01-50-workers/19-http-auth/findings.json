@@ -1,0 +1,80 @@
+{
+  "target": "d428e0f730ed5649485732e95d39c32f5d6a8895",
+  "scope": "HTTP bearer authentication, public-host policy, timing/error paths, auth consistency across health/events/MCP (reviewer 19, task 19-http-auth)",
+  "findings": [
+    {
+      "severity": "MEDIUM",
+      "title": "Metrics listener has no host allowlist and no bearer authentication on a public bind",
+      "file": "src/serve.ts",
+      "line": 179,
+      "evidence": "startServer builds a second Bun.serve on SWARMFORGE_METRICS_PORT bound to the same config.SWARMFORGE_HOST with an inline fetch (src/serve.ts:182-190) that only checks `new URL(request.url).pathname === \"/metrics\"`. Neither the accepted-host check nor the bearer check from createHttpHandler (src/http.ts:9-29) is applied. The non-loopback token invariant lives only in config.ts superRefine (src/config.ts:135-141) and is therefore implemented on one of the two listeners. Confirmed against a live startServer with SWARMFORGE_HOST=0.0.0.0 and SWARMFORGE_API_TOKEN set: GET /metrics with no Authorization header returned 200 (2037 bytes), with a deliberately wrong token returned 200, and with an arbitrary Host header returned 200, while GET /health on the API port returned 401. After an authenticated spawn_worker the unauthenticated body contained swarmforge_workers{team=\"team\",state=\"queued\"} 1, swarmforge_workers_created_total{team=\"team\"} 1 and swarmforge_tokens_total{team=\"team\",model=\"qwen\",direction=\"input\"}. docs/ENVIRONMENT.md:32 documents SWARMFORGE_HOST as the 'MCP and metrics listen interface'. No test asserts anything about authorization on the metrics port. Carried over unchanged from the deleted src/main.ts at baseline 5672ead.",
+      "reproduction": "Reproduced. /tmp/sf19/probe/auth-probe.ts (P4) and /tmp/sf19/probe/auth-probe3.ts (P5) with FakeProvider/FakeAgent and an on-disk SQLite DB in /tmp; log at /workspace/.swarmforge/logs/probe-auth.log.",
+      "recommendation": "Extract the host+auth gate from src/http.ts into a reusable helper and apply it to the metrics listener, or add a dedicated metrics credential plus host allowlist, and/or default a separate SWARMFORGE_METRICS_HOST to 127.0.0.1 while serving metrics through the authenticated port.",
+      "confidence": "high"
+    },
+    {
+      "severity": "MEDIUM",
+      "title": "Exact origin equality refuses the documented TLS-terminating reverse-proxy deployment with 403 after successful auth",
+      "file": "src/http.ts",
+      "line": 31,
+      "evidence": "`const origin = request.headers.get(\"origin\"); if (origin && origin !== url.origin) return 403`. Under a TLS-terminating proxy (the deployment src/config.ts:13-15 and docs/ENVIRONMENT.md:33 target: loopback bind plus SWARMFORGE_ALLOWED_HOSTS=mcp.example.com), Bun builds the request URL as http://mcp.example.com/... from the forwarded Host header, so url.origin is http://mcp.example.com while any browser-origin client sends Origin: https://mcp.example.com. The check runs after the bearer check (line 20-29), so the operator sees a 403 on a request that authenticated successfully. Reproduced over a real socket against Bun.serve: Host: mcp.example.com with a valid bearer token and Origin: https://mcp.example.com returned HTTP/1.1 403 Forbidden on /health and on /events, while the same request without Origin returned 200 and with Origin: http://mcp.example.com:8787 returned 200. tests/http.test.ts:19-31 only asserts that a hostile origin is rejected; nothing asserts the accept path.",
+      "reproduction": "Reproduced. /tmp/sf19/probe/auth-probe4.ts (P6, raw net socket to a live server) and /tmp/sf19/probe/auth-probe.ts (P2 2a, synthetic Request).",
+      "recommendation": "Compare the origin host against the same accepted-host set used for the Host header rather than exact scheme/host/port equality, so a hostile page is still rejected while https-vs-http and proxy-rewritten ports stop mattering; or accept an explicit SWARMFORGE_ALLOWED_ORIGINS list.",
+      "confidence": "high"
+    },
+    {
+      "severity": "LOW",
+      "title": "Bearer comparison short-circuits on byte length, so timingSafeEqual never protects wrong-length candidates",
+      "file": "src/http.ts",
+      "line": 25,
+      "evidence": "`Buffer.byteLength(actual) !== Buffer.byteLength(desired) || !timingSafeEqual(...)` returns 401 without ever calling timingSafeEqual whenever the candidate length differs, so the 401 latency is a function of the candidate length and discloses the exact length of the configured token (src/config.ts:81 enforces only min(24)). No prefix is disclosed. In-process micro-measurement of 120000 interleaved handler calls: len8 median=0.00184ms, same-length-wrong median=0.00221ms, correct median=0.00241ms, i.e. a real but roughly 0.4 microsecond branch difference. Network exploitability was not measured and is unlikely given HTTP noise.",
+      "reproduction": "Code-evidenced plus in-process measurement; /tmp/sf19/probe/auth-probe.ts (P1) and /tmp/sf19/probe/auth-probe2.ts (F3, N=120000). Not exploitable over a network in this review.",
+      "recommendation": "Compare fixed-length digests instead: timingSafeEqual(sha256(actual), sha256(desired)), which removes the length branch entirely.",
+      "confidence": "medium"
+    },
+    {
+      "severity": "LOW",
+      "title": "Host allowlist is compared case-sensitively, so a configured hostname in non-lowercase form can never match",
+      "file": "src/http.ts",
+      "line": 13,
+      "evidence": "The hosts set is built from c.config.SWARMFORGE_HOST and the split SWARMFORGE_ALLOWED_HOSTS entries with trim+filter(Boolean) but no lowercasing, while new URL().hostname is always lowercased by the WHATWG parser. config.ts:11-12 does lowercase for its loopback decision, so the two policies normalize differently. With SWARMFORGE_ALLOWED_HOSTS=MCP.Example.COM, loadConfig succeeds and demands a token, but both http://mcp.example.com/health and http://MCP.EXAMPLE.COM/health returned 403 with a valid bearer token. Fail-closed, so this is an availability break on the exact hostname the operator configured, not a bypass.",
+      "reproduction": "Reproduced. /tmp/sf19/probe/auth-probe2.ts (F4) and /tmp/sf19/probe/auth-probe.ts (P2 2h).",
+      "recommendation": "Normalize with trim+toLowerCase in http.ts, or export one acceptedHosts(config) helper from config.ts and use it in both superRefine and createHttpHandler so the policy cannot drift.",
+      "confidence": "high"
+    },
+    {
+      "severity": "LOW",
+      "title": "Missing Host header throws out of the HTTP handler before any auth check, yielding an unhandled 500 and attacker-triggerable stack traces",
+      "file": "src/http.ts",
+      "line": 8,
+      "evidence": "`const url = new URL(request.url)` is not guarded. An HTTP/1.0-style request with no Host header and a relative target gives Bun a relative request.url, so the constructor throws TypeError [ERR_INVALID_URL]. This happens before the host allowlist (line 18) and the bearer check (line 20), so it is reachable unauthenticated and pre-auth by construction, and neither createHttpHandler nor the startupGate wrapper (src/serve.ts:50-61) catches it. Reproduced over a real socket: `GET /health HTTP/1.0` with no Host returned HTTP/1.1 500 Internal Server Error and Bun wrote a full stack trace including absolute filesystem paths and http.ts line numbers to stderr. The client cannot observe the trace, so the impact is a wrong status class plus unbounded attacker-driven stack-trace logging.",
+      "reproduction": "Reproduced. /tmp/sf19/probe/auth-probe4.ts (P6 last case).",
+      "recommendation": "Wrap the parse, ideally the whole handler body, in try/catch returning 400 Bad Request, and reject early when the Host header is absent.",
+      "confidence": "high"
+    },
+    {
+      "severity": "LOW",
+      "title": "401 responses omit the WWW-Authenticate bearer challenge",
+      "file": "src/http.ts",
+      "line": 28,
+      "evidence": "`return new Response(\"Unauthorized\", { status: 401 })` sets no challenge header. Every 401 observed in the probes reported www-authenticate=null, including GET /events on a live token-protected server. RFC 9110 requires a WWW-Authenticate challenge on a 401, so clients that key re-authentication off it cannot discover that a bearer credential is expected. Status-code-only assertions in tests/http.test.ts cannot catch this.",
+      "reproduction": "Reproduced. /tmp/sf19/probe/auth-probe.ts (P2, all cases report no-WWW-Authenticate) and /tmp/sf19/probe/auth-probe3.ts (P5 www-authenticate=null).",
+      "recommendation": "Add headers: { \"www-authenticate\": 'Bearer realm=\"swarmforge\"' } to the 401 response.",
+      "confidence": "high"
+    }
+  ],
+  "tests": {
+    "command": "cd /tmp/sf19/r && ../bun-linux-x64/bun test tests/http.test.ts (exit 0, 2 pass / 0 fail / 15 assertions); ../bun-linux-x64/bun test tests/core.test.ts tests/cli.test.ts -t \"token\" (exit 0, 2 pass / 0 fail / 8 assertions, 10 filtered out); bun run /tmp/sf19/probe/auth-probe.ts (exit 0); bun run /tmp/sf19/probe/auth-probe2.ts (exit 0); bun run /tmp/sf19/probe/auth-probe3.ts (exit 0); bun run /tmp/sf19/probe/auth-probe4.ts (exit 1, unhandled error from the F5 case)",
+    "ran": true,
+    "passed": true,
+    "summary": "All targeted tests passed. Bun 1.4.2 from an official /tmp release (snapshot Bun 1.3.14 cannot read lockfileVersion 2; lockfile never rewritten). Four bounded probes reproduced F1, F2, F4, F5, F6 and produced a partial in-process signal for F3. auth-probe4 exit 1 is the finding itself: an unhandled TypeError escaped the handler. No real providers, network egress or cloud/model calls; FakeProvider/FakeAgent and SQLite in /tmp only."
+  },
+  "limitations": [
+    "Full test suite not run (reserved for the whole-suite reviewer); only tests/http.test.ts and token-filtered core/cli tests were executed.",
+    "No tsc --noEmit or biome run; this scope produced no source changes.",
+    "F3 timing is code-evidenced with an in-process micro-measurement only; network exploitability was not measured.",
+    "F2 was reproduced with a proxy-style Host header against Bun.serve, not against a real TLS-terminating reverse proxy.",
+    "FreestyleProvider, OpenCodeAgent, git push and packaging paths were out of scope and not exercised.",
+    "/workspace/repo was never modified: detached disposable clone at /tmp/sf19/r verified at git rev-parse HEAD = d428e0f730ed5649485732e95d39c32f5d6a8895; assigned branch left clean at baseline 5672ead2a526e07fea9ed11e58b3725e42013527."
+  ]
+}

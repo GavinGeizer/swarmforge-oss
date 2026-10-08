@@ -1,0 +1,54 @@
+{
+  "target": "d428e0f730ed5649485732e95d39c32f5d6a8895",
+  "scope": "Strict TOML schema/version/key validation and the env-file parser (interpolation, quoting, malformed-input errors): src/settings/load.ts, src/settings/paths.ts, src/settings/inspect.ts redaction boundary, src/config.ts as the second-stage validator, docs/CONFIGURATION.md as the declared contract. Reviewed at a detached /tmp checkout of feature/binary-config-serve-20260930; /workspace/repo left at assigned baseline 5672ead and clean.",
+  "findings": [
+    {
+      "severity": "MEDIUM",
+      "title": "A '#' comment after a quoted env-file value is rejected as 'unterminated quote'; the documented example in docs/CONFIGURATION.md fails",
+      "file": "src/settings/load.ts",
+      "line": 583,
+      "evidence": "envValue() enters the quote branch when entry[0] is a quote and requires entry to *end* with the same quote char; no code strips a trailing comment after a closing quote, so any trailing '# ...' text makes endsWith false and fail('unterminated quote') fires. docs/CONFIGURATION.md:153 documents exactly that shape: export FREESTYLE_API_TOKEN=\"sample-literal-value\"   # trailing comment on an unquoted value. The same branch is also lenient in the opposite direction: KEY=\"a\"b\" is accepted with value a\"b because only the last character is inspected.",
+      "reproduction": "Resolved against a config declaring env_file = \"a.env\" whose content is a quoted value plus a trailing comment -> SettingsError{code:'env_file_invalid'} 'Invalid environment file <path> at line 1: unterminated quote'. Same for single quotes and for '#' with no preceding space. Reproduced with Bun 1.4.2 in /tmp/probes/p2.ts and /tmp/probes/p5.ts using fake provider values only.",
+      "recommendation": "Locate the first unescaped closing quote; accept only whitespace and/or a '#' comment after it and fail with a distinct 'trailing content after quoted value' reason otherwise. Add the comment-after-quote and trailing-junk cases to tests/settings.test.ts and confirm docs/CONFIGURATION.md:153 parses.",
+      "confidence": "high"
+    },
+    {
+      "severity": "LOW",
+      "title": "Escaped backslash before a variable suppresses interpolation inside double quotes",
+      "file": "src/settings/load.ts",
+      "line": 588,
+      "evidence": "The quoted branch calls unescapeDouble(expand(body, own, scope)), i.e. expansion runs before unescaping, and expand() (line 601) uses a (?<!\\\\) lookbehind so a '$' preceded by any backslash is never expanded. With a literal double backslash in the file the following ${NAME} therefore stays literal, although docs/CONFIGURATION.md:165 lists '\\\\' as a recognized escape, so it should mean 'literal backslash' and still allow the following ${...} to expand.",
+      "reproduction": "env file: BASE=sample-value then SWARMFORGE_METRICS_TEAMS=\"a\\\\\\\\${BASE}b\" -> resolved value is the literal a\\\\${BASE}b instead of a\\\\sample-valueb. Probe /tmp/probes/p5.ts case E11.",
+      "recommendation": "Resolve escapes and interpolation in one left-to-right pass so a backslash always consumes the next character before '$' is considered; this also removes the asymmetry where an unquoted \\$ keeps its backslash at line 592.",
+      "confidence": "high"
+    },
+    {
+      "severity": "LOW",
+      "title": "env_file = \"\" is read as the config's own directory instead of meaning 'unset'",
+      "file": "src/settings/load.ts",
+      "line": 751,
+      "evidence": "prepare() tests document?.env_file !== undefined, so an empty string is anchored: anchorPath('') normalizes to the config directory and readFile on a directory yields EISDIR. The empty-means-unset rule is applied everywhere else (setValue, line 662) and is documented at docs/CONFIGURATION.md:51, so this is the single place that skips it.",
+      "reproduction": "config.toml = 'schema_version = 1\\nenv_file = \"\"' -> SettingsError{code:'env_file_invalid'} 'Cannot read environment file <config-dir>: EISDIR'. Probe /tmp/probes/p2.ts case 5.",
+      "recommendation": "Guard with a non-empty/trimmed check (if (document?.env_file) or an explicit trim test) so an empty env_file is treated as unset and the diagnostic names a file, not a directory.",
+      "confidence": "high"
+    },
+    {
+      "severity": "LOW",
+      "title": "Client bearer credential has no minimum length while the server one requires >= 24 characters",
+      "file": "src/settings/load.ts",
+      "line": 83,
+      "evidence": "clientFields declares client.token as kind 'text' with no bound, and resolveClientSettings deliberately bypasses loadConfig, so src/config.ts:81 (SWARMFORGE_API_TOKEN: z.string().min(24).optional()) never runs for it. A one-character credential is accepted and sent as a bearer token; docs/CONFIGURATION.md:180 acknowledges one-character credentials occur.",
+      "reproduction": "config with [client] token = \"x\" and any client.url -> resolveClientSettings returns token 'x'; the identical value under [server] api_token is rejected with invalid_config 'Too small: expected string to have >=24 characters'. Probe /tmp/probes/p7.ts.",
+      "recommendation": "Apply the same documented lower bound to the client token inside resolveClientSettings, or state explicitly in docs/CONFIGURATION.md that the client credential is intentionally unvalidated.",
+      "confidence": "high"
+    }
+  ],
+  "tests": {
+    "command": "bun test tests/settings.test.ts tests/inspect.test.ts",
+    "ran": true,
+    "passed": true,
+    "exit_code": 0,
+    "summary": "Targeted in-scope suites on Bun 1.4.2 (installed under /tmp/bun142 because the snapshot has 1.3.14, which cannot read lockfileVersion 2): 61 pass, 0 fail, 423 expect() calls across 2 files, 215ms, exit 0. Reviewer probes /tmp/probes/p2..p8.ts (outside the source checkout, fake providers only) covered 26 TOML strictness cases, 18 env-parser cases, 10 credential-canary malformed-input cases and a backtracking timing check. Full suite, typecheck, lint and packaging were not run (out of scope).",
+    "limitations": "Only src/settings/*, src/config.ts and docs/CONFIGURATION.md assessed; src/serve*.ts runtime consumption and lifecycle code not reviewed. tests/commands.test.ts, tests/serve.test.ts and tests/packaging.test.ts skimmed for coverage only."
+  }
+}

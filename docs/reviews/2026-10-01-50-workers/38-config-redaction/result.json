@@ -1,0 +1,37 @@
+{
+  "worker_id": "w-a6ea6438-dab9-4da2-a359-db21823d9ba4",
+  "result": {
+    "worker_id": "w-a6ea6438-dab9-4da2-a359-db21823d9ba4",
+    "task_id": "38-config-redaction",
+    "run_id": "b864331e-a7eb-4e23-a1c9-51d9fc52df37",
+    "status": "completed",
+    "summary": "Review at exact target d428e0f730ed5649485732e95d39c32f5d6a8895 (feature/binary-config-serve-20260930). Verdict FINDINGS: 1 MEDIUM (reproduced), 2 LOW. F1 MEDIUM: credential-shaped-URL redaction (src/security.ts:17-22) only matches userinfo WITH a colon and exactly token|key|api_key|password query keys, and the loader never learns a credential held in a non-credential-named setting (git.ssh.push_url, client.url), so `swarmforge config show|validate|serve --check-config` printed a credential verbatim (real CLI, exit 0) despite the documented safe-to-paste guarantee. F2 LOW: plain() (src/settings/inspect.ts:41-48) keeps bidi/zero-width characters, letting remote MCP error text spoof `swarmforge status` output. F3 LOW: serve and the server rebuild a weaker secret set than the loader's WeakMap context; no trigger shown. Cleared: isServer confusion unreachable, no WeakMap identity loss, superseded credentials correct. Artifacts: .swarmforge/artifacts/review.md. No source changes.",
+    "details": "Setup: disposable detached clone at /tmp/rev38/t, git rev-parse HEAD = d428e0f730ed5649485732e95d39c32f5d6a8895; /workspace/repo untouched at baseline. Official Bun 1.4.2 unpacked at /tmp/rev38/bun (snapshot 1.3.14 cannot read lockfileVersion 2; lockfile never rewritten). Reviewer experiments live only under /tmp/rev38 (clone, probe/p1-p3.ts, cfg/s.toml with fake credential-shaped values) and are disclosed in the artifacts.\n\nF1 MEDIUM (reproduced, high confidence) src/security.ts:17-22, surfaced at src/settings/inspect.ts:117,127,132 and printed by src/cli.ts:198,265,278. The shape fallbacks require userinfo with a colon and one of exactly token|key|api_key|password; the loader only learns credential values from the three SECRET_KEYS (src/settings/load.ts:459-473) and collectSecrets (src/settings/load.ts:442-453, key must match /token|key|secret|password|credential/i), so a credential in git.ssh.push_url (schema-legal, src/config.ts:62,131) or client.url is never known. Probe p2.ts: colon userinfo redacted, username-only userinfo unchanged, ?token= redacted, ?access_token=/?X-Api-Key=/?sig= unchanged. Real CLI: config show printed the client URL with its token-as-username userinfo and access_token value (secrets []); config validate printed SWARMFORGE_GIT_PUSH_URL verbatim. Guards: tests/api.test.ts:148-153 and tests/serve.test.ts:728,792-803 only cover the colon form and token=/api_key=; src/serve-command.ts:50 already treats SWARMFORGE_GIT_PUSH_URL as a secret, showing the inspection path is the inconsistent one. Fix: extract URL userinfo/query credentials into collector.secrets during resolution and broaden both fallbacks.\n\nF2 LOW (reproduced) src/settings/inspect.ts:41-48. plain() strips only C0/C1; U+202E/U+202C/U+200B survive, while src/security.ts:63-70 (isInvisible) already strips them for untrusted model output. Remote tool-error text (src/cli/client.ts:45) is printed through scrub -> redactedText -> plain (src/cli.ts:121-132,184-186). Fix: share the isInvisible predicate. Impact is terminal spoofing only, so LOW.\n\nF3 LOW (code-evidenced only) src/cli.ts:194,205 discards the ResolvedSettings carrying the WeakMap context; commandRedactor (src/serve-command.ts:45-52) and redactorFor (src/security.ts:43-51) rebuild a weaker set, so serve logs, the event log (src/runtime.ts:172-212) and SSE payloads would miss superseded-layer or non-credential-named credentials. No trigger found: traced startup error paths (src/providers/freestyle.ts:186-267, src/git-handoff.ts) raise fixed messages echoing neither URL nor token.\n\nCleared by inspection: isServer('SWARMFORGE_HOST' in value) confusion is unreachable (server always resolves the defaulted key, client value is exactly {url, token?}, src/settings/load.ts:891); no caller clones a ResolvedSettings so the WeakMap entry is never lost; superseded credentials are retained by setValue (src/settings/load.ts:656-667) and pinned by tests/inspect.test.ts:38-78; dotted TOML keys escape collectSecrets but Bun.TOML.parse/zod issues echo no values.\n\nLimits: whole suite and packaging compile intentionally skipped (other scopes). No network, real provider or real credential used; all example values are placeholders.",
+    "files_changed": [],
+    "tests": {
+      "ran": true,
+      "passed": true,
+      "command": "cd /tmp/rev38/t && bun1.4.2 test tests/inspect.test.ts tests/settings.test.ts (61 pass, 0 fail, 423 expects, exit 0); bun1.4.2 test tests/commands.test.ts -t config (6 pass, 9 filtered, 0 fail, 79 expects, exit 0); probes /tmp/rev38/probe/p1.ts p2.ts p3.ts (exit 0); CLI config show and config validate against a fake /tmp config (exit 0)",
+      "summary": "Targeted suites only: 67 tests passed, 0 failed, exit code 0 for both runs; probes and both CLI invocations exit 0. Whole suite not run (whole-suite reviewer) and packaging not compiled (packaging scope)."
+    },
+    "git": {
+      "tree": "feature/binary-config-serve-20260930",
+      "workspace": "/workspace/repo",
+      "branch": "swarmforge/repo-review-50-20260930/38-config-redaction/w-a6ea6438-dab9-4da2-a359-db21823d9ba4",
+      "commit": "5672ead2a526e07fea9ed11e58b3725e42013527",
+      "base_commit": "5672ead2a526e07fea9ed11e58b3725e42013527",
+      "review_url": "https://github.com/GavinGeizer/swarmforge-oss/compare/5672ead2a526e07fea9ed11e58b3725e42013527...swarmforge%2Frepo-review-50-20260930%2F38-config-redaction%2Fw-a6ea6438-dab9-4da2-a359-db21823d9ba4",
+      "dirty": false,
+      "persisted": true
+    },
+    "warnings": [
+      "No source changes made (read-only review); nothing to commit. git.commit is the assigned baseline 5672ead, not the reviewed target d428e0f.",
+      "F1 severity MEDIUM depends on operators putting a credential in git.ssh.push_url or client.url; the docs show only SSH/no-credential forms, so it is not HIGH.",
+      "F3 has no demonstrated trigger and is reported as a defence-in-depth gap.",
+      "Whole test suite and packaging compile were intentionally not run (reserved for other reviewer scopes).",
+      "Reviewer scratch (disposable clone at /tmp/rev38/t, probes, fake config, Bun 1.4.2) is outside the source checkout and disclosed in the artifacts."
+    ],
+    "needs_followup": true,
+    "followup_reason": "Actionable MEDIUM finding F1: broaden credential-shaped-URL redaction (src/security.ts:17-22) and/or collect URL userinfo and credential-looking query values into the loader secret set so `swarmforge config show|validate|serve --check-config` cannot print a credential held in git.ssh.push_url or client.url; reproduced at target d428e0f. LOW findings F2 (plain() keeps bidi/zero-width) and F3 (serve/server use a weaker secret set than the loader's WeakMap context) also warrant fixes."
+  }
+}

@@ -1,0 +1,70 @@
+{
+  "target": "d428e0f730ed5649485732e95d39c32f5d6a8895",
+  "scope": "TOML/env-file/process-env/flag precedence, empty-value handling, path anchoring, legacy database compatibility (src/settings/load.ts, src/settings/paths.ts, src/settings/inspect.ts, src/cli/arguments.ts, src/cli.ts config wiring, src/config.ts legacy loader, docs/CONFIGURATION.md)",
+  "findings": [
+    {
+      "severity": "MEDIUM",
+      "title": "An empty string in a TOML int/bool field is a hard config_invalid error instead of 'unset', and the sibling text kind disagrees",
+      "file": "src/settings/load.ts",
+      "line": 370,
+      "evidence": "kinds.int is z.union([z.number().int(), z.string().regex(/^-?\\d+$/)]) and kinds.bool is z.union([z.boolean(), z.enum([\"true\",\"false\"])]); both reject the empty string during documentSchema.safeParse (load.ts:513), before setValue (load.ts:656-667) can apply the empty-means-unset rule. kind 'text' uses bare z.string() and does treat '' as unset.",
+      "reproduction": "Config with '[server] port = \"\"' -> resolveServerSettings throws SettingsError code=config_invalid, message 'Invalid configuration file <path>: server.port: Invalid string: must match pattern /^-?\\d+$/'. '[server] metrics_enabled = \"\"' -> config_invalid 'Invalid input'. '[server] allowed_hosts = \"\"' (text) resolves to the default successfully. Probe 1, reproduced.",
+      "recommendation": "Accept \"\" for int/bool (add z.literal(\"\") to the unions and skip it in applyDocument) so the documented rule holds, or narrow docs/CONFIGURATION.md:51-52 to text settings. Trigger for an operator is a templated config such as port = \"${PORT}\" with the variable unset; the server then refuses to start instead of falling back to the default.",
+      "confidence": "high"
+    },
+    {
+      "severity": "MEDIUM",
+      "title": "Legacy default database path is relocated from ./data/swarmforge.sqlite to the XDG location with no runtime signal",
+      "file": "src/settings/load.ts",
+      "line": 835,
+      "evidence": "Legacy src/config.ts:77 defaults SWARMFORGE_DB_PATH to './data/swarmforge.sqlite'; resolveServerSettings (load.ts:835-841) now injects defaultDatabasePath() from src/settings/paths.ts:67-73 ($XDG_DATA_HOME/swarmforge/swarmforge.sqlite else ~/.local/share/...). The resulting provenance is only 'default', and renderStartup (src/serve-command.ts:151-160) prints host/port/metrics but never the database path. .gitignore:6 ignores data/, showing ./data was the working convention.",
+      "reproduction": "loadConfig(<minimal valid env>) -> SWARMFORGE_DB_PATH = ./data/swarmforge.sqlite. resolveServerSettings({env, cwd}) -> /tmp/probe-…/.local/share/swarmforge/swarmforge.sqlite, provenance = 'default'. Probe 2, reproduced. Consequence (code-evidenced, not run against a populated DB): an upgraded deployment opens a fresh empty SQLite file, all prior teams/workers/history appear lost, and the old file is orphaned with no startup warning.",
+      "recommendation": "If the DB path resolved to the default while ./data/swarmforge.sqlite exists relative to cwd, refuse startup or log a prominent warning naming both paths; at minimum render the resolved database path in the startup banner.",
+      "confidence": "high"
+    },
+    {
+      "severity": "LOW",
+      "title": "--url \"\" is accepted then silently ignored, so status connects to a different endpoint",
+      "file": "src/cli/arguments.ts",
+      "line": 66,
+      "evidence": "value() (arguments.ts:48-53) rejects only a missing value, and arguments.ts:77 stores the empty string verbatim as overrides.SWARMFORGE_URL. applyEnvironment (src/settings/load.ts:701) then skips it via 'if (!value) continue', so the flag is neither honoured nor refused.",
+      "reproduction": "parseArguments(['status','--url','']) -> {\"overrides\":{\"SWARMFORGE_URL\":\"\"}}. With a config declaring client.url = 'http://config.example/mcp', resolution yields url = http://config.example/mcp with provenance 'config:…' and no error. Probe 3, reproduced. Inconsistent with sibling flags: --config \"\" fails loudly with config_invalid 'Cannot read <cwd>: EISDIR'.",
+      "recommendation": "Reject an empty --url in the parser with UsageError (the parser is documented as total and pure), or normalise empty flag values identically across --url, --config and --env-file.",
+      "confidence": "high"
+    },
+    {
+      "severity": "LOW",
+      "title": "server.api_token in a config file never reaches the client surface, so status 401s against a server that requires a token",
+      "file": "src/settings/load.ts",
+      "line": 869,
+      "evidence": "resolveClientSettings calls merged(prepared, clientFields, options), so only client.url/client.token are applied; server.api_token (load.ts:278-283) maps to the same target key SWARMFORGE_API_TOKEN but belongs to controlFields. docs/CONFIGURATION.md:63 and :68 map both rows to 'SWARMFORGE_API_TOKEN', implying one shared value.",
+      "reproduction": "Config with [server] api_token set -> client.value = {\"url\":\"http://127.0.0.1:8787/mcp\"} (no token), client.provenance = {\"url\":\"default\",\"token\":\"default\"}, redactedSettings(client).secrets = []; the same file yields server SWARMFORGE_API_TOKEN present = true. Probe 4, reproduced.",
+      "recommendation": "Disambiguate the 'Setting' column for client.token vs server.api_token in docs/CONFIGURATION.md, and/or have config show emit a hint when the server token is set but the client token is not.",
+      "confidence": "high"
+    },
+    {
+      "severity": "LOW",
+      "title": "config path omits the config file's own env_file from the reported env_files list",
+      "file": "src/cli.ts",
+      "line": 235,
+      "evidence": "reportConfigPath maps only command.envFiles into env_files and never reads the selected document, contradicting its own comment at cli.ts:209-210 ('the environment files layered on it') and docs/CONFIGURATION.md:61.",
+      "reproduction": "Local CLI: swarmforge config path --config <dir>/cfg/config.toml --env-file <dir>/extra.env, where cfg/config.toml declares env_file = 'secrets.env' -> {\"config_path\":\"…/cfg/config.toml\",\"exists\":true,\"env_files\":[\"…/extra.env\"]}, exit 0; cfg/secrets.env is absent from the report.",
+      "recommendation": "Parse the selected config and prepend its anchored env_file to the reported env_files (redacted), so the layering report is complete.",
+      "confidence": "high"
+    }
+  ],
+  "tests": {
+    "ran": true,
+    "command": "cd /tmp/opencode/rev36/repo && bun test tests/settings.test.ts (Bun 1.4.2) | exit 0 -> 56 pass, 0 fail, 404 expect() calls; bun run /tmp/opencode/rev36/probes/probe.ts | exit 0 -> probes 1-6 all ran, F1/F2/F3/F4 reproduced; bun repo/src/cli.ts config path --config … --env-file … | exit 0 -> F5 reproduced",
+    "summary": "Targeted settings suite passes cleanly (56/56). No pre-existing test failure. Five findings produced by reviewer probes run outside the source checkout in /tmp; no source files were modified."
+  },
+  "limitations": [
+    "Read-only scope review; only the targeted settings test file was run. Whole-suite and packaging reviews belong to other reviewers.",
+    "No real cloud/model provider or infrastructure smoke was performed; probes are local and use fake values only.",
+    "Bun 1.4.2 was unpacked to /tmp/opencode/bun142 because the snapshot Bun 1.3.14 cannot read bun.lock lockfileVersion 2; bun.lock was verified byte-identical after bun install --frozen-lockfile.",
+    "F2's user-visible consequence (empty control plane after upgrade) is code-evidenced and the relocated path is probe-confirmed, but was not reproduced against a populated legacy database.",
+    "F1, F3 and F4 were exercised through resolveServerSettings/resolveClientSettings/parseArguments rather than end-to-end through the CLI; only F5 was run end-to-end.",
+    "Heavy over-redaction seen in probe output with one-character credentials is documented intended behaviour (docs/CONFIGURATION.md:184-188) and was not counted as a finding.",
+    "Disposable detached checkout at /tmp/opencode/rev36/repo verified with git rev-parse HEAD = d428e0f730ed5649485732e95d39c32f5d6a8895; /workspace/repo left at assigned baseline 5672ead, clean."
+  ]
+}

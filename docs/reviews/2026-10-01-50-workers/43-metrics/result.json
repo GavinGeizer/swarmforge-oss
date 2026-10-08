@@ -1,0 +1,35 @@
+{
+  "worker_id": "w-cb4bbed2-027f-47a1-bcbd-c8d96594f5da",
+  "result": {
+    "worker_id": "w-cb4bbed2-027f-47a1-bcbd-c8d96594f5da",
+    "task_id": "43-metrics",
+    "run_id": "1b1b1953-9739-45e5-bace-ebb782290ce0",
+    "status": "completed",
+    "summary": "Verdict FINDINGS at target d428e0f730ed5649485732e95d39c32f5d6a8895 (feature/binary-config-serve-20260930). Scope: Prometheus listener config, auth exposure, labels/cardinality, correctness, bind/shutdown. 3 findings. HIGH: src/metrics.ts:70 render() is O(retained workers x events) - 5 SQL statements per historical worker, EXPLAIN shows SCAN events (no index on events(worker_id,type)) - and one unauthenticated GET /metrics blocked the shared Bun event loop for 44ms/535ms/7.7s/20.8s at 250/1000/2000/4000 retained workers, stalling MCP /health; no DELETE exists in src/store.ts so cost grows for the life of the DB. HIGH: src/serve.ts:178 metrics listener has no auth and no Host validation and binds SWARMFORGE_HOST, so SWARMFORGE_HOST=0.0.0.0 (the supported public path, token-protected MCP) publishes :9090/metrics; loopback config returned 200 for no auth, wrong bearer and Host: attacker.example.com while /health returned 401/403. LOW: src/metrics.ts:79 labels swarmforge_tokens_total with configured SWARMFORGE_MODEL_NAME, ignoring the persisted usage.model (src/coordinator.ts:546), reproduced misattribution. Bind/shutdown ordering, port rollback and team bucketing verified correct; prom-client escapes hostile label values. Tests: bun test tests/serve.test.ts 20 pass/0 fail exit 0 (Bun 1.4.2 in /tmp clone); six bounded local probes, no real provider/network. Artifacts: /workspace/.swarmforge/artifacts/review.md and findings.json.",
+    "details": "Reviewer workspace /workspace/repo left clean at assigned baseline 5672ead; all work in disposable clone /tmp/sfrev/target (rev-parse HEAD = target). Official Bun 1.4.2 in /tmp/bun142; lockfile untouched. No source changes.\n\nF1 HIGH src/metrics.ts:70 (handler src/serve.ts:178-192): render() walks store.all() (no DELETE FROM anywhere in src/store.ts) and issues per-worker GROUP BY, min(ready) and per-dispatch result.received statements; EXPLAIN QUERY PLAN returns SCAN events for two of them because events has only PK(id) (src/store.ts:27). Measured: 2000 retained workers -> 2100 ms and 10003 statements in-process; concurrent MCP /health latency during a scrape 44-50 ms (250), 535-562 ms (1000), 7.7-10.3 s (2000), 20.8-23.1 s (4000). Impact: MCP calls, reconciliation and turn deadlines stall; default 15 s Prometheus scraping wedges a long-lived instance. Guard gap: tests/serve.test.ts:525-560 only asserts status 200 on a near-empty DB; no cache/TTL/timeout/index. Fix: set-based aggregates, index events(worker_id,type), cache exposition for seconds, persist result timing on the dispatch row.\n\nF2 HIGH src/serve.ts:178: handler checks only pathname; no token, no Host allowlist (contrast src/http.ts:11-28); SWARMFORGE_HOST is the sole bind variable for both listeners and src/config.ts:142-150 only requires differing ports. Reproduced on loopback+token: /metrics 200 with no auth, 200 with wrong bearer, 200 with hostile Host, vs /health 401/403. With SWARMFORGE_HOST=0.0.0.0 metrics answered 200 on non-loopback 172.17.0.1 while /health gave 403; payload leaks allowlisted team IDs, model name, state counts, token volumes. Docs say 'protect externally', unachievable with one host variable. Fix: add SWARMFORGE_METRICS_HOST default 127.0.0.1 and reuse the Host allowlist / optional token in the metrics handler.\n\nF3 LOW src/metrics.ts:79: model label always the configured name although src/coordinator.ts:546 persists m.model; usage rows with model some-other-model-9000 exported as model=\"qwen\"; store.tokens() lacks GROUP BY model.\n\nNo findings: team->other bucketing and cardinality bounds, prom-client label escaping (no exposition injection), counter semantics, listener release order/idempotency and both occupied-port rollback paths, metrics served during provisioning.\n\nLimitations: container-local timings; non-loopback check on docker0 only; F3 seeded directly; settings parsing and MCP status output not exhaustively reviewed. Probes in /tmp/sfrev/probe, logs in /workspace/.swarmforge/logs.",
+    "files_changed": [],
+    "tests": {
+      "ran": true,
+      "passed": true,
+      "command": "bun test tests/serve.test.ts  # Bun 1.4.2, disposable clone /tmp/sfrev/target at target SHA",
+      "summary": "20 pass, 0 fail, 111 expect() calls, 4.05s, exit 0. Full suite not run (whole-suite reviewer). Six bounded local probes under /tmp/sfrev/probe (FakeProvider/FakeAgent, temp-dir SQLite, loopback/ephemeral ports) supplied the reproduction evidence; no real provider, VM, cloud or network service contacted."
+    },
+    "git": {
+      "workspace": "/workspace/repo",
+      "branch": "swarmforge/repo-review-50-20260930/43-metrics/w-cb4bbed2-027f-47a1-bcbd-c8d96594f5da",
+      "commit": "5672ead2a526e07fea9ed11e58b3725e42013527",
+      "base_commit": "5672ead2a526e07fea9ed11e58b3725e42013527",
+      "review_url": "https://github.com/GavinGeizer/swarmforge-oss/compare/5672ead2a526e07fea9ed11e58b3725e42013527...swarmforge%2Frepo-review-50-20260930%2F43-metrics%2Fw-cb4bbed2-027f-47a1-bcbd-c8d96594f5da",
+      "dirty": false,
+      "persisted": true
+    },
+    "warnings": [
+      "No source changes were made (read-only review); the assigned branch at /workspace/repo is clean at baseline 5672ead and all experiments live in /tmp/sfrev.",
+      "Metrics render cost is super-linear and was measured on container-local hardware; absolute milliseconds vary run to run (two runs recorded in /workspace/.swarmforge/logs/probe-blocking-scaling.log).",
+      "Image Bun is 1.3.14 and cannot be relied on for this lockfile; official Bun 1.4.2 was unpacked in /tmp/bun142 for all runs.",
+      "Findings are review observations only; no fixes applied."
+    ],
+    "needs_followup": true,
+    "followup_reason": "Two HIGH findings are actionable: src/serve.ts:178 should add a dedicated metrics bind host plus the existing Host/token guards, and src/metrics.ts:70 should replace the per-worker loop with set-based aggregates (index events(worker_id,type)) and cache the exposition to stop a single scrape from blocking the event loop for tens of seconds."
+  }
+}

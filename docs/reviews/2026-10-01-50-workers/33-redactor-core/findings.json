@@ -1,0 +1,117 @@
+{
+  "target": "d428e0f730ed5649485732e95d39c32f5d6a8895",
+  "scope": "src/security.ts generic and known-secret redaction: escaping, fragments, short values, URLs and diagnostic leak paths, plus direct consumers (src/settings/inspect.ts, src/settings/load.ts, src/serve-command.ts, src/files.ts, src/runtime.ts, src/mcp.ts, src/http.ts, src/cli.ts, src/config.ts)",
+  "reviewer": {
+    "worker_id": "w-766313bb-191d-42be-b19a-2e68edf40cfc",
+    "task_id": "33-redactor-core",
+    "role": "reviewer",
+    "assigned_workspace": "/workspace/repo",
+    "assigned_baseline_commit": "5672ead2a526e07fea9ed11e58b3725e42013527",
+    "disposable_checkout": "/tmp/rv33/repo (detached HEAD verified at the target SHA)",
+    "toolchain": "Bun 1.4.2 staged under /tmp/tool (snapshot bun is 1.3.14); bun.lock verified byte-identical after a frozen install and never rewritten",
+    "sanitization": "Report-only pass. Raw credential-shaped example URLs and literals were removed and replaced with prose (for example 'username-only URL credential', 'encoded known token'). No research or tests were re-run."
+  },
+  "verdict": "FINDINGS",
+  "findings": [
+    {
+      "id": "F1",
+      "severity": "HIGH",
+      "title": "URL credential scrubbing misses username-only userinfo and every non-http(s) scheme",
+      "file": "src/security.ts",
+      "line": 18,
+      "evidence": "The URL userinfo rule in Redactor.text matches only when the scheme is http or https AND the userinfo contains a colon separating username from password. Two common shapes fail at least one condition: (a) a username-only URL credential, i.e. a bearer token in the username position with an empty password, the form used by Git/GitHub personal access token clone remotes; (b) any non-http scheme with a username:password@host userinfo - ssh, git+ssh, postgres, redis, mongodb+srv, amqp and file were all verified unredacted. Reached from every Redactor.text consumer: redactedSettings (src/settings/inspect.ts:127,132), redactedText (:97), redact (:145), serve command diagnostics (src/serve-command.ts:151), event log (src/runtime.ts:196,199), MCP responses and error text (src/mcp.ts:40,59), and the /events SSE stream (src/http.ts:45). SWARMFORGE_GIT_PUSH_URL is added to the secret set only by commandRedactor (src/serve-command.ts:47); the redactedSettings path used by `config show` and `serve --check-config` does not include it (SECRET_KEYS, src/settings/inspect.ts:7-11).",
+      "reproduction": "A config file whose git.ssh.push_url carries a username-only URL credential is printed byte-for-byte by both `bun src/cli.ts config show --config ...` and `bun src/cli.ts serve --check-config --config ...`: the reported SWARMFORGE_GIT_PUSH_URL value still contains the token. The same happens for an ssh URL carrying a username and password. The classic http(s) username:password@host form IS redacted in the same runs, proving this regex is the only guard for the other shapes.",
+      "recommendation": "Scrub any userinfo regardless of scheme or presence of a password component: match an optional scheme followed by userinfo up to the separating at-sign and replace the whole userinfo with the redaction marker. Additionally register SWARMFORGE_GIT_PUSH_URL in the loader credential context (or in SECRET_KEYS) so redactedSettings treats the entire value as a credential.",
+      "guard_analysis": "tests/serve.test.ts:779-806 and tests/inspect.test.ts:97 exercise only the colon-bearing http(s) form. A third-party credential echoed by a provider or SDK error is outside the known-secret set by definition, which is exactly what this generic rule exists for (stated intent at src/serve-command.ts:36-37).",
+      "confidence": "high",
+      "kind": "reproduced"
+    },
+    {
+      "id": "F2",
+      "severity": "MEDIUM",
+      "title": "Query-parameter credential scrubbing covers only four names",
+      "file": "src/security.ts",
+      "line": 20,
+      "evidence": "The query-parameter rule in Redactor.text is an exact allowlist of four parameter names (token, generic key, underscored API key, password) and requires the name to be preceded by a query separator and followed immediately by an equals sign. Verified unredacted: the access_token, refresh_token and id_token names; the hyphenated and unseparated API-key spellings; secret, client_secret, bearer, auth, sig and the X-Amz-Signature header parameter. The four allowlisted names are correctly scrubbed. The hyphenated API-key spelling is the Azure/OpenAI convention and sig / X-Amz-Signature are SigV4, all commonly echoed in SDK error text.",
+      "reproduction": "A probe over redactedText(settings, ...) and commandRedactor(config).text(...) with thirteen dummy third-party query shapes returned byte-identical (unredacted) output for twelve of them; only the allowlisted password name was scrubbed. See /workspace/.swarmforge/logs/rv33-probes.log.",
+      "recommendation": "Match credential-ish parameter names by substring rather than exact allowlist - any parameter whose name contains a token, key, secret, password, auth or signature stem - so hyphenated, prefixed and suffixed spellings are covered.",
+      "guard_analysis": "tests/serve.test.ts:803 asserts only the two allowlisted names the implementation already lists, so the test mirrors the defect.",
+      "confidence": "high",
+      "kind": "reproduced"
+    },
+    {
+      "id": "F3",
+      "severity": "MEDIUM",
+      "title": "The known-secret base64 variant matches only at 3-byte-aligned offsets and misses the URL-safe alphabet",
+      "file": "src/security.ts",
+      "line": 13,
+      "evidence": "The variant set built in Redactor.text is the raw secret, its percent-encoding, and its standard base64 encoding. Standard base64 is a stream of 3-byte groups, so a secret's encoded form appears as a literal substring of a larger base64 payload only when the secret starts at a byte offset that is a multiple of three. Consequence 1: a base64 blob embedding the secret after a non-aligned prefix is not scrubbed, concretely an HTTP Basic credential whose username prefix length is not a multiple of three. Consequence 2: the URL-safe base64 alphabet is never generated, so when the standard encoding of a secret contains the non-URL-safe characters, its URL-safe form is not recognised.",
+      "reproduction": "Alignment sweep with a 24-character dummy token: prefix lengths 0 and 3 (aligned) redacted; prefix lengths 1, 2, 4 and 5 returned unchanged and base64-decoded straight back to the full token. An HTTP Basic credential built from a short username prefix plus the token was returned unchanged. URL-safe alphabet: a dummy token whose standard base64 contains the non-URL-safe characters was redacted in standard base64 but NOT in the URL-safe form. Note the codebase's own Basic prefix is the OpenCode username at src/providers/opencode.ts:66, nine bytes and therefore aligned, so the built-in path is safe by coincidence of prefix length rather than by construction.",
+      "recommendation": "Add the URL-safe base64 form, and for each of the three possible byte offsets add the corresponding partial encodings derived from base64 of the secret preceded by one and by two filler bytes with the leading groups stripped. Consider the hex form as well.",
+      "guard_analysis": "tests/serve.test.ts:731-736 asserts only the standalone base64 string of a token, i.e. offset zero with no padding conflict. No test embeds a secret in a prefixed base64 payload, and none exercises the URL-safe alphabet.",
+      "confidence": "high",
+      "kind": "reproduced"
+    },
+    {
+      "id": "F4",
+      "severity": "LOW",
+      "title": "excerptText normalizes after redacting, so a whitespace-bearing credential is reconstructed verbatim",
+      "file": "src/security.ts",
+      "line": 110,
+      "evidence": "excerptText redacts at line 97, then rewrites whitespace and invisible characters and collapses whitespace runs at line 110. A credential that itself contains a space is therefore not matched in the raw input but is reassembled in the output. src/config.ts:28 and :47 accept any non-empty credential, so a credential containing a space is valid configuration.",
+      "reproduction": "With a dummy multi-word token, an excerpt input in which the words were separated by newlines was returned as a single line containing the exact token, unredacted.",
+      "recommendation": "Redact again after normalization, or normalize first and redact both the raw and the normalized form.",
+      "guard_analysis": "The ordering is deliberate - the comment at src/security.ts:95 states the intent is to redact before trimming so a secret split by truncation is never partially revealed - and tests/excerpt.test.ts:91-112 covers only a token present verbatim. Partially mitigating: the excerpt is redacted a second time by redactor.value at the MCP boundary (src/mcp.ts:40), so the served surface is protected, though the unredacted value still lives in process memory and is what the excerpt consumers render.",
+      "confidence": "high for the mechanism, medium for practical impact (requires a whitespace-bearing credential)",
+      "kind": "reproduced"
+    },
+    {
+      "id": "F5",
+      "severity": "LOW",
+      "title": "A one-to-three character credential defeats the generic query scrub and disables artifact retrieval",
+      "file": "src/security.ts",
+      "line": 7,
+      "evidence": "The known-secret substring pass at lines 7-16 runs before the generic URL and query rules at lines 18-22, so a short credential can rewrite a parameter name before the generic rule can match it. The credential settings are validated as a one-character-minimum string at src/config.ts:28 and src/config.ts:47, so a one-character credential is valid configuration. Consumed by the artifact path guard at src/files.ts:70 and the artifact content guard at src/files.ts:103.",
+      "reproduction": "Confidentiality effect: with a one-character dummy secret, an upstream API-key parameter's value was left fully visible, whereas the same input with a normal-length secret set was correctly redacted. Availability effect: with a one-character punctuation secret, loadConfig accepts it, the artifact content guard then reports that ordinary artifacts contain credentials (any file with a decimal point or an import path), and the path guard rejects essentially every path that includes a file extension while surfacing a misleading message asking the operator to edit the file inside the worker.",
+      "recommendation": "Require a sane minimum length for credential settings, or skip substring replacement below a length threshold in the contains() and path-guard contexts, and apply the generic URL and query rules independently of known-secret replacement.",
+      "guard_analysis": "src/settings/inspect.ts:57-60,141-143 explicitly accepts over-redaction at the cost of a diagnostic that over-redacts ordinary text, but that rationale covers diagnostic readability only, not the artifact gate, where the same behaviour turns a schema-valid configuration into a total artifact-read outage. No test configures a short credential.",
+      "confidence": "high for the behaviour, medium for likelihood (requires operator misconfiguration)",
+      "kind": "reproduced"
+    }
+  ],
+  "non_findings": [
+    "redactorFor (src/security.ts:43-50) with SECRET_KEYS (src/settings/inspect.ts:7-11) covers every credential value the loader resolves; redactedSettings marks those values wholesale and additionally scans every reported value, source label and config path. No missing credential key found at the target.",
+    "Redaction-before-slicing ordering is correct at every call site checked: the artifact log tail (src/files.ts:135) and the MCP error text (src/mcp.ts:59-62) both redact first, then bound.",
+    "renderEvent(event, safe) (src/runtime.ts:196 reaching src/runtime.ts:89-93) prints event.data to stdout unredacted while the persisted JSON line at src/runtime.ts:198-200 is redacted. Latent only: all four store.event call sites (src/store.ts:127,166,287 and src/coordinator.ts:872) pass either an empty payload or a run id and status, so no secret-bearing payload exists at the target.",
+    "Artifact read overlap padding (src/files.ts:88-95) covers both primary tokens and all 72-character worker server passwords; a residual edge exists only for a credential longer than 4096 bytes, where the roughly 1.33x longer base64 form could straddle the window. Not reported separately.",
+    "Short secrets also produce benign false positives, such as the base64 of a one-character secret matching unrelated text. Same root cause as F5; not reported separately."
+  ],
+  "tests": {
+    "ran": false,
+    "passed": null,
+    "note": "No tests or probes were executed during this sanitization pass. The findings below reflect the earlier review phase; see the recorded results in the prior turn's log files.",
+    "earlier_phase_results": [
+      "bun install --frozen-lockfile: exit 0, 125 packages, lockfile byte-identical",
+      "bun test tests/excerpt.test.ts tests/api.test.ts: exit 0, 15 pass, 0 fail, 73 expect calls",
+      "bun test tests/serve.test.ts tests/inspect.test.ts tests/settings.test.ts: exit 0, 81 pass, 0 fail, 534 expect calls",
+      "seven probe scripts plus one end-to-end CLI reproduction: all executed, exit 0"
+    ]
+  },
+  "limitations": [
+    "Report-only pass: no research, no tests, no probes were re-run while sanitizing these artifacts.",
+    "Full test suite deliberately not run (whole-suite reviewer's scope); no packaging or compile step run in the review phase either.",
+    "Reviewer experiments live only under /tmp/rv33/** and /tmp/tool; /workspace/repo was fetched only, never modified, and is clean at the assigned baseline.",
+    "No cloud or model provider and no real infrastructure was contacted; all providers were local fakes or pure-string probes. No secret file was inspected.",
+    "F1, F2 and F3 depend on a credential shape outside the process's known-secret set; likelihood beyond the reproduced trigger was not assessed. F4 requires a whitespace-bearing credential and F5 requires a one-to-three character credential, both legal under src/config.ts at the target."
+  ],
+  "sanitization_verification": {
+    "method": "Both artifacts were re-processed with the production Redactor from the exact target, seeded with the synthetic tokens used by the review probes and the fake infrastructure and model defaults from tests/helpers.ts, plus the generic URL-userinfo and query-parameter fallbacks, followed by a manual prose pass that removed every raw credential-shaped URL, query string and literal.",
+    "result": "A further Redactor pass produced no change to review.md or findings.json, and a final scan finds no remaining raw credential-shaped example.",
+    "examples_replaced_with_prose": [
+      "username-only URL credential",
+      "encoded known token",
+      "credential parameter name from a non-allowlisted spelling",
+      "dummy token used in the alignment sweep"
+    ]
+  }
+}

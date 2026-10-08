@@ -1,0 +1,30 @@
+{
+  "target": "d428e0f730ed5649485732e95d39c32f5d6a8895",
+  "scope": "wait_for_state_change filters/cursors/timeouts/cancellation/listener cleanup and lost wakeups under concurrency (src/coordinator.ts, src/store.ts, src/mcp.ts, src/http.ts, src/domain.ts, src/serve.ts, tests/wait.test.ts, MCP-API/OBSERVABILITY docs)",
+  "findings": [
+    {
+      "severity": "LOW",
+      "title": "A wait whose synchronous scan races Store.close() rejects with RangeError: Cannot use a closed database instead of 'Server is stopping' or changed:false",
+      "file": "src/coordinator.ts",
+      "line": 72,
+      "evidence": "waitForStateChange reads the database before consulting this.stopped: L72 calls this.store.latestEventId() and L139 calls next() (this.store.lifecycleEvents), while the stop check only becomes observable through the `stopping` promise built at L84-L90 and raced at L151. Store.close() (src/store.ts:34-37) clears `watchers`, so a parked waiter is never woken, then closes the handle; the next read throws. The three documented outcomes are Server is stopping (L158), Wait aborted (L157) and changed:false (L91-103); this fourth outcome is not among them.",
+      "reproduction": "REPRODUCED by direct probe (not reachable in the shipped shutdown order). const p = coordinator.waitForStateChange({worker_id}, {timeoutMs: 300}); await waitForListenerCount(1); store.close(); await p; // => RangeError: Cannot use a closed database. /tmp/opencode/probes/wait-http.test.ts PROBE G2 (exit 0, log printed). Reachability excluded: src/serve.ts:140-157 closes the store at L152 only after await api?.stop(true) and await coordinator?.stop(), which resolves every stopWaiter and yields at await Promise.allSettled(), so parked waiters have unwound first; new MCP requests cannot arrive after api.stop(true).",
+      "recommendation": "Check this.stopped immediately after the existing pre-abort check at L70 (before the first store read), and make the scan fail soft: treat a closed-database error as result(found ?? null) rather than letting it escape. Optionally have Store.close() resolve parked waiters before clearing `watchers`, since it already holds the listener set.",
+      "confidence": "medium - reproduced by probe; not reachable through the current serve.ts resource order, so impact today is limited to a non-documented error string"
+    }
+  ],
+  "tests": {
+    "command": "Bun 1.4.2 (official, unpacked to /tmp/opencode/bun142) in a disposable detached clone at /tmp/opencode/rev14; bun install --frozen-lockfile (bun.lock md5 unchanged)",
+    "ran": true,
+    "passed": true,
+    "summary": "bun test tests/wait.test.ts tests/api.test.ts -> exit 0, 19 pass / 0 fail / 95 assertions. bun test tests/serve.test.ts -> exit 0, 20 pass / 0 fail / 111 assertions. Reviewer probes outside the checkout: /tmp/opencode/probes/wait-concurrency.test.ts exit 1 (8 pass / 1 fail; the single failure is probe G racing 2500 ms against a 3000 ms wait - a probe design error, superseded by PROBE G2); wait-http.test.ts exit 0 (4 pass / 0 fail, includes 200 concurrent real Bun.serve HTTP waits and a real client-abort cancellation check); wait-stress.test.ts exit 0 (1 pass / 0 fail, 802 assertions, 400 randomized wait/abort/timeout/transition rounds with 0 lost wakeups and listenerCount back to 0). Full suite deliberately not run.",
+    "notes": "No real provider, model, VM or network calls; FakeProvider/FakeAgent plus loopback Bun.serve only."
+  },
+  "limitations": [
+    "Full suite not executed (out of scope for this reviewer).",
+    "No multi-process WAL probe; a second writer is not a supported configuration because serve.ts holds a process lock.",
+    "Clock-step (NTP) behaviour of the Date.now()-derived deadline at src/coordinator.ts:136 is unverified and reported only as an unverified hypothesis, not a finding.",
+    "Feeding one filter's next_cursor to a different filter was analysed and not reported: each ownership filter sees only its own event rows, so this is caller misuse rather than a defect.",
+    "docs/MCP-API.md:33 says the wait observes event ids 'in memory'; it actually reads the SQLite event log. The conclusion (cursors stay valid across restart) is correct and test-covered, so this is a doc nit, not a finding."
+  ]
+}

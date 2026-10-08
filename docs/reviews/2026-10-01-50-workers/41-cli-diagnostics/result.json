@@ -1,0 +1,36 @@
+{
+  "worker_id": "w-f9be9bf5-e0ad-4ebb-9138-306d61f1cc17",
+  "result": {
+    "worker_id": "w-f9be9bf5-e0ad-4ebb-9138-306d61f1cc17",
+    "task_id": "41-cli-diagnostics",
+    "run_id": "1270aa60-b7da-4074-a5a6-6a809946e0b9",
+    "status": "completed",
+    "summary": "FINDINGS at exact target d428e0f730ed5649485732e95d39c32f5d6a8895 (branch feature/binary-config-serve-20260930; detached clone /tmp/rev41). Scope: config path/show/validate, serve --check-config, partial-invalid settings, filesystem side effects. 4 MEDIUM, 1 LOW. (1) cli.ts:247 config show resolves client settings outside the try, so config_invalid, config_not_found, env_file_* and invalid_client exit 1 with empty stdout instead of its structured report. (2) cli.ts:235 config path omits the config file's own env_file and reports no env-file existence. (3) cli.ts:195 serve --check-config prints ok:true for deployments startServer refuses at serve.ts:161 (lock held) and :163-166 (instance_id owner mismatch); reproduced. (4) cli.ts:273 config validate prints ok:true for an invalid client.url. (5) cli.ts:234 config path reports exists:true for a directory. No filesystem side effects; no in-memory-db bypass. Tests 76 pass/0 fail. Artifacts: .swarmforge/artifacts/review.md, findings.json",
+    "details": "Target d428e0f730ed5649485732e95d39c32f5d6a8895 fetched and checked out detached under /tmp/rev41 (git rev-parse HEAD confirmed). /workspace/repo left at its assigned baseline 5672ead, clean, no source changes.\n\nF1 MEDIUM src/cli.ts:247,249-264. reportConfigShow awaits resolveClientSettings before the guarded block, so only invalid_config (server value validation) degrades to the JSON {server:{ok:false,code,message,hint}} form. Reproduced empty-stdout exit=1 for: a typo'd key in [server], malformed TOML, env_file=\"missing.env\", a non-assignment line in an env file, client.url=ftp://..., and SWARMFORGE_CONFIG=<absent>. Test gap: the only covering test uses a valid document with an incomplete server, the single guarded code path.\n\nF2 MEDIUM src/cli.ts:235. env_files comes only from the --env-file flags; the document's env_file is read solely in prepare() (src/settings/load.ts:751-758), which config path never calls. Reproduced: config path --config withenvfile.toml -> {\"exists\":true,\"env_files\":[]} while secrets.env is absent and config validate then exits 1. Contradicts src/cli.ts:209-210 and README.md:77. Fix: prepend the declared env_file (anchored at the config file's directory) and add per-entry existence flags, or correct the help text.\n\nF3 MEDIUM src/cli.ts:195 vs src/serve.ts:161,163-166. Reproduced: a database whose settings.instance_id='blue' against instance_id=\"green\", and a live holder of the flock on <db>.lock; both returned exit=0 {\"ok\":true\":...}. docs/SERVE.md:33-34 and docs/CONFIGURATION.md:225-226 name both as rules a serve command must keep. Fix: read-only instance_id comparison and a non-blocking flock probe inside the check-config branch.\n\nF4 MEDIUM src/cli.ts:273. reportValidation never resolves client settings, so client.url=ftp://... yields exit=0 ok:true. config show does detect it but only by aborting with no stdout (F1), so no command reports it structurally.\n\nF5 LOW src/cli.ts:234. existsSync with no regular-file test; --config <dir> reports exists:true, while config validate then fails EISDIR.\n\nCleared after probing: no filesystem side effects from any of these commands; file::memory:, :MEMORY: and file::memory:?cache=shared all create real on-disk files under bun:sqlite, so the ':memory:' refusal cannot be side-stepped, and ' :memory: ' is trimmed and refused; redaction held for every synthetic canary.\n\nLimitations: serve was never executed, so F1-F4 rest on real CLI runs plus a source-level trace into src/serve.ts/src/runtime.ts. Whole suite not run; no packaging compiled. Artifacts sanitized through Redactor from src/security.ts at the target.",
+    "files_changed": [],
+    "tests": {
+      "ran": true,
+      "passed": true,
+      "command": "bun test tests/commands.test.ts tests/settings.test.ts tests/inspect.test.ts  # official Bun 1.4.2 at /tmp/bun142; sandbox 1.3.14 cannot read lockfileVersion 2 and the lockfile was not modified",
+      "summary": "76 pass, 0 fail, 646 expect() calls, exit 0, 5.94s (log: /workspace/.swarmforge/logs/scope-tests.log). Targeted at this scope only; full suite not run. Six disposable CLI probes under /tmp/probe1../tmp/probe6 (copies in /workspace/.swarmforge/logs) exercised config path/show/validate and serve --check-config with synthetic per-command canaries, isolated HOME/XDG_* and a scratch cwd; exit codes quoted in the report. No cloud/model/infrastructure provider contacted, no serve process started, no real database/lock/listener produced."
+    },
+    "git": {
+      "tree": "feature/binary-config-serve-20260930",
+      "workspace": "/workspace/repo",
+      "branch": "swarmforge/repo-review-50-20260930/41-cli-diagnostics/w-f9be9bf5-e0ad-4ebb-9138-306d61f1cc17",
+      "commit": "5672ead2a526e07fea9ed11e58b3725e42013527",
+      "base_commit": "5672ead2a526e07fea9ed11e58b3725e42013527",
+      "review_url": "https://github.com/GavinGeizer/swarmforge-oss/compare/5672ead2a526e07fea9ed11e58b3725e42013527...swarmforge%2Frepo-review-50-20260930%2F41-cli-diagnostics%2Fw-f9be9bf5-e0ad-4ebb-9138-306d61f1cc17",
+      "dirty": false,
+      "persisted": true
+    },
+    "warnings": [
+      "serve was never executed; findings 1-4 rest on real CLI runs of config path/show/validate and serve --check-config plus a source-level trace into src/serve.ts, src/runtime.ts and src/settings/load.ts. Finding 3 is demonstrated as 'check-config returned ok:true' in states startServer refuses, not by observing the refusal itself.",
+      "The sandbox ships Bun 1.3.14, which cannot read this snapshot's lockfileVersion 2; official Bun 1.4.2 was unpacked at /tmp/bun142 and the lockfile was left untouched.",
+      "Findings 2, 4 and 5 are behavioural-contract findings measured against the project's own documentation (src/cli.ts:52-53,209-210; README.md:77-80,87; docs/CONFIGURATION.md:225-226; docs/SERVE.md:33-34). They are rated MEDIUM/LOW because the impact is operator confusion and a false-green deploy gate, not data loss or credential exposure; a maintainer may judge some to be intended behaviour needing only documentation.",
+      "Full test suite not run (whole-suite reviewer's scope) and no packaging or build scope compiled."
+    ],
+    "needs_followup": true,
+    "followup_reason": "Four MEDIUM findings are actionable and reproducible. Highest value: config show (src/cli.ts:247) should degrade to its structured report for config_invalid/config_not_found/env_file_*/invalid_client, not just invalid_config; and serve --check-config (src/cli.ts:195) should reproduce the two read-only refusals startServer performs at src/serve.ts:161 and :163-166 (held process lock, persisted instance_id owner mismatch) that it currently reports as ok:true."
+  }
+}

@@ -1,0 +1,60 @@
+{
+  "target": "d428e0f730ed5649485732e95d39c32f5d6a8895",
+  "scope": "Worker environment allowlist, model/provider/API token isolation, child-process environments, accidental logging",
+  "findings": [
+    {
+      "severity": "HIGH",
+      "title": "Redactor URL-userinfo pattern misses token-only and non-http(s) credential URLs, so a Git PAT in SWARMFORGE_GIT_TREE is printed in cleartext and never scrubbed downstream",
+      "file": "src/security.ts",
+      "line": 18,
+      "evidence": "Redactor.text ends with .replace(/(https?:\\/\\/)[^\\s/@]+:[^\\s/@]+@/g, \"$1[REDACTED]@\"), which requires BOTH a user:password colon and an http/https scheme. collectSecrets (src/settings/load.ts:442-453) only harvests values whose key name matches /token|key|secret|password|credential/i, and SWARMFORGE_GIT_TREE (src/config.ts:49, z.string().min(1).max(2048)) does not match, so the value never enters any secret set. redactedSettings (src/settings/inspect.ts:111-129) marks only the three SECRET_KEYS, so the tree value is printed through redactor.text alone. Probe p3 confirms https://<PAT>@host/... and ssh://user:pass@host/... are left unchanged while https://[REDACTED]@host and ?token= are redacted. Real CLI at target: `config validate` and `config show` and `serve --check-config` all exit 0 and print the PAT verbatim in values.SWARMFORGE_GIT_TREE, contradicting the documented promise that the report can be pasted into a ticket. Downstream sinks sharing the same Redactor also miss it: probe p12 (worker result details + live excerpt), p9 (persisted git.tree), p11 (get_worker_artifact returns the PAT to the MCP client because artifact screening uses the same Redactor).",
+      "reproduction": "cd /tmp/sfrev34/clone && env -i PATH=/usr/bin:/bin HOME=/tmp/sfrev34 FREESTYLE_API_TOKEN=[REDACTED]-value FREESTYLE_SNAPSHOT_ID=snap SWARMFORGE_MODEL_BASE_URL=https://model.example/v1 SWARMFORGE_MODEL_API_KEY=[REDACTED] SWARMFORGE_MODEL_NAME=qwen SWARMFORGE_DB_PATH=/tmp/sfrev34/probe/x.sqlite SWARMFORGE_GIT_TREE='https://[REDACTED]@github.com/owner/private.git' /tmp/bun142/bun-linux-x64/bun --no-env-file --config=/dev/null src/cli.ts config validate   # exit 0; values.SWARMFORGE_GIT_TREE contains the PAT. Also /tmp/sfrev34/probe/p3.ts, p9.ts, p11.ts, p12.ts.",
+      "recommendation": "Widen the pattern to any scheme and to password-less userinfo, e.g. /([a-z][a-z0-9+.-]*:\\/\\/)[^\\s/?#@]+@/gi -> \"$1[REDACTED]@\", and add regression tests for https://<token>@host/... and ssh://user:pass@host/.... Additionally consider rejecting userinfo in SWARMFORGE_GIT_TREE at validation time and pointing operators at the existing github-app / ssh credential mechanisms.",
+      "confidence": "high - reproduced end-to-end through the real CLI at the exact target"
+    },
+    {
+      "severity": "MEDIUM",
+      "title": "workerEnvironment copies a credential-bearing SWARMFORGE_GIT_TREE into the guest and the none: bootstrap tells the model to read it",
+      "file": "src/config.ts",
+      "line": 178,
+      "evidence": "workerEnvironment returns an explicit allowlist whose SWARMFORGE_GIT_TREE entry is gitTree(c.SWARMFORGE_GIT_TREE).target with no credential check (src/config.ts:170-183; schema src/config.ts:49). FreestyleProvider.prepare writes that map into the guest /opt/swarmforge/start.sh (src/providers/freestyle.ts:150-170, mode 0700 under /opt/swarmforge chmod 700 at line 115), which the guest root-run OpenCode service can read. For the none: form, bootstrap (src/providers/opencode.ts:42) instructs the model: 'SWARMFORGE_GIT_TREE identifies the externally managed source tree; inspect that environment variable'. In clone mode the same URL is written into the clone's .git/config remote.origin.url (verified offline with a throwaway git init), so the worker can read, commit or publish it. This contradicts docs/ENVIRONMENT.md:15 ('Credentials stay external') and the isolation property at docs/ENVIRONMENT.md:49. Probe p5: loadConfig accepts 'none:https://<PAT>@github.com/owner/private.git' and workerEnvironment returns the PAT verbatim; the prompt text references the variable.",
+      "reproduction": "/tmp/sfrev34/probe/p5.ts (exit 0). Offline corroboration: mkdir /tmp/sfrev34/probe/gitchk && git init -q . && git remote add origin 'https://<synthetic-token>@github.com/owner/private.git' && grep remote .git/config shows the userinfo persisted in remote.origin.url.",
+      "recommendation": "Reject a SWARMFORGE_GIT_TREE whose URL contains userinfo for every push mode (at minimum for the none: form) and pass a credential-free tree value to the guest. Add a tests/core.test.ts assertion that no allowlisted worker-environment value contains URL userinfo, alongside the existing FREESTYLE_API_TOKEN absence check at tests/core.test.ts:59-68.",
+      "confidence": "high for the config/env behaviour (reproduced); medium for the .git/config persistence consequence (verified offline, not against a live guest)"
+    },
+    {
+      "severity": "MEDIUM",
+      "title": "Control-plane event console line is rendered from the raw event while the file line is redacted, so stdout can carry a credential the on-disk log removes",
+      "file": "src/runtime.ts",
+      "line": 196,
+      "evidence": "eventLogger builds `safe` = redactor.value({...meta, worker_id, error}) and calls console.log(renderEvent(event, safe)) at line 196, but renderEvent reads event.data verbatim (src/runtime.ts:89-94) from the unredacted WorkerEvent; only the separate file write at lines 197-202 wraps {...event, ...meta} in redactor.value. Probe p6 seeds one result.received event whose data contains the configured SWARMFORGE_MODEL_API_KEY: the console line printed 'worker echoed [REDACTED] and https://[REDACTED]@h/v1' while the file line printed '[REDACTED]'; console leaks = true, file leaks = false. This defeats the 'structured transition logs ... exclude known secrets' property stated at docs/OBSERVABILITY.md:30.",
+      "reproduction": "/tmp/sfrev34/probe/p6.ts (exit 0) - constructs a Coordinator with loadConfig(...), calls store.event(worker_id, 'result.received', {run_id, note: <secret>}) and runs eventLogger(c, logPath)() with console.log captured.",
+      "recommendation": "Redact once and use the redacted object for both sinks: const safeEvent = redactor.value(event) as WorkerEvent; then renderEvent(safeEvent, safe) and JSON.stringify({...safeEvent, ...meta}). Add a test that feeds one secret-bearing event.data and asserts neither the console capture nor the file contains the secret.",
+      "confidence": "high for the sink divergence (reproduced); reachability today is limited because the only non-empty payloads are store.event(id, 'result.received', {run_id, status}) at src/store.ts:287 whose values are a server-generated UUID and a fixed enum, and empty {} payloads elsewhere - so this is a latent divergence, which is why it is MEDIUM rather than HIGH"
+    },
+    {
+      "severity": "MEDIUM",
+      "title": "redactorFor omits SWARMFORGE_GIT_PUSH_URL, so a credential-bearing push URL is not scrubbed from the event log, SSE stream, MCP results or persisted results",
+      "file": "src/security.ts",
+      "line": 43,
+      "evidence": "redactorFor (src/security.ts:43-50) builds its secret set from FREESTYLE_API_TOKEN, SWARMFORGE_MODEL_API_KEY, SWARMFORGE_API_TOKEN and every worker server_password. commandRedactor (src/serve-command.ts:45-52) builds the same kind of set and additionally includes config.SWARMFORGE_GIT_PUSH_URL (line 50). SWARMFORGE_GIT_PUSH_URL is accepted as an arbitrary 1..2048 string (src/config.ts:62) with no scheme or userinfo validation, so it can legitimately be ssh://bot:pass@host/... or https://<token>@host/.... That value is therefore invisible to the redactor used by the event log (src/runtime.ts:175-208), the /events SSE stream (src/http.ts:42-45), MCP tool results (src/mcp.ts:40-42), the persisted worker result (src/coordinator.ts:707) and artifact/excerpt screening (src/files.ts:103, src/coordinator.ts:651). Combined with the incomplete URL pattern in the HIGH finding, such a URL is disclosed in cleartext on those surfaces while the serve command's own startup output is protected. Probe p14: commandRedactor scrubs both a ssh://user:pass@ push URL and a https://<token>@ push URL; redactorFor scrubs neither.",
+      "reproduction": "/tmp/sfrev34/probe/p14.ts (exit 0) - loadConfig with SWARMFORGE_GIT_PUSH_MODE=ssh plus a credential-bearing SWARMFORGE_GIT_PUSH_URL, then compares commandRedactor(c).text(msg) against redactorFor(new Coordinator(...)).text(msg).",
+      "recommendation": "Extract one shared secret-set builder that includes SWARMFORGE_GIT_PUSH_URL (and optionally the GitHub App repository/URL values) and use it from both redactorFor and commandRedactor so the two surfaces cannot drift again. Add a test asserting the two sets are identical for a given Config.",
+      "confidence": "high - reproduced by direct comparison of both redactors at the exact target"
+    }
+  ],
+  "tests": {
+    "ran": true,
+    "passed": true,
+    "command": "cd /tmp/sfrev34/clone && /tmp/bun142/bun-linux-x64/bun install --frozen-lockfile (exit 0) && /tmp/bun142/bun-linux-x64/bun test tests/core.test.ts tests/inspect.test.ts tests/adapters.test.ts tests/excerpt.test.ts tests/git-handoff.test.ts tests/settings.test.ts tests/commands.test.ts tests/serve.test.ts tests/api.test.ts tests/http.test.ts -> 139 pass, 0 fail, 939 expect() calls, 10 files, exit 0",
+    "summary": "In-scope test files all pass (139/139, exit 0) on official Bun 1.4.2 at the exact target; no lockfile rewrite. Additionally 14 bounded probes under /tmp/sfrev34/probe (outside the source checkout) and three real src/cli.ts invocations (config show, config validate, serve --check-config) with synthetic dummy credentials, all exit 0 except probe p1's first run which failed on my own missing-config fixture and was corrected. No full suite was run and no binary was compiled (both out of scope)."
+  },
+  "limitations": [
+    "No full test suite and no packaging/compile step were run; only the 10 in-scope test files and read-only inspection of scripts/build.ts and scripts/package.ts.",
+    "No real Freestyle/OpenCode/model provider or infrastructure was contacted. The prepare/withGitAuth guest-file behaviour is code-traced plus a local throwaway `git init` check of remote.origin.url persistence, not a live VM observation.",
+    "The MEDIUM console-sink finding (runtime.ts:196) is a demonstrated divergence using a synthetic event payload; no current call site writes attacker- or model-controlled text into event.data, so live reachability is unproven.",
+    "Severity is calibrated to this deployment's documented single-trusted-lead model with SWARMFORGE_API_TOKEN gating and a semi-trusted guest principal.",
+    "The assigned workspace /workspace/repo was left at baseline 5672ead2a526e07fea9ed11e58b3725e42013527 and verified clean; the disposable detached checkout is /tmp/sfrev34/clone at d428e0f730ed5649485732e95d39c32f5d6a8895.",
+    "No secret file was inspected; every credential-shaped string in the probes and in this report is a synthetic dummy."
+  ]
+}

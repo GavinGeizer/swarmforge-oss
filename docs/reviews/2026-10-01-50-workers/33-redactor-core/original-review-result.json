@@ -1,0 +1,38 @@
+{
+  "worker_id": "w-766313bb-191d-42be-b19a-2e68edf40cfc",
+  "result": {
+    "worker_id": "w-766313bb-191d-42be-b19a-2e68edf40cfc",
+    "task_id": "33-redactor-core",
+    "run_id": "84736a6b-059d-4a29-bd49-2bfce8fc6c92",
+    "status": "completed",
+    "summary": "READ-ONLY review of src/security.ts redaction at exact target d428e0f730ed5649485732e95d39c32f5d6a8895. Verdict FINDINGS (5: 1 HIGH, 2 MEDIUM, 2 LOW). F1 security.ts:18 URL scrub needs an http(s) scheme AND a colon in the userinfo, so https://<token>@host and ssh/postgres/redis URLs print verbatim via `config show` and `serve --check-config` (reproduced end-to-end). F2 :20 query scrub lists only token/key/api_key/password, so access_token, api-key, secret, X-Amz-Signature leak. F3 :13 base64 variant matches only at 3-byte-aligned offsets and not base64url, so Basic base64(\"svc:\"+secret) survives. F4 :97 then :110 excerptText collapses whitespace after redacting, reconstructing a whitespace-bearing secret. F5 :7 + config.ts:28,47 short (1-3 char) credentials, legal per schema, break the generic query scrub and disable artifact guards. Review is read-only; no source changes. /workspace/repo untouched and clean at baseline 5672ead. Report + findings.json in /workspace/.swarmforge/artifacts/.",
+    "details": "Target d428e0f730ed5649485732e95d39c32f5d6a8895 verified in a disposable detached clone at /tmp/rv33/repo (git rev-parse HEAD). Assigned workspace /workspace/repo left at its bootstrap baseline 5672ead2a526e07fea9ed11e58b3725e42013527, clean (git status --porcelain empty), fetch-only.\n\nScope covered: src/security.ts (Redactor.text/value/contains, redactorFor, excerptText, publicWorker) and its consumers src/settings/inspect.ts, src/settings/load.ts, src/serve-command.ts, src/files.ts, src/runtime.ts, src/mcp.ts, src/http.ts, src/cli.ts, src/config.ts.\n\nF1 (HIGH, src/security.ts:18) reproduced twice through the shipped CLI: a config file with [git.ssh] push_url set to a passwordless-userinfo https URL, or an ssh:// URL with user:password, is printed unredacted by both `bun src/cli.ts config show` and `bun src/cli.ts serve --check-config`. The classic https://[REDACTED]@host form is redacted, proving the regex is the only guard for that shape. SWARMFORGE_GIT_PUSH_URL is added to the secret set only by commandRedactor (src/serve-command.ts:47); the redactedSettings path used by config show does not include it (SECRET_KEYS, src/settings/inspect.ts:7-11). Suggested fix: scrub any userinfo for any scheme, and register the push URL as a credential.\n\nF2 (MEDIUM, src/security.ts:20) exact-allowlist query scrub; 12 of 13 dummy shapes returned byte-identical output through both redactedText and commandRedactor.\n\nF3 (MEDIUM, src/security.ts:13) base64 variant alignment sweep: prefix lengths 0,3 redacted; 1,2,4,5 leaked and base64-decoded back to the full secret. base64url of a secret whose std base64 contains +// is not matched. The only in-repo prefix, \"opencode:\" (9 bytes, src/providers/opencode.ts:66), is aligned, so the built-in path is safe by coincidence.\n\nF4 (LOW, src/security.ts:97 then :110) whitespace collapse after redaction reconstructs a credential containing one space. Partially mitigated: excerpts are re-redacted at the MCP boundary (src/mcp.ts:40).\n\nF5 (LOW, src/security.ts:7 + src/config.ts:28,47) a 1-char credential turns ?api_key= into a mangled parameter name so the value is kept, and makes files.ts:70 reject every dotted artifact path and files.ts:103 block every file containing that character.\n\nNon-findings recorded in the report: secret-set completeness, correct redact-before-slice ordering everywhere, artifact overlap padding, and one latent asymmetry where renderEvent prints event.data unredacted to stdout while the persisted line is redacted (not currently reachable: all store.event payloads are {} or {run_id,status}).\n\nAll example credential-shaped strings in the report and findings.json are invented placeholders; no secret file was inspected and no real provider or infrastructure was contacted.",
+    "files_changed": [],
+    "tests": {
+      "ran": true,
+      "passed": true,
+      "command": "Bun 1.4.2 (/tmp/tool/bun-linux-x64/bun): bun install --frozen-lockfile (exit 0, lockfile byte-identical); bun test tests/excerpt.test.ts tests/api.test.ts (exit 0, 15 pass / 0 fail, 73 expect); bun test tests/serve.test.ts tests/inspect.test.ts tests/settings.test.ts (exit 0, 81 pass / 0 fail, 534 expect); plus 7 local probe scripts under /tmp/rv33/probes and one end-to-end CLI reproduction. Logs: /workspace/.swarmforge/logs/rv33-tests.log, /workspace/.swarmforge/logs/rv33-probes.log",
+      "summary": "All executed test commands passed (96 tests total, 0 failures, exit 0). Targeted only: full suite not run (whole-suite reviewer's scope) and no packaging/compile step run. 5 findings were reproduced by local probes and CLI runs; 3 probe scripts were rewritten after two initial authoring errors of my own (a wrong method call and an invalid test config), after which all reproduced as reported."
+    },
+    "git": {
+      "workspace": "/workspace/repo",
+      "branch": "swarmforge/repo-review-50-20260930/33-redactor-core/w-766313bb-191d-42be-b19a-2e68edf40cfc",
+      "commit": "5672ead2a526e07fea9ed11e58b3725e42013527",
+      "base_commit": "5672ead2a526e07fea9ed11e58b3725e42013527",
+      "review_url": "https://github.com/GavinGeizer/swarmforge-oss/compare/5672ead2a526e07fea9ed11e58b3725e42013527...swarmforge%2Frepo-review-50-20260930%2F33-redactor-core%2Fw-766313bb-191d-42be-b19a-2e68edf40cfc",
+      "dirty": false,
+      "persisted": true
+    },
+    "warnings": [
+      "Target branch was reviewed read-only from a disposable /tmp clone; no commits, pushes, merges, tags, releases, or worker spawning were performed.",
+      "Snapshot bun is 1.3.14; official Bun 1.4.2 was installed under /tmp/tool. bun.lock was verified byte-identical and never rewritten.",
+      "F1/F2/F3 depend on credential shapes outside the process's known-secret set; likelihood beyond the reproduced trigger was not assessed.",
+      "F4 requires a whitespace-bearing credential and F5 requires a 1-3 character credential, both legal under src/config.ts at the target.",
+      "Two initial probe scripts failed due to my own scripting errors (not product defects); they were corrected and re-run. See logs.",
+      "Latent (not reachable at target) asymmetry noted in the report: renderEvent prints event.data unredacted to stdout while the persisted event line is redacted.",
+      "Reviewer experiments live only in /tmp/rv33/** and /tmp/tool; disclosed in the report."
+    ],
+    "needs_followup": true,
+    "followup_reason": "5 actionable redaction defects in src/security.ts at target d428e0f: HIGH passwordless-userinfo and non-http(s) URL credentials leak through config show/serve --check-config and every diagnostic sink (line 18); MEDIUM query-parameter scrub covers only 4 names (line 20); MEDIUM base64 variant only matches 3-byte-aligned offsets and not base64url (line 13); LOW excerptText reconstructs whitespace-bearing credentials by normalizing after redaction (lines 97/110); LOW 1-3 character credentials defeat the generic query scrub and disable artifact retrieval guards (line 7 with src/config.ts:28,47). See /workspace/.swarmforge/artifacts/review.md and findings.json."
+  }
+}

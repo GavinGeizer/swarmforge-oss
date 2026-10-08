@@ -1,0 +1,101 @@
+{
+  "target": "d428e0f730ed5649485732e95d39c32f5d6a8895",
+  "scope": "Schema/migrations, query indexes, growing events/results/history, pagination cost and retention at large scale (read-only review of src/store.ts, src/metrics.ts, src/security.ts, src/coordinator.ts, src/mcp.ts, src/runtime.ts, docs/OBSERVABILITY.md)",
+  "verdict": "FINDINGS",
+  "findings": [
+    {
+      "severity": "HIGH",
+      "title": "/metrics render is O(retained workers x retained events); one scrape blocks the single-threaded control plane",
+      "file": "src/metrics.ts",
+      "line": 84,
+      "evidence": "render() iterates store.all() (:74) and per worker issues store.tokens({worker_id}) (:84), 'GROUP BY type WHERE worker_id=?' (:100-104), 'min(at) ... type=worker.ready' (:110-115) and one json_extract(data,'$.run_id') event scan per dispatch (:121-127). events has no index on worker_id, so EXPLAIN QUERY PLAN returns 'SCAN events' for each (src/store.ts:27 defines no such index).",
+      "reproduction": "Local sqlite3 3.45.1 running metrics.ts's own SQL text: 200 workers/8000 events = 0.525s of SQLite time for one render's statement set; 800 workers/80000 events = 27.55s (10x rows -> ~52x time). Through the real Store at 5000 workers/250k events/100k usage rows a single worker's metrics queries cost 150.8ms, extrapolating to minutes per scrape. Probe scripts probe3.ts and /workspace/.swarmforge/logs/rev12-probes.log; probes live only in /tmp/rev12/probe.",
+      "recommendation": "Add idempotent indexes events(worker_id, id) and events(worker_id, type, at); replace per-worker event queries with set-based GROUP BY aggregates or persisted running counters; restrict histogram loops to workers with live dispatch history; consider a snapshot updated by the coordinator tick rather than per-scrape recomputation.",
+      "confidence": "reproduced"
+    },
+    {
+      "severity": "HIGH",
+      "title": "Store.tokens() full-scans usage due to the '? IS NULL OR col=?' idiom, on the 2s poll path for every active worker",
+      "file": "src/store.ts",
+      "line": 328,
+      "evidence": "tokens() filters with 'WHERE (? IS NULL OR worker_id=?) AND (? IS NULL OR team_id=?) AND (? IS NULL OR task_id=?)', which hides the predicate from the planner: plan is 'SCAN usage' + 'SEARCH workers', whereas the identical aggregate with 'WHERE worker_id=?' uses 'SEARCH usage USING sqlite_autoindex_usage_1 (worker_id=?)'. Called from src/coordinator.ts:614-616 on every poll (default SWARMFORGE_POLL_INTERVAL_MS=2000, SWARMFORGE_TOKEN_IDLE_TIMEOUT_SECONDS=300 so enabled by default), from src/store.ts:261 claimDispatch, src/security.ts:145 publicWorker and src/metrics.ts:84.",
+      "reproduction": "Real Store.tokens at 5000 workers / 250k events / 100k usage rows: as implemented 7.9ms for one worker; same aggregate with a plain predicate 0.1ms (~80x). With 50 running workers that is ~0.4s of blocking CPU per 2s tick and it grows with total messages ever recorded. probe6.ts in /workspace/.swarmforge/logs.",
+      "recommendation": "Use two static prepared statements (unfiltered / filtered) or assemble the WHERE fragment from the supplied filters so worker_id=? becomes an index seek; keep the usage primary key.",
+      "confidence": "reproduced"
+    },
+    {
+      "severity": "MEDIUM",
+      "title": "Worker-filtered event pagination has no supporting index and degrades to a full-table scan",
+      "file": "src/store.ts",
+      "line": 179,
+      "evidence": "events() uses 'WHERE (? IS NULL OR worker_id=?) AND id>? ORDER BY id LIMIT ?' on a table with no index on worker_id, so the plan is only 'SEARCH events USING INTEGER PRIMARY KEY (rowid>?)' and every later row is filtered; lifecycleEvents() (:191-212) has the same shape for wait_for_state_change. Reached by get_worker_logs (src/mcp.ts:172-182, after defaults to 0).",
+      "reproduction": "Real Store on 5000 workers / 250k events: events(mid-table worker, 0, 100) = 20.4ms vs 0.1ms unfiltered; lifecycleEvents(0,{worker_id},200) = 18.8ms. After adding CREATE INDEX ev_worker ON events(worker_id, id) the plan became 'SEARCH events USING INDEX ev_worker (worker_id=? AND id>?)' and the page dropped to 0.2ms (45-135x); the OR-guarded form still chose the rowid seek, so index plus predicate rewrite are both required.",
+      "recommendation": "Add events(worker_id, id) and events(worker_id, type, at) in the constructor DDL and replace the nullable-parameter OR filters with explicit filtered/unfiltered statements.",
+      "confidence": "reproduced"
+    },
+    {
+      "severity": "MEDIUM",
+      "title": "No retention anywhere: history grows forever and every read path is O(history)",
+      "file": "src/store.ts",
+      "line": 22,
+      "evidence": "No DELETE, prune, VACUUM or retention setting exists anywhere in src (grep). destroy_worker only transitions to 'destroyed' (src/coordinator.ts:969); events, dispatches (results up to 60 KiB per domain.ts:44-79), usage rows and worker bodies are kept forever. Readers pay for it: coordinator.ts:316 and :363 call store.all() twice per tick and twice per reconcile; security.ts:48 builds the redactor secret list from store.all() and src/mcp.ts:40 then runs 3 replaceAll variants per retained worker password on every response; mcp.ts:96-113 list_workers scans all workers and slices in JS so limit reduces no work.",
+      "reproduction": "Real Store at 5000 retained workers: store.all() 5.9ms (twice per 2s tick); redactorFor().value() on a 2KB/20KB payload 13.2ms/15.9ms per response, linear in retained worker count. probe2.ts/probe4.ts.",
+      "recommendation": "Add an idempotent retention pass (startup + reconcile branch of runTick) pruning events/usage/dispatches for destroyed or cancelled workers past a configurable window, plus periodic wal_checkpoint; push team/task/state filtering into SQL for list_workers/get_task/get_team_status; build the redactor secret set once per request from a targeted query.",
+      "confidence": "reproduced"
+    },
+    {
+      "severity": "MEDIUM",
+      "title": "Completed-dispatch history per worker is unbounded and fully re-parsed on every poll and every tool response",
+      "file": "src/store.ts",
+      "line": 232,
+      "evidence": "dispatches() selects every dispatch body for a worker; dispatch() (:236-240) and result() (:300-306) build on it. Only non-terminal dispatches are capped at 100 (src/coordinator.ts:215-217), so completed dispatches with up to 60 KiB results accumulate for a worker reused via send_worker_message. Callers: coordinator.ts:215, :793, :933, :949 and security.ts:146-148 (pending_messages) on every publicWorker.",
+      "reproduction": "Real Store on a synthetic DB with 20 workers x 300 completed dispatches (78 MB): dispatch(worker) 8.1ms, result(worker) 8.3ms, one publicWorker's store work 8.8ms, and the store work of a list_workers(limit=20) response 95.2ms of synchronous JSON parsing on the event loop. probe5.ts.",
+      "recommendation": "Query only what callers need: WHERE worker_id=? AND state NOT IN ('completed','cancelled') for the pending-queue check and pending_messages (prefer count(*)), and fetch a result by run_id/latest with a targeted indexed query.",
+      "confidence": "reproduced"
+    },
+    {
+      "severity": "LOW",
+      "title": "workers_state index is never used by any query while every transition maintains it",
+      "file": "src/store.ts",
+      "line": 26,
+      "evidence": "All SQL in src writes the workers.state column (store.ts:149) but never filters on it; every state filter is applied in JavaScript after store.all() (mcp.ts:100-106, :263, :277; metrics.ts:75-83; coordinator.ts:172-185, 316-345). The index therefore only adds write cost to the hottest write path.",
+      "reproduction": "grep of all SQL in src/: the only 'state=' occurrences are the UPDATE statements at store.ts:149 and store.ts:243. Not timing-measured; code-evidenced.",
+      "recommendation": "Push state filtering into SQL so the index is used (including in list_workers), or drop the index.",
+      "confidence": "code-evidenced"
+    },
+    {
+      "severity": "LOW",
+      "title": "Event-log cursor is persisted once per event instead of once per flush (fsync amplification)",
+      "file": "src/runtime.ts",
+      "line": 210,
+      "evidence": "eventLogger's loop calls c.store.setting('logged_event', ...) for every event; Store.setting (store.ts:57-63) is its own autocommit transaction, and PRAGMA synchronous is 2 (FULL) on a target-created database (measured with bun:sqlite). Up to 100 such writes per 1000ms flush (serve.ts:193).",
+      "reproduction": "PRAGMA synchronous = 2 and PRAGMA journal_mode = wal verified on a database created by the target Store (probe1.ts); write count per flush derived from runtime.ts:177-212. No timing benchmark run.",
+      "recommendation": "Persist 'after' once after the loop completes; the cursor is already restart-safe.",
+      "confidence": "code-evidenced"
+    },
+    {
+      "severity": "LOW",
+      "title": "No schema-version ledger; positional INSERTs make the first future column addition a runtime break",
+      "file": "src/store.ts",
+      "line": 118,
+      "evidence": "The constructor only issues CREATE TABLE/INDEX IF NOT EXISTS and PRAGMA user_version is 0 (measured). 'INSERT INTO workers VALUES(?,?,?,?,?,?)' (store.ts:118) and 'INSERT INTO dispatches VALUES(?,?,?,?,?)' (store.ts:225) are positional, so a new or reordered column fails at runtime against every retained database instead of being migrated.",
+      "reproduction": "PRAGMA user_version = 0 verified via probe1.ts. DDL is byte-identical across every commit touching src/store.ts (9ee8fea, 96e556c, 3e54f90, b99de22, d428e0f), so this is latent and not currently triggerable; permanent retention (finding 4) raises the odds over time.",
+      "recommendation": "Set/check PRAGMA user_version, apply ordered ALTER TABLE migrations in the constructor, and name columns explicitly in the two positional inserts.",
+      "confidence": "code-evidenced, latent"
+    }
+  ],
+  "tests": {
+    "ran": true,
+    "passed": true,
+    "command": "bun /tmp/rev12/probe/probe1.ts … probe7.ts (Bun 1.3.14, importing the target's real src/store.ts and src/security.ts with no bun install) plus sqlite3 3.45.1 EXPLAIN QUERY PLAN and generated statement batches over synthetic databases built from the target DDL",
+    "summary": "All 7 probes and both raw statement batches exited 0. Measured: tokens({worker_id}) 7.9ms vs 0.1ms with a plain predicate (100k usage rows); events(worker,0,100) 20.4ms unindexed vs 0.2ms after adding events(worker_id,id); store.all() 5.9ms at 5000 workers; redactor.value() 13-16ms per response at 5000 retained workers; list_workers(limit=20) store work 95.2ms at 20 workers x 300 dispatches; one metrics.render() statement set 0.525s at 200 workers/8k events and 27.55s at 800 workers/80k events. The repository test suite and bun run check were deliberately not run (whole-suite and typecheck roles belong to other reviewers; the snapshot Bun 1.3.14 may not read this lockfileVersion 2 lockfile, and installing Bun 1.4.2 was not necessary for store/query-level evidence). No test failures encountered because no repository tests were executed."
+  },
+  "limitations": [
+    "No repository test suite or typecheck was executed; findings rest on code traces, EXPLAIN QUERY PLAN and local probes.",
+    "Probe databases are synthetic (target DDL, placeholder strings, bodies within schema limits: prompt <=32000 chars, result <=60 KiB); real event/result size distributions may shift absolute timings.",
+    "Figures for 5000+ retained workers are measured per unit and extrapolated linearly/quadratically; only the 200w/8k and 800w/80k metrics-render points were measured end to end.",
+    "Sync SQLite runs on Bun's event loop, so measured SQL time is event-loop stall time; concurrency effects were not measured.",
+    "No cloud/model provider, VM, or network endpoint was contacted; no .env or secret file was read; no credentials appear in this report.",
+    "Token-accounting semantics of the usage max-upsert (store.ts:319), lifecycle races, Git handoff and packaging were treated as other reviewers' scopes."
+  ]
+}

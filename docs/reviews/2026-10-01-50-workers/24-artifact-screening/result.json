@@ -1,0 +1,37 @@
+{
+  "worker_id": "w-7bac4b97-ded7-409d-9528-8b006db68e90",
+  "result": {
+    "worker_id": "w-7bac4b97-ded7-409d-9528-8b006db68e90",
+    "task_id": "24-artifact-screening",
+    "run_id": "ae727605-76f0-403d-967e-23e392b282a2",
+    "status": "completed",
+    "summary": "Target d428e0f730ed5649485732e95d39c32f5d6a8895 (feature/binary-config-serve-20260930). Verdict FINDINGS: 1 MEDIUM, reproduced. readArtifact (src/files.ts:94-98) derives the credential-screening overlap pad from only 2 of the 4 secret sources in redactorFor, omitting SWARMFORGE_API_TOKEN, which config.ts:81 leaves with no max length. Because Redactor.contains (security.ts:38-41) is an exact whole-secret match over the window, a read at offset > pad truncates such a credential at the window's left edge, no exception fires, and 804 contiguous bytes of a synthetic 5000-char token were returned to the caller. Right edge is sound; server_password is fixed 72 chars so that omission is latent. 91 in-scope tests pass; probe exits 1 only on the reproduced leak. Artifacts: /workspace/.swarmforge/artifacts/review.md and findings.json.",
+    "details": "Method: disposable detached worktree at /tmp/rev-24 with git rev-parse HEAD verified as the target; /workspace/repo left at assigned baseline 5672ead and clean. Official Bun 1.4.2 unpacked at /tmp/bun142 (snapshot 1.3.14 cannot read lockfileVersion 2); bun install --frozen-lockfile exit 0, lockfile never rewritten. Probe at /tmp/probe/probe.ts, outside the source checkout, used a fake byte-range WorkerProvider with a real Coordinator/Store/WorkerFiles and synthetic placeholder secrets only.\n\nFINDING (MEDIUM, src/files.ts:94-98, screen at :103, return at :107). pad = max(4096, len(SWARMFORGE_MODEL_API_KEY), len(FREESTYLE_API_TOKEN)), but redactorFor (security.ts:44-49) screens four sources; SWARMFORGE_API_TOKEN is omitted and unbounded in config.ts:81. The overlap is only sound if the window holds one full secret past each edge, and the match is exact over the UTF-8 decode. So a read at offset > pad cuts an over-length credential at the left edge and returns up to secretLength-4097 of its bytes. Reproduced: token at bytes [0,5000), readArtifact(offset=4196, length=32768) gave pad=4096, window start=100 len=40960, no exception, 804 credential bytes returned matching the token prefix. Controls passed, isolating the left edge: short secret in-chunk refused; the same 5000-char token at byte 5000 refused; right-edge straddle refused; junk high bytes before an ASCII secret still detected (excludes UTF-8 decode consumption). Not prevented by tests/api.test.ts:104-127, the only screen test: it reads offset 0 (start clamps to 0) with 12-byte secrets, and no test reads a second chunk. Fix: compute pad from redactorFor(c).secrets() using Buffer.byteLength, and scan bytes rather than a decode.\n\nVerified sound, recorded to avoid re-review: returned range is always a subset of the screened window; right edge sound; no false positives on binary (PNG-like, zlib, NUL) since the URL-userinfo regex cannot span a slash; get_worker_artifact is not wrapped in redactor.value but is safe because artifact() rejects credential-bearing paths; logs() redacts before slicing; the only other provider.readFile (result.json fallback, coordinator.ts:675) routes through complete() which redacts before store.finish; w.error is store-raw but every read surface redacts; the settings loader retains credential context from every layer including superseded values via withRedactionContext; commandRedactor adds JSON-escaped forms; excerptText redacts before trimming and takes the tail.",
+    "files_changed": [],
+    "tests": {
+      "ran": true,
+      "passed": true,
+      "command": "cd /tmp/rev-24 && /tmp/bun142/bun-linux-x64/bun test tests/api.test.ts tests/excerpt.test.ts tests/inspect.test.ts -> exit 0 (20 pass, 0 fail, 92 expect); bun test tests/commands.test.ts tests/settings.test.ts -> exit 0 (71 pass, 0 fail, 627 expect); bun run /tmp/probe/probe.ts -> exit 1 (1 failure = probe A1, the reproduced MEDIUM leak; 8 controls passed)",
+      "summary": "Targeted in-scope suites only: 91 tests pass, 0 fail, across api/excerpt/inspect/commands/settings. My own probe exits 1 solely because assertion A1 (no credential bytes returned) fails, which is the reproduced finding. bun install --frozen-lockfile exit 0; lockfile unmodified. Full suite not run (whole-suite reviewer's job); nothing compiled or packaged. No real cloud/model provider, VM, network service or real credential used - all providers are local fakes, all secrets synthetic."
+    },
+    "git": {
+      "tree": "https://github.com/GavinGeizer/swarmforge-oss.git",
+      "workspace": "/workspace/repo",
+      "branch": "swarmforge/repo-review-50-20260930/24-artifact-screening/w-7bac4b97-ded7-409d-9528-8b006db68e90",
+      "commit": "5672ead2a526e07fea9ed11e58b3725e42013527",
+      "base_commit": "5672ead2a526e07fea9ed11e58b3725e42013527",
+      "review_url": "https://github.com/GavinGeizer/swarmforge-oss/compare/5672ead2a526e07fea9ed11e58b3725e42013527...swarmforge%2Frepo-review-50-20260930%2F24-artifact-screening%2Fw-7bac4b97-ded7-409d-9528-8b006db68e90",
+      "dirty": false,
+      "persisted": true
+    },
+    "warnings": [
+      "The MEDIUM finding requires a SWARMFORGE_API_TOKEN longer than the 4096-byte pad floor. That is schema-legal (min 24, no maximum) and documented only as 'minimum 24 characters', so it is atypical; severity held at MEDIUM rather than HIGH for that reason.",
+      "The reproduction uses a fake provider honoring the documented byte-range contract (freestyle.ts:302-304 forwards {offset, length} to the SDK). The real SDK offset/length semantics were asserted from code, not exercised against real infrastructure.",
+      "Full test suite intentionally not run; only the four test files overlapping this scope. tests/packaging, serve, git-handoff, lifecycle, safety and others were not executed and may hide in-scope regressions.",
+      "The snapshot's system Bun is 1.3.14 and cannot read lockfileVersion 2; official Bun 1.4.2 was used from /tmp/bun142. The lockfile was never rewritten.",
+      "Rarer settings-loader false negatives (e.g. a credential inside a TOML inline table echoed by a parse error) were assessed by code reading only and remain unverified hypotheses, not findings."
+    ],
+    "needs_followup": true,
+    "followup_reason": "MEDIUM credential-screening false negative in src/files.ts:94-98: the artifact chunk overlap pad is derived from 2 of the 4 secret sources in redactorFor, omitting the unbounded SWARMFORGE_API_TOKEN, so a read at offset > pad truncates an over-length credential at the window's left edge and returns up to secretLength-4097 of its bytes (reproduced: 804 bytes). Fix by computing pad from redactorFor(c).secrets() with Buffer.byteLength and screening raw bytes; add a regression test that reads a second chunk at offset > pad."
+  }
+}

@@ -1,0 +1,68 @@
+{
+  "target": "d428e0f730ed5649485732e95d39c32f5d6a8895",
+  "scope": "Freestyle pause/resume/cancel/destroy control flow, ambiguous provider state and guest disappearances (src/coordinator.ts applyControl/control/quiesce/step/recover, src/providers/freestyle.ts, src/store.ts transitions, src/domain.ts states, MCP control wrappers)",
+  "findings": [
+    {
+      "severity": "HIGH",
+      "title": "resume_worker silently no-ops forever once previous_state becomes \"paused\" (pause intent racing an out-of-band guest pause)",
+      "file": "src/coordinator.ts",
+      "line": 851,
+      "evidence": "applyControl pause sets previous_state: w.state with no guard (851-855); resume transitions to w.previous_state ?? \"ready\" (861); the running/waiting branch of step transitions the worker to paused without re-checking a recorded intent (497-503); runTick never steps paused workers (344-349); queueMessage repairs previous_state only when it is terminal (226-237); store.transition emits no state event when the state is unchanged (src/store.ts:146-158).",
+      "reproduction": "Reproduced with /tmp/r26/exp/pause-intent-race.test.ts (Bun 1.4.2, FakeProvider, in-memory SQLite): run to running; gate provider.getWorker and flip the fake VM to paused on release; start tick(), then control(id,\"pause\"), then one tick(). Result: state=paused previous_state=paused intent=null. control(id,\"resume\") returns state=paused previous_state=paused paused_at=null while emitting worker.resumed; 5 further ticks leave dispatches sent,pending and submissions at 1; send_worker_message still returns delivery:\"queued\".",
+      "recommendation": "In the pause branch return early (clearing intent) when w.state is already paused, or validate previous_state in the resume branch (fall back to \"ready\" unless it is a resumable state), and re-read intent before the paused transitions in step and recover.",
+      "confidence": "high — reproduced; existing tests never pause a worker whose state changes under a pending intent"
+    },
+    {
+      "severity": "MEDIUM",
+      "title": "Guest discovered stopped keeps a stale deadline_at, so follow-up messages are accepted then failed instantly",
+      "file": "src/coordinator.ts",
+      "line": 429,
+      "evidence": "The stopped-VM reconcile branch transitions to recovery_required with only {error} (429-432), unlike every other recovery_required transition which clears deadline_at (573-577, 800-804, 919-921, 936-941). The follow-up transition for failed/recovery_required does not reset deadline_at (238-243) and the absolute-deadline check runs before any provisioning work (452-455). Nothing in the follow-up path calls resumeWorker, so prepare() cannot succeed on a stopped guest (src/providers/freestyle.ts:114-122).",
+      "reproduction": "Reproduced with /tmp/r26/exp/cancel-stopped.test.ts: run to running, set deadline_at in the past (models a run that used its budget), set fake VM state to stopped, recover() -> recovery_required with deadline_at still in the past; message() -> state booting, delivery queued; one tick() -> state failed, error \"Worker task timed out\" (repeats for every later message).",
+      "recommendation": "Clear deadline_at: null in the stopped-VM branch and reset it on the follow-up transition; start (resumeWorker) or explicitly refuse a stopped guest before prepare.",
+      "confidence": "high for the stale-deadline failure (reproduced); the prepare-needs-a-live-guest half is code-evidenced but not reproduced against the real API"
+    },
+    {
+      "severity": "MEDIUM",
+      "title": "cancel_worker records cancelled with no error when the OpenCode stop cannot be proven",
+      "file": "src/coordinator.ts",
+      "line": 890,
+      "evidence": "The cancel branch inspects only quiesce's \"missing\" outcome (890) and ignores \"paused\", which quiesce returns when agent.abort, the systemctl stop exec and pauseWorker all fail while the guest is still present (725-745). fail() (785-804) and destroy (917-926) treat the same outcome as unsafe.",
+      "reproduction": "Reproduced with /tmp/r26/exp/cancel-stopped.test.ts: provider.exec and provider.pauseWorker both throw, then control(id,\"cancel\") -> state=cancelled, error=null, VM still \"running\". Same setup on the deadline/failure path -> state=recovery_required.",
+      "recommendation": "Capture the quiesce outcome in the cancel branch and, for \"paused\", either record error \"VM paused after OpenCode stop failure\" or transition to recovery_required, matching fail/destroy.",
+      "confidence": "medium-high — reproduced with the repo doubles; the disagreement with the other two teardown paths is unambiguous"
+    },
+    {
+      "severity": "LOW",
+      "title": "control() returns before applying its own intent when a step already holds the worker lock",
+      "file": "src/coordinator.ts",
+      "line": 251,
+      "evidence": "exclusive() returns the in-flight promise instead of queueing new work (251-257); runControl records the intent then awaits exclusive (833-834).",
+      "reproduction": "Observed in the finding A probe: control(id,\"pause\") returned while store intent was still \"pause\" and the state unchanged; the intent was applied only by a later tick. Docs (docs/MCP-API.md:11) allow \"pending intent\" for pause_worker, hence LOW.",
+      "recommendation": "Queue the new step behind the running one (or wait until intent is cleared) so a control response reflects the applied operation; this also shrinks the finding A window.",
+      "confidence": "medium-high — reproduced; frequency depends on step duration"
+    },
+    {
+      "severity": "LOW",
+      "title": "Vanished guest in step() leaves the inference gauge and stored excerpt behind",
+      "file": "src/coordinator.ts",
+      "line": 487,
+      "evidence": "The running/waiting disappeared-VM branch (487-496) omits this.inference.delete/this.excerpts.delete, which the reconcile branch performs at 408-419.",
+      "reproduction": "Not separately reproduced; code-evidenced. Self-heals on the next reconcile pass (<=30 s).",
+      "recommendation": "Mirror the two delete calls from the reconcile branch in the step branch.",
+      "confidence": "medium — code-evidenced only"
+    }
+  ],
+  "tests": {
+    "command": "bun install --frozen-lockfile; bun test tests/lifecycle.test.ts tests/core.test.ts; bun test /tmp/r26/exp/pause-intent-race.test.ts; bun test /tmp/r26/exp/cancel-stopped.test.ts",
+    "ran": true,
+    "passed": true,
+    "summary": "Bun 1.4.2 at /tmp/bun1420 (snapshot bun 1.3.14 cannot read this lockfile; lockfile not rewritten). install exit 0 (125 packages). Baseline: tests/lifecycle.test.ts + tests/core.test.ts exit 0, 44 pass / 0 fail. Reviewer probes outside the checkout: pause-intent-race.test.ts 1 pass / 0 fail, cancel-stopped.test.ts 2 pass / 0 fail. No real provider or inference endpoint contacted."
+  },
+  "limitations": [
+    "Freestyle was never called; quiesce/resumeWorker/destroyWorker outcomes are modelled with the repository FakeProvider doubles.",
+    "Findings A and D are timing dependent and were reproduced by explicitly gating the injected getWorker, not by chance; the 2 s poll interval was not shortened.",
+    "Full suite, tsc/biome and packaging were out of scope for this reviewer.",
+    "Reviewer experiments live only in /tmp/r26/exp; /workspace/repo stayed at baseline 5672ead and clean."
+  ]
+}

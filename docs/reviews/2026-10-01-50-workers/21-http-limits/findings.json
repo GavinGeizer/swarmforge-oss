@@ -1,0 +1,78 @@
+{
+  "target": "d428e0f730ed5649485732e95d39c32f5d6a8895",
+  "scope": "Request size/concurrency bounds, malformed JSON, connection lifecycle, resource exhaustion and error status semantics",
+  "findings": [
+    {
+      "severity": "MEDIUM",
+      "title": "Request idle timeout (60s) is shorter than the composed control-operation bound (up to ~150s)",
+      "file": "src/serve.ts",
+      "line": 175,
+      "evidence": "idleTimeout: 60 on the API listener, while quiesce (src/coordinator.ts:725-745) chains up to four calls each bounded by SWARMFORGE_API_TIMEOUT_MS (30000) and cancel of a paused worker adds resumeWorker. Reproduced: cancel_worker returned only after 60021ms with a hanging fake provider (probe cancel.ts); isolated mechanism confirmed with Bun.serve idleTimeout 3 vs a 12s handler failing the client at 4002ms (probe idle2.ts).",
+      "reproduction": "/tmp/probe/cancel.ts (in-flight control call at the idleTimeout boundary), /tmp/probe/idle.ts, /tmp/probe/idle2.ts",
+      "recommendation": "Derive the idle timeout from the composed per-request budget (e.g. SWARMFORGE_API_TIMEOUT_MS * 5 + margin) or bound each mutating tool call as a whole so no request can exceed the connection budget.",
+      "confidence": "medium; deepest chained case (cancel3.ts) was cut off by the review deadline, so the worst-case figure is code-derived rather than measured"
+    },
+    {
+      "severity": "MEDIUM",
+      "title": "/metrics render is unbounded per scrape and the metrics listener skips the host allowlist and bearer check",
+      "file": "src/serve.ts",
+      "line": 177,
+      "evidence": "Metrics listener (serve.ts:177-190) has no bearer/host check unlike http.ts:9-29. Metrics.render (metrics.ts:74-131) issues per-worker and per-dispatch SQL. Measured: 50ms at 200 retained workers, 731ms at 1000, 5125ms at 3000; store.all() alone 192ms at 3000.",
+      "reproduction": "/tmp/probe/scale.ts (temporary SQLite, real Store/Metrics, fake provider)",
+      "recommendation": "Cache or pre-aggregate metrics instead of re-deriving from SQLite per scrape, apply the same bearer/host check to the metrics listener, and guard scrape concurrency.",
+      "confidence": "high"
+    },
+    {
+      "severity": "MEDIUM",
+      "title": "/events per-request cost scales with total retained workers via the redaction secret set",
+      "file": "src/http.ts",
+      "line": 34,
+      "evidence": "redactorFor (security.ts:43-50) reads c.store.all() and appends one server_password per retained worker; text() (security.ts:5-23) scans every secret in raw, percent-encoded and base64 form. One /events replay of 100 events took 1981ms and 1986ms at 1000 retained workers; isolated text() cost 0.30ms at 10 rising to 9.11ms at 1000 retained.",
+      "reproduction": "/tmp/probe/fanout.ts, /tmp/probe/redact.ts",
+      "recommendation": "Build the secret set once per response rather than per event and bound or index the per-worker secret contribution.",
+      "confidence": "high"
+    },
+    {
+      "severity": "MEDIUM",
+      "title": "No server-side concurrency cap; a single 123 KiB batched request registers 1000 store listeners",
+      "file": "src/http.ts",
+      "line": 87,
+      "evidence": "maxRequestBodySize 131072 and the 413 check bound bytes, not calls. 1000 wait_for_state_change invocations fit in 123891 bytes and registered 1000 store listeners from one connection (pendingRequests 1). Each event then schedules a microtask fan-out; one event with 256 waiters cost 101ms synchronous, and 2000 waiters took 48s to settle. Bun's observed pendingRequests ceiling was 256, which is a transport limit, not an admission policy.",
+      "reproduction": "/tmp/probe/batch.ts, /tmp/probe/cap.ts, /tmp/probe/fanout.ts",
+      "recommendation": "Cap concurrent in-flight requests and concurrent wait_for_state_change waiters explicitly with a 503/429 refusal, independent of request byte size.",
+      "confidence": "high"
+    },
+    {
+      "severity": "LOW",
+      "title": "Transport-level throws collapse into a silent, undiagnosable 500",
+      "file": "src/http.ts",
+      "line": 95,
+      "evidence": "The catch discards the error object and returns a bare 'MCP request failed' with no log line, no correlation id and no redacted detail. Genuine internal faults are indistinguishable in the field.",
+      "reproduction": "code trace; not separately probed",
+      "recommendation": "Log the redacted error before returning the 500; the redactor at security.ts is already available in this handler.",
+      "confidence": "high"
+    },
+    {
+      "severity": "LOW",
+      "title": "Verified good: malformed JSON and oversize bodies are rejected correctly",
+      "file": "src/http.ts",
+      "line": 63,
+      "evidence": "Empty body, bad JSON and a truncated object all return 400 Invalid JSON; null, 5, a JSON string and [1,2,3] return 400 with JSON-RPC -32700; declared-short content-length with a 200KB body and a chunked oversize body both return 413; a 298891-byte batch returns 413. No defect found in this area.",
+      "reproduction": "/tmp/probe/http-probe.ts",
+      "recommendation": "No change; recorded as scope coverage.",
+      "confidence": "high"
+    }
+  ],
+  "tests": {
+    "command": "/tmp/bun142/bun-linux-x64/bun test tests/http.test.ts tests/wait.test.ts tests/serve.test.ts",
+    "result": "33 pass, 0 fail, 189 expect() calls, exit 0 (official Bun 1.4.2; snapshot Bun 1.3.14 cannot read lockfileVersion 2 and the lockfile was not rewritten)",
+    "probes": "14 custom probes under /tmp/probe using fake providers only; 13 completed with exit 0, cancel3.ts cut off by the review deadline, cap.ts first run exceeded a shell timeout and was re-run smaller"
+  },
+  "limitations": [
+    "One planned probe (cancel3.ts, 4x25s chained quiesce) was cut off by the 30-minute review deadline; F1's worst-case figure is code-derived, not measured",
+    "F2/F3/F4 costs are measured against synthetic retention on local SQLite with fake providers; real provider timings would differ but the unbounded-in-retained-rows shape is reproduced",
+    "Only 3 of 20 test files were run; the full suite is the whole-suite reviewer's scope",
+    "No real cloud, model provider or infrastructure smoke was performed and no credentials were used",
+    "Verdict is INCOMPLETE: findings stand on the evidence collected, but the scope was not exhausted within the budget"
+  ]
+}

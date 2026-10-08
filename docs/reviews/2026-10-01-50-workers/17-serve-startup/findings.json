@@ -1,0 +1,53 @@
+{
+  "target": "d428e0f730ed5649485732e95d39c32f5d6a8895",
+  "scope": "Server resource acquisition, readiness/mutation gate, startup abort and bind-failure reverse cleanup (src/serve.ts, src/serve-command.ts, src/main.ts, cli serve path, coordinator recover/startProvisioning/stop/track, runtime acquireProcessLock/eventLogger, src/http.ts, config port validation, docs/SERVE.md, tests/serve.test.ts)",
+  "findings": [
+    {
+      "severity": "MEDIUM",
+      "title": "A throwing event-log flush escapes the 1s interval and kills the process without the ordered release",
+      "file": "src/serve.ts",
+      "line": 193,
+      "evidence": "`logTimer = setInterval(flush, 1000)` registers the raw eventLogger callback with no try/catch, while `release()` protects only the one-shot final flush with try/finally (src/serve.ts:148-156). eventLogger (src/runtime.ts:176-212) calls store.events/store.setting plus appendFileSync/renameSync/statSync directly, so it is not tracked by Coordinator's track/idle drain either. Neither serve-command.ts nor main.ts installs an uncaughtException handler, so an interval throw becomes an out-of-band process death: gate not closed, listeners not stopped by SwarmForge, SQLite not closed, lock file not unlinked, final flush skipped, and the raw message never passed through commandRedactor.",
+      "reproduction": "REPRODUCED. Probe /tmp/rev-17/probes/logflush2.ts: seed one queued worker with the repo's FakeProvider/FakeAgent, mkdir a directory at <db>.log, then startServer. Output: 'started http://127.0.0.1:18897 health 200' then a requested event line then 'UNCAUGHT: Error EISDIR: illegal operation on a directory, open /tmp/.../db.sqlite.log', probe exit 42. The server was serving /health 200 immediately before the crash. Control probe /tmp/rev-17/probes/logflush.ts (same unwritable target, no pending events) exited 0, so the fault needs at least one unflushed event. Real triggers are ENOSPC/EACCES/EROFS on the event log or a failed store.setting.",
+      "recommendation": "Register a guarded callback, e.g. setInterval(() => { try { flush(); } catch (e) { /* redacted report */ } }, 1000). If a persistent fault must be fatal, trigger one bounded ordered shutdown (shutdown() is already idempotent) instead of throwing, so the lock, listeners and database are still released in reverse order and the message is redacted.",
+      "confidence": "high"
+    },
+    {
+      "severity": "LOW",
+      "title": "/health answers 200 for the whole first provisioning pass while every mutation is refused with 503",
+      "file": "src/serve.ts",
+      "line": 55,
+      "evidence": "The gate stays in 'starting' from the listener bind (src/serve.ts:170-191) until gate.open() (src/serve.ts:203), which happens only after `await withAbort(coordinator.startProvisioning())` at line 194. /health is served by the wrapped handler (src/http.ts:33) and GET is in readOnlyMethods (src/serve.ts:33), so liveness is 200 while POST /mcp is 503 for every tool. The window can reach ~2 minutes by default: the first tick provisions up to SWARMFORGE_MAX_PROVISIONING (4) workers and each provider.createWorker call is bounded by SWARMFORGE_API_TIMEOUT_MS (30s) in coordinator.bounded (src/coordinator.ts:41-59, 457).",
+      "reproduction": "Code-evidenced and already pinned by the repository's own passing test tests/serve.test.ts:432 ('listeners are reserved before provisioning, refuse mutations until ready'), which asserts { mutation: 503, health: 200 }. No new probe was needed. Impact: a supervisor using /health as its readiness probe marks the instance ready and routes traffic to a process that refuses all mutations.",
+      "recommendation": "Optionally distinguish readiness from liveness: return 503 with Retry-After on /health while the gate is still starting, add a dedicated /ready that only answers 200 after gate.open(), or move gate.open() before await startProvisioning() so the gated window covers only listener reservation.",
+      "confidence": "medium"
+    },
+    {
+      "severity": "LOW",
+      "title": "Shutdown order in the code is the reverse of the documented order",
+      "file": "src/serve.ts",
+      "line": 141,
+      "evidence": "release() does `clearInterval(logTimer)` (line 141) before `gate.close()` (line 142), while docs/SERVE.md:48 documents 'Stop admission: the readiness gate closes, then the log interval is cleared.'",
+      "reproduction": "Direct source/doc comparison at target. No functional consequence today: an event produced in the one-statement sliver is still flushed by the final flush at src/serve.ts:149. The risk is that a future change trusts the documented order ('stop admitting first, then stop logging') and inverts the real one.",
+      "recommendation": "Swap the two statements in release() to match the documented order, or amend docs/SERVE.md:48. Swapping is the safer direction.",
+      "confidence": "high"
+    },
+    {
+      "severity": "LOW",
+      "title": "A second termination signal is swallowed; only the shutdown deadline can end a stuck drain",
+      "file": "src/serve-command.ts",
+      "line": 112,
+      "evidence": "onSignal returns immediately when a signal was already recorded (`if (requested) return;`), so repeated SIGINT/SIGTERM cannot escalate a drain that is blocked on a noncancelable provider promise. The process then waits out SWARMFORGE_SHUTDOWN_TIMEOUT_MS (default 60s, serve-command.ts:9) and exits 70.",
+      "reproduction": "PROBED, behaviour confirmed correct-for-its-documented-design. Probe /tmp/rev-17/probes/signal-matrix.ts spawns the repo's own tests/fixtures/serve-command-child.ts in 'blocked' mode with SWARMFORGE_SHUTDOWN_TIMEOUT_MS=400: one SIGTERM -> exit 70 at 650ms; SIGTERM x2 -> exit 70 at 747ms; SIGTERM+SIGINT -> exit 70 at 744ms; all three logged 'Shutdown deadline exceeded; exiting with durable state intact'. The documented contract (docs/SERVE.md:57,65) is met; this is an operational sharp edge, not a correctness bug.",
+      "recommendation": "Optional: accept a second signal of the other kind, or a third signal, as an immediate process.exit(forcedShutdownExitCode). The deadline path already exits with the database open, so honouring an explicit second request adds no new truncation risk and matches operator expectation.",
+      "confidence": "high"
+    }
+  ],
+  "tests": {
+    "ran": true,
+    "passed": true,
+    "command": "cd /tmp/rev-17/target && bun install --frozen-lockfile (exit 0); bun test tests/serve.test.ts (exit 0, 20 pass / 0 fail, 111 expect() calls, 4.38s); bun run tsc --noEmit (exit 0); bun run /tmp/rev-17/probes/logflush2.ts (exit 42, finding F1 reproduced); bun run /tmp/rev-17/probes/logflush.ts (exit 0, control); bun run /tmp/rev-17/probes/signal-matrix.ts (exit 0, F4 confirmed)",
+    "notes": "Snapshot bun is 1.3.14 and cannot read this lockfileVersion 2 lockfile, so official Bun 1.4.2 was unpacked to /tmp/bun142/bun-linux-x64/bun; the lockfile was not rewritten. Install and all runs happened only in the disposable /tmp clone. Full suite and biome were out of scope and were not run."
+  },
+  "limitations": "Only tests/serve.test.ts was executed plus tsc --noEmit; the full bun test suite and biome check were not run. Findings were sought only in the assigned scope; src/cli/*, src/settings/*, scripts/*, the release workflow, git handoff, safety and redaction internals were read only where they intersect startup and were not audited. F1 was reproduced with a deliberately corrupted event-log target (directory at <db>.log); the ENOSPC/EACCES/EROFS variants remain code-evidenced rather than reproduced. Startup-abort timing was assessed by code trace plus the repository's own blocking-provider tests rather than by fuzzing the signal window; the src/serve.ts:199-205 post-withAbort window is provably not yieldable in a single-threaded runtime. An initial 30s signal probe reported a misleading exit code from my own harness and was replaced by the controlled three-scenario matrix quoted in the finding. No real provider, model endpoint or infrastructure was contacted; probes used the repo's FakeProvider/FakeAgent and throwaway SQLite files under /tmp/sf-*. /workspace/repo stayed clean on the assigned baseline 5672ead."
+}

@@ -1,0 +1,52 @@
+{
+  "target": "d428e0f730ed5649485732e95d39c32f5d6a8895",
+  "scope": "Prometheus listener configuration, auth exposure, labels/cardinality, correctness and bind/shutdown behavior (src/metrics.ts, src/serve.ts metrics listener, src/config.ts metrics keys, src/http.ts contrast, src/store.ts schema, docs/OBSERVABILITY.md, docs/ENVIRONMENT.md)",
+  "findings": [
+    {
+      "severity": "HIGH",
+      "title": "Unauthenticated /metrics render is O(workers x events) and starves the event loop",
+      "file": "src/metrics.ts",
+      "line": 70,
+      "evidence": "render() iterates every retained worker (store.all(), no DELETE anywhere in src/store.ts) and issues 5 SQL statements each; EXPLAIN QUERY PLAN for the per-worker event GROUP BY and the per-dispatch result.received lookup both return SCAN events (events has only a PK on id, src/store.ts:27). Measured single-scrape cost: 2000 retained workers = 2100 ms and 10003 statements in-process; via the real listener, concurrent MCP /health latency during the scrape was 44-50 ms (250 workers), 535-562 ms (1000), 7679-10312 ms (2000), 20801-23132 ms (4000) across two runs. Bun serves MCP and metrics on one event loop, so MCP calls, reconciliation and turn deadlines stall for the whole render.",
+      "reproduction": "/tmp/sfrev/probe/probe-render-cost.ts <N> and /tmp/sfrev/probe/probe-blocking.ts <N> against a temp-dir SQLite seeded with N completed workers; probe-queryplan.ts prints the query plans. No real provider or network service used. Logs: /workspace/.swarmforge/logs/probe-blocking-scaling.log, listener.out, wildcard.out.",
+      "recommendation": "Replace the per-worker loop with a few set-based GROUP BY aggregates over workers/events, add CREATE INDEX events_worker_type ON events(worker_id,type), cache the rendered exposition for a few seconds, and persist result timing on the dispatch row to remove the json_extract scan.",
+      "confidence": "high"
+    },
+    {
+      "severity": "HIGH",
+      "title": "Metrics listener has no authentication and no Host validation and reuses SWARMFORGE_HOST",
+      "file": "src/serve.ts",
+      "line": 178,
+      "evidence": "The metrics Bun.serve handler only tests pathname === /metrics (src/serve.ts:178-192); the MCP listener enforces a Host allowlist and a timing-safe bearer check (src/http.ts:11-28). SWARMFORGE_HOST is the only bind variable for both listeners and src/config.ts:142-150 only requires the ports to differ. Reproduced: loopback config with SWARMFORGE_API_TOKEN set returned 200 on :9090/metrics with no Authorization header, with a wrong bearer, and with Host: attacker.example.com, while :8787/health returned 401 and 403 respectively. With SWARMFORGE_HOST=0.0.0.0 the metrics port answered 200 on non-loopback 172.17.0.1 while /health answered 403. Payload exposes allowlisted team IDs, model name, state counts and token volumes.",
+      "reproduction": "/tmp/sfrev/probe/probe-listener.ts (loopback + hostile Host, no/wrong auth) and /tmp/sfrev/probe/probe-wildcard.ts (SWARMFORGE_HOST=0.0.0.0, non-loopback reachability, team bucketing). Synthetic token; no real credentials.",
+      "recommendation": "Add SWARMFORGE_METRICS_HOST defaulting to 127.0.0.1 and bind the metrics listener to it; apply the same Host allowlist (and optionally SWARMFORGE_API_TOKEN) inside the metrics handler; state the auth posture in docs/OBSERVABILITY.md.",
+      "confidence": "high"
+    },
+    {
+      "severity": "LOW",
+      "title": "swarmforge_tokens_total{model} is hardcoded to SWARMFORGE_MODEL_NAME and ignores the recorded usage.model",
+      "file": "src/metrics.ts",
+      "line": 79,
+      "evidence": "src/metrics.ts:79-85 labels every observation with config.SWARMFORGE_MODEL_NAME, but src/coordinator.ts:546-556 persists m.model ?? configured name into usage.model (schema src/store.ts:30). store.tokens() (src/store.ts:323-353) has no GROUP BY model, so the recorded column is never surfaced. Reproduced: usage rows written with model some-other-model-9000 exported as swarmforge_tokens_total{model=qwen}.",
+      "reproduction": "Seeded usage rows with a non-configured model in /tmp/sfrev/probe/probe-wildcard.ts and read back /metrics.",
+      "recommendation": "Add a store aggregate grouped by usage.model and use it as the label value, or document that the label is the configured model rather than the recorded one.",
+      "confidence": "high"
+    }
+  ],
+  "tests": {
+    "ran": true,
+    "passed": true,
+    "command": "bun test tests/serve.test.ts (Bun 1.4.2 in /tmp clone at target)",
+    "summary": "20 pass, 0 fail, 111 expect() calls, 4.05s, exit 0. Full suite intentionally not run (whole-suite reviewer scope). Six bounded local probes in /tmp/sfrev/probe (FakeProvider/FakeAgent, temp-dir SQLite, loopback/ephemeral ports only) produced the reproduction evidence; no real provider, VM, cloud or network service contacted. Scaling logs and probe output are under /workspace/.swarmforge/logs."
+  },
+  "limitations": [
+    "Container-local timings; the reproducible part is the super-linear, full-scan-driven trend, not absolute milliseconds.",
+    "Non-loopback reachability shown on docker0 address 172.17.0.1 inside the container, not a real external interface.",
+    "F3 verified by seeding usage rows directly rather than by a guest reporting a different model.",
+    "Settings-file parsing for metrics keys and MCP status output of the metrics port were reviewed only for consistency, not exhaustively."
+  ],
+  "artifacts": [
+    "/workspace/.swarmforge/artifacts/review.md",
+    "/workspace/.swarmforge/artifacts/findings.json"
+  ]
+}

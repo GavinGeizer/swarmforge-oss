@@ -1,0 +1,33 @@
+{
+  "worker_id": "w-0761bd76-029a-4750-b709-0239f1f385b8",
+  "result": {
+    "worker_id": "w-0761bd76-029a-4750-b709-0239f1f385b8",
+    "task_id": "05-cancel-ordering",
+    "run_id": "0e02b10b-0066-4a67-91b3-46bfce9af745",
+    "status": "completed",
+    "summary": "Cancellation-race review at target d428e0f730ed5649485732e95d39c32f5d6a8895 (scope: cancel/control ordering vs dispatch, messages, results; quiesce semantics; acknowledged-message linearization). Verdict FINDINGS (1 HIGH, 1 MEDIUM, 1 LOW). HIGH src/coordinator.ts:890 - cancel only handles quiesce()=='missing' and reports 'cancelled' (error:null) while 'paused' means the guest is alive and not provably stopped; nothing retries, unlike fail()/destroy() which escalate to recovery_required. MEDIUM src/coordinator.ts:519 - step()'s catch turns a failed control intent into fallback completion: worker reports completed and cancel/destroy are refused. LOW src/coordinator.ts:489/:411 - cancelDispatches outside the tearingDown hold lets an acknowledged 'queued' message be silently cancelled. All reproduced with repo fakes in /tmp; lifecycle+excerpt tests 41 pass/0 fail. Artifacts: /workspace/.swarmforge/artifacts/review.md, findings.json. No source changes; /workspace/repo clean at 5672ead.",
+    "details": "Setup: disposable detached clone /tmp/sf05 verified at d428e0f730ed5649485732e95d39c32f5d6a8895 (feature/binary-config-serve-20260930); probe copy /tmp/probe (bun install --frozen-lockfile, official Bun 1.4.2 in /tmp because the snapshot has 1.3.14). Findings: (1) HIGH coordinator.ts:875-907, decision at :890 - applyControl('cancel') only treats quiesce()=='missing' as special; 'paused' (exec not code 0, pauseWorker threw, or ambiguous getWorker probe) still transitions to 'cancelled' with error:null. runTick (340-353) skips terminal states without intent and runRecover (421-432) only reacts to provider states paused/pausing/stopped, so the running guest is never re-quiesced; docs/MCP-API.md:13 promises cancel 'Stops execution'. Probe A: state cancelled, VM still 'running', zero further systemctl stop attempts after 5 ticks + recover; probe B: same faults with destroy -> recovery_required. Real provider (providers/freestyle.ts:279-301, 88-95) throws on any non-2xx, so one transient outage triggers it. Fix: escalate to recovery_required with an explicit error, or at minimum keep a non-null error and retryable intent. (2) MEDIUM coordinator.ts:510-526 - the catch special-cases GitHandoffError only; a throwing control-intent provider call on a running worker falls into fallback()+complete(), pushing the branch and marking the turn completed while the intent stays set. Probe H: pause_worker returns state completed/error null, then cancel and destroy both refused with 'Another worker control operation is pending', and each tick re-patches an error on the completed worker. Fix: return early from the catch when w.intent is set. (3) LOW coordinator.ts:489 and :411 - cancelDispatches outside tearingDown; probe G shows message() acknowledged 'queued' then its run silently cancelled. Checks that found no defect: cancel returning with intent pending while a step holds the lock (documented, lifecycle.test.ts:562-598), cancel of a completed worker keeping the durable result, prompt already handed to submit, finish() refusing results for cancelled dispatches. Limitations: no real provider calls (fakes only), no full-suite run, no compile step; provider-failure timing on the real API is code-evidenced, not executed. files_changed is empty because this was a read-only review.",
+    "files_changed": [],
+    "tests": {
+      "ran": true,
+      "passed": true,
+      "command": "cd /tmp/probe && /tmp/bun142/bun-linux-x64/bun test tests/lifecycle.test.ts tests/excerpt.test.ts (41 pass/0 fail, 155 assertions, exit 0); /tmp/bun142/bun-linux-x64/bun test tests/probe-cancel.test.ts (8 reviewer probes pass, exit 0, not committed)",
+      "summary": "Existing lifecycle+excerpt suites pass unchanged at target; 8 targeted local probes reproduce the three findings. Logs: /workspace/.swarmforge/logs/lifecycle-excerpt.log and probe-cancel.log."
+    },
+    "git": {
+      "workspace": "/workspace/repo",
+      "branch": "swarmforge/repo-review-50-20260930/05-cancel-ordering/w-0761bd76-029a-4750-b709-0239f1f385b8",
+      "commit": "5672ead2a526e07fea9ed11e58b3725e42013527",
+      "base_commit": "5672ead2a526e07fea9ed11e58b3725e42013527",
+      "review_url": "https://github.com/GavinGeizer/swarmforge-oss/compare/5672ead2a526e07fea9ed11e58b3725e42013527...swarmforge%2Frepo-review-50-20260930%2F05-cancel-ordering%2Fw-0761bd76-029a-4750-b709-0239f1f385b8",
+      "dirty": false,
+      "persisted": true
+    },
+    "warnings": [
+      "Local snapshot Bun is 1.3.14 and cannot read this lockfileVersion 2 lockfile; official Bun 1.4.2 was installed under /tmp/bun142 and used instead, lockfile unmodified.",
+      "Reviewer experiments (bun install + probe test file) live only in /tmp/probe; /workspace/repo and /tmp/sf05 were not modified and no provider or infrastructure calls were made."
+    ],
+    "needs_followup": true,
+    "followup_reason": "HIGH: cancellation can report 'cancelled' while the guest is still generating, with no retry (src/coordinator.ts:890). MEDIUM: a failed control intent is converted into a durable 'completed' result and blocks cancel/destroy (src/coordinator.ts:519)."
+  }
+}

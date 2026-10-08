@@ -1,0 +1,36 @@
+{
+  "worker_id": "w-7139bba5-a577-41f7-9396-b59858dc8a39",
+  "result": {
+    "worker_id": "w-7139bba5-a577-41f7-9396-b59858dc8a39",
+    "task_id": "14-state-waits",
+    "run_id": "fcb73888-65ec-4b75-b354-cf1d4412b486",
+    "status": "completed",
+    "summary": "Reviewed wait_for_state_change at target d428e0f730ed5649485732e95d39c32f5d6a8895 (feature/binary-config-serve-20260930). Verdict FINDINGS: one LOW latent robustness gap only, no CRITICAL/HIGH/MEDIUM. Coordinator.waitForStateChange (src/coordinator.ts:65-169) is sound: subscribe-then-scan with no await between latestEventId() and notify registration, Store.notify microtask fan-out (src/store.ts:49-56) cannot lose a wakeup, next() advances the cursor only over rows it examined so no matching event is skipped, and unsubscribe/abort-listener/stopWaiter cleanup all run in one finally. 400 randomized wait/abort/timeout/transition rounds, 200 concurrent real HTTP waits and a real client-abort produced zero lost wakeups and listenerCount back to 0. Tests at target: tests/wait.test.ts + tests/api.test.ts 19 pass/0 fail, tests/serve.test.ts 20 pass/0 fail (Bun 1.4.2). Artifacts: /workspace/.swarmforge/artifacts/review.md, findings.json.",
+    "details": "SCOPE: wait_for_state_change filters/cursors/timeouts/cancellation/listener cleanup/lost wakeups. Read src/coordinator.ts, src/store.ts, src/domain.ts, src/mcp.ts, src/http.ts, src/serve.ts, tests/wait.test.ts and the MCP-API/OBSERVABILITY/SKILL docs.\n\nFINDING (LOW, confidence medium): src/coordinator.ts:72 and :139 perform synchronous store reads before the stop check at :84-90 becomes observable, so a wait whose scan races Store.close() (src/store.ts:34-37, which also clears watchers so a parked waiter is never woken) rejects with 'RangeError: Cannot use a closed database' rather than one of the three documented outcomes (Server is stopping, Wait aborted, changed:false). Reproduced by probe: park a 300 ms wait, close the store, await -> RangeError. NOT reachable in the shipped build: src/serve.ts:140-157 closes the store at :152 only after await api?.stop(true) and await coordinator?.stop(), the latter resolving every stopWaiter and yielding at await Promise.allSettled(), so parked waiters unwind first and no new MCP request can arrive. Fix: check this.stopped right after the pre-abort check at :70 and make the scan fail soft to result(null).\n\nASSESSED AND CLEAN (probed, not assumed): subscribe-before-scan window has no await so notify is never undefined mid-flight; same-tick event bursts are FIFO-absorbed by the rescan; ownership-filtered cursors advance only over their own rows and still replay every own event (next_cursor 1 while latestEventId was 2); the expired branch re-scans so a commit during the timer callback is reported (300 ms timeout measured 301 ms); abort/stop/timeout all release exactly one listener; control() completed in 4 ms while a wait was parked (no worker lock); same-state transitions emit no event, which is correct for a transition watcher; no wait payload key matches the redactor's key pattern and no prompt/payload/secret is returned; every MCP-API.md:27 and OBSERVABILITY.md:36 claim checked out.\n\nTOOLCHAIN: snapshot bun is 1.3.14, so official Bun 1.4.2 was unpacked to /tmp/opencode/bun142 and used in a disposable detached clone at /tmp/opencode/rev14 (git rev-parse HEAD = d428e0f7...). bun install --frozen-lockfile; bun.lock md5 identical before and after. /workspace/repo was never checked out to the target and remains clean at the assigned baseline 5672ead.\n\nLIMITATIONS: full suite not run (whole-suite reviewer's scope); no multi-process WAL probe (serve.ts holds a process lock, so a second writer is unsupported); NTP clock-step behaviour of the Date.now() deadline is an unverified hypothesis, not a finding; probe G's one failure in wait-concurrency.test.ts was a probe design error (2500 ms race vs a 3000 ms wait), superseded by PROBE G2.",
+    "files_changed": [],
+    "tests": {
+      "ran": true,
+      "passed": true,
+      "command": "Bun 1.4.2 (official, /tmp/opencode/bun142) in disposable detached clone /tmp/opencode/rev14 at d428e0f730ed5649485732e95d39c32f5d6a8895; bun install --frozen-lockfile (bun.lock md5 unchanged). bun test tests/wait.test.ts tests/api.test.ts; bun test tests/serve.test.ts; bun test /tmp/opencode/probes/wait-concurrency.test.ts; bun test /tmp/opencode/probes/wait-http.test.ts; bun test /tmp/opencode/probes/wait-stress.test.ts",
+      "summary": "tests/wait.test.ts + tests/api.test.ts: exit 0, 19 pass / 0 fail / 95 assertions. tests/serve.test.ts: exit 0, 20 pass / 0 fail / 111 assertions. Probes (outside the checkout, copies in /workspace/.swarmforge/logs): wait-concurrency.test.ts exit 1 = 8 pass / 1 fail, the single failure being my own probe-design error (2500 ms race against a 3000 ms wait, PROBE G), superseded by PROBE G2; wait-http.test.ts exit 0, 4 pass / 0 fail (real Bun.serve: normal wait, 200 concurrent waits, real fetch client abort -> listenerCount 0 within 20 ms); wait-stress.test.ts exit 0, 1 pass / 0 fail, 802 assertions, 400 randomized wait/abort/timeout/transition rounds, 0 lost wakeups, listenerCount back to 0. Full suite deliberately not run. No real provider/model/VM/network calls: FakeProvider/FakeAgent and loopback Bun.serve only."
+    },
+    "git": {
+      "workspace": "/workspace/repo",
+      "branch": "swarmforge/repo-review-50-20260930/14-state-waits/w-7139bba5-a577-41f7-9396-b59858dc8a39",
+      "commit": "5672ead2a526e07fea9ed11e58b3725e42013527",
+      "base_commit": "5672ead2a526e07fea9ed11e58b3725e42013527",
+      "review_url": "https://github.com/GavinGeizer/swarmforge-oss/compare/5672ead2a526e07fea9ed11e58b3725e42013527...swarmforge%2Frepo-review-50-20260930%2F14-state-waits%2Fw-7139bba5-a577-41f7-9396-b59858dc8a39",
+      "dirty": false,
+      "persisted": true
+    },
+    "warnings": [
+      "Read-only review: no source changes, commits, pushes, merges, tags or configuration changes. files_changed is empty by design.",
+      "The disposable target checkout and all probe files live in /tmp (checkout /tmp/opencode/rev14, probes /tmp/opencode/probes, Bun 1.4.2 /tmp/opencode/bun142) and are outside the source tree.",
+      "Snapshot bun is 1.3.14 and cannot read this lockfileVersion 2 lockfile; official Bun 1.4.2 was used instead and the lockfile was never rewritten (md5 identical before/after install).",
+      "The single LOW finding is reproduced but NOT reachable through the current serve.ts shutdown order; it is a latent robustness gap, not a live bug.",
+      "wait-concurrency.test.ts exit code 1 is caused by one of my own probe assertions, not by a repository defect; reported verbatim rather than retried."
+    ],
+    "needs_followup": true,
+    "followup_reason": "One LOW actionable robustness fix if desired: in Coordinator.waitForStateChange, observe this.stopped before the first store read and make the scan fail soft so a closed database yields 'Server is stopping' or changed:false instead of RangeError (src/coordinator.ts:72,139). No CRITICAL/HIGH/MEDIUM defects were found and the wait path showed no lost wakeups, listener leaks or cursor skips under the concurrency probes run."
+  }
+}

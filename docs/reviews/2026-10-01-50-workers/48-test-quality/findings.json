@@ -1,0 +1,71 @@
+{
+  "target": "d428e0f730ed5649485732e95d39c32f5d6a8895",
+  "scope": "Test coverage gaps, ineffective assertions, fake divergence, isolated startup flake, random port races, fixture cleanup (reviewer 48/50)",
+  "findings": [
+    {
+      "severity": "MEDIUM",
+      "title": "The real `swarmforge serve` command is never started by any test; a no-op serve exits 0 and the whole suite stays green",
+      "file": "src/cli.ts",
+      "line": 205,
+      "evidence": "Mutation: inserted `if (settings.value.SWARMFORGE_DB_PATH !== \":memory:\") return 0;` immediately before `return runServe(settings.value);`. Full suite `bun test` -> 262 pass, 1 skip, 0 fail (exit 0), 263 tests / 21 files. Every serve-touching test returns before this line: tests/commands.test.ts:753,789 and tests/packaging.test.ts:234,514 use `--check-config`, which returns at src/cli.ts:199 before the dynamic import. tests/serve.test.ts calls runServe/startServer directly. tests/packaging.test.ts:349-525 substitutes tests/fixtures/compiled-serve.ts, which imports runServe itself and bypasses src/cli.ts. Independently confirmed the path is real and reachable: compiled the CLI with scripts/build.ts settings and ran `<binary> serve`, which reached runServe and exited 1 with `{\"level\":\"error\",\"message\":\"Startup failed; no SwarmForge listener is running\",\"error\":\"Invalid or unknown API key\"}`.",
+      "reproduction": "cp -a target mutant; in mutant insert an early `return 0;` before src/cli.ts:205; run `/tmp/opencode/bun142/bin/bun test` in mutant -> 262 pass 0 fail.",
+      "recommendation": "Add a test that spawns the compiled binary (or src/cli.ts) as `serve` with a persistent DB path, polls /health, asserts the startup banner and a clean nonzero-after-SIGTERM exit. A loopback FREESTYLE_API_URL stub is sufficient; the failing-provider path already exits 1 cleanly and is a valid target.",
+      "confidence": "high"
+    },
+    {
+      "severity": "MEDIUM",
+      "title": "`bun run build` and `bun run package` are never executed, so the two commands the release workflow runs are unverified",
+      "file": "scripts/build.ts",
+      "line": 181,
+      "evidence": "Two mutations, each run against the only suite importing these modules (tests/packaging.test.ts), each 35 pass / 0 fail: (1) scripts/build.ts:182 `compileCli()` replaced with a literal stub object -> 35 pass. (2) scripts/package.ts:461 `const packaged = await packageCli();` replaced with a canned stdout write -> 35 pass. tests/packaging.test.ts:845-846 asserts only that package.json *strings* contain the script paths. The suite always calls the exported functions with explicit {outDir, version, commit, executable}, so default resolution (distDirectory, packageVersion, repositoryCommit) and both `import.meta.main` blocks are never entered. repositoryCommit's own throw at scripts/build.ts:118-122 is also untested. The release job then hits `if-no-files-found: error` (release.yml:80-86) instead of a test failure.",
+      "reproduction": "cp -a target mutant; in mutant replace scripts/build.ts:182 `const binary = await compileCli();` with a literal object, or scripts/package.ts:461 with a canned write; run `/tmp/opencode/bun142/bin/bun test tests/packaging.test.ts` -> 35 pass 0 fail.",
+      "recommendation": "Run `bun scripts/build.ts` and `bun scripts/package.ts` as programs into a temp out dir, parse stdout as JSON, and assert the reported path, version and commit. Add a case invoking the scripts from a non-git temp directory to cover the repositoryCommit throw.",
+      "confidence": "high"
+    },
+    {
+      "severity": "MEDIUM",
+      "title": "Artifact listing symlink-kind filter is dead to the suite: removing it leaves the full suite green",
+      "file": "src/files.ts",
+      "line": 57,
+      "evidence": "Deleting the single line `e.kind !== \"symlink\" &&` -> full suite 262 pass, 1 skip, 0 fail. FreestyleProvider.listFiles (src/providers/freestyle.ts:308-310) passes the SDK DirEntry through unchanged, and node_modules/freestyle/dist/vms/types.d.ts:449-453 documents kind as `file | directory | symlink`. Probe with a realistic DirEntry[] confirmed the guard is the only thing keeping a `{name:\"escape\",kind:\"symlink\"}` entry out of `WorkerFiles.artifacts` output, while the read path independently refuses it with \"Symlink artifact paths are not allowed\". tests/helpers.ts:93-97 hardcodes `kind: \"file\"` for every fake entry, so the value under test can never be produced; the only symlink test (tests/api.test.ts:183-190) overrides `stat`, not `listFiles`.",
+      "reproduction": "cp -a target mutant; delete src/files.ts:57; run `/tmp/opencode/bun142/bin/bun test` in mutant -> 262 pass 0 fail. Probe: /tmp/opencode/sf48/probe/symlink-kind.ts returns entries [\"nested\",\"report.txt\"] with the guard and includes \"escape\" without it.",
+      "recommendation": "In tests/api.test.ts, override h.provider.listFiles to return [{name:\"ok.txt\",kind:\"file\"},{name:\"link\",kind:\"symlink\"},{name:\"dir\",kind:\"directory\"}] and assert only the intended entries are listed. Consider extending FakeProvider so symlink and directory shapes match the SDK.",
+      "confidence": "high"
+    },
+    {
+      "severity": "LOW",
+      "title": "The OpenCode turn-error branch reports a generic message and no test reaches it",
+      "file": "src/coordinator.ts",
+      "line": 598,
+      "evidence": "Replacing the whole `else await this.fail(...)` with `await this.fail(w, \"Missing or malformed structured result\");` -> full suite 262 pass, 1 skip, 0 fail. No test anywhere constructs an AgentMessage with `error` set: grepping `error:` alongside `role: \"assistant\"` across tests/ returns nothing, and FakeAgent.complete (tests/helpers.ts:160-197) only ever sets `result`. The branch is reachable and currently correct: a probe snapshot with a settled idle status and an assistant reply carrying error:'ProviderOverloadedError' produced {\"state\":\"failed\",\"error\":\"OpenCode session failed (ProviderOverloadedError)\"}. So this is a coverage gap, not a live bug.",
+      "reproduction": "cp -a target mutant; in mutant replace src/coordinator.ts:596-599 with a single unconditional fail() carrying the generic message; run `/tmp/opencode/bun142/bin/bun test` -> 262 pass 0 fail. Probe: /tmp/opencode/sf48/probe/coordinator-error.ts.",
+      "recommendation": "In tests/lifecycle.test.ts, drive the agent snapshot directly to a settled idle state whose assistant reply has error set and result undefined, tick once, and assert state 'failed' with the provider error name preserved in worker.error.",
+      "confidence": "high"
+    },
+    {
+      "severity": "LOW",
+      "title": "USERPROFILE home fallback is untested; dropping it leaves the settings/commands/inspect suites green",
+      "file": "src/settings/paths.ts",
+      "line": 15,
+      "evidence": "Reducing `for (const key of [\"HOME\", \"USERPROFILE\"])` to `[\"HOME\"]` -> `bun test tests/settings.test.ts tests/commands.test.ts tests/inspect.test.ts` = 76 pass, 0 fail. No test in the repo mentions USERPROFILE; every fixture sets an absolute HOME. Consequence when live: with no absolute HOME, homeDirectory falls through to os.homedir(), so tilde expansion, the XDG config default and the default database path resolve outside the operator's chosen location and a database can be created somewhere unintended.",
+      "reproduction": "cp -a target mutant; in mutant edit src/settings/paths.ts:15; run the three suites above in mutant -> 76 pass 0 fail.",
+      "recommendation": "Add a unit test in tests/settings.test.ts asserting defaultConfigPath and defaultDatabasePath follow USERPROFILE when HOME is unset or relative. Severity is low because the project advertises linux-x64-glibc only, making this defensive rather than load-bearing.",
+      "confidence": "medium"
+    }
+  ],
+  "tests": {
+    "ran": true,
+    "passed": true,
+    "command": "bun test (clean target clone, Bun 1.4.2) -> exit 0, 262 pass / 1 skip / 0 fail, 263 tests across 21 files, 66.2s. Targeted: bun test tests/serve.test.ts tests/process-lock.test.ts -> 23 pass 0 fail; bun test tests/packaging.test.ts -> 35 pass 0 fail. 5 single-line mutations in a /tmp copy of the target (src/cli.ts:205, scripts/build.ts:182, scripts/package.ts:461, src/files.ts:57, src/coordinator.ts:596-599) each left the full suite at 262 pass 0 fail. Control: bun test tests/packaging.test.ts -t 'bad checksum' with clean /tmp -> exit 0; same test with an unrelated /tmp/tmp.swarmforge-probe present -> exit 1.",
+    "summary": "Baseline suite is green at the exact target. All five findings are mutation-confirmed coverage gaps: each single-line production change leaves the suite fully green. Only F1's reachability was independently confirmed against a compiled binary. No real provider, model or infrastructure endpoint was contacted."
+  },
+  "limitations": [
+    "Mutation testing is a coverage proxy, not proof of a production bug. F2-F5 are latent gaps; only F1's reachability was independently confirmed.",
+    "No real Freestyle, OpenCode or model endpoint was contacted. Serve reachability was established with a local double and a loopback-unroutable provider URL, per the no-real-infrastructure constraint.",
+    "The full suite was run only as a baseline for mutation comparison; no attempt was made to diagnose unrelated pre-existing failures, and none were observed.",
+    "Coverage was not measured numerically. Findings come from reading the delta's new surfaces and from targeted mutation, not from a coverage report.",
+    "tests/packaging.test.ts:1139-1142 asserts on the global /tmp rather than its own mkdtemp root, so any unrelated process creating a tmp.* entry fails the suite. Confirmed reproducible, fails loudly and specifically, caught its own mutation, so reported as a scoped note in review.md rather than a numbered finding; fix is to scope TMPDIR per test.",
+    "Not every test file was read line by line; review concentrated on the delta's new surfaces (src/cli.ts, src/serve*.ts, src/settings/*, scripts/*) and the suites covering them.",
+    "Reviewer experiments live only in /tmp/opencode/sf48/{target,mutant,probe}. /workspace/repo is untouched at assigned baseline 5672ead with clean git status."
+  ]
+}

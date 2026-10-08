@@ -1,0 +1,34 @@
+{
+  "worker_id": "w-766313bb-191d-42be-b19a-2e68edf40cfc",
+  "result": {
+    "worker_id": "w-766313bb-191d-42be-b19a-2e68edf40cfc",
+    "task_id": "33-redactor-core",
+    "run_id": "8440757c-89ac-465a-bb14-70bd9e489e13",
+    "status": "completed",
+    "summary": "REPORT-ONLY SANITIZATION of the read-only src/security.ts redaction review at exact target d428e0f730ed5649485732e95d39c32f5d6a8895. No research, tests or source edits. Verdict unchanged: FINDINGS (5 reproduced: 1 HIGH, 2 MED, 2 LOW). F1 :18 URL scrub needs an http(s) scheme AND a colon in userinfo, so a username-only URL credential and non-http schemes print verbatim via `config show`/`serve --check-config`. F2 :20 query scrub allowlists only four names. F3 :13 base64 variant matches only 3-byte-aligned offsets, not URL-safe base64. F4 :97/:110 excerptText reconstructs a whitespace-bearing credential. F5 :7 with config.ts:28,47 short 1-3 char credentials defeat the generic query scrub and disable artifact guards. Raw credential-shaped examples in both artifacts became prose; severities, lines, evidence, corrections preserved. A further production Redactor pass produced no change; residual scan zero. /workspace/repo clean at 5672ead. Artifacts and log in /workspace/.swarmforge/.",
+    "details": "Scope of this pass: sanitization only. No research, probes, tests, builds, commits, pushes or configuration changes. The disposable review checkout at /tmp/rv33/repo remains at the exact target (detached HEAD) and the assigned workspace /workspace/repo remains at its bootstrap baseline 5672ead2a526e07fea9ed11e58b3725e42013527 with an empty git status.\n\nSanitization performed: every raw credential-shaped example URL and literal was removed from /workspace/.swarmforge/artifacts/review.md and /workspace/.swarmforge/artifacts/findings.json and replaced with prose descriptions such as 'username-only URL credential', 'encoded known token', 'credential parameter name from a non-allowlisted spelling' and 'dummy token used in the alignment sweep'. Source-line citations, severities, triggers, consequences, reproductions, guard analyses, recommended corrections, confidence levels and non-findings were preserved; no finding was added, dropped or re-severitied.\n\nMethod and verification: both files were re-processed with the production Redactor class from the exact target, seeded with the synthetic tokens used by the review probes, the fake infrastructure and model defaults from tests/helpers.ts, every literal that had been removed, and the generic URL-userinfo and query-parameter fallbacks; a manual prose pass followed. A further production Redactor pass over both files produced no change (review.md 17535 bytes, findings.json 15050 bytes), a residual scan for userinfo URLs, query strings, encoded literals and removed placeholders returned zero matches in both files, and findings.json still parses as valid JSON with all 5 findings. Log: /workspace/.swarmforge/logs/rv33-sanitize-verify.log.\n\nFindings preserved: F1 HIGH src/security.ts:18; F2 MEDIUM src/security.ts:20; F3 MEDIUM src/security.ts:13; F4 LOW src/security.ts:110; F5 LOW src/security.ts:7 with src/config.ts:28,47. Review-phase limitations are retained in the artifacts, including that the full suite was not run, that no provider or infrastructure was contacted, and that F1/F2/F3 depend on credential shapes outside the process's known-secret set while F4 and F5 depend on unusual credential values.",
+    "files_changed": [],
+    "tests": {
+      "ran": false,
+      "command": "No tests or probes were executed in this sanitization pass. The only command run was a local idempotence check using the production Redactor from the exact target over the two artifacts, plus a residual credential-shaped scan; it reported no change and zero residual matches. Earlier review-phase test results are recorded in /workspace/.swarmforge/logs/rv33-tests.log and /workspace/.swarmforge/logs/rv33-probes.log and are summarized in the artifacts.",
+      "summary": "ran=false for this report-only pass. The sanitization check is an idempotence/absence check, not a test suite: both artifacts were unchanged by a further production Redactor pass and contain zero residual credential-shaped examples."
+    },
+    "git": {
+      "workspace": "/workspace/repo",
+      "branch": "swarmforge/repo-review-50-20260930/33-redactor-core/w-766313bb-191d-42be-b19a-2e68edf40cfc",
+      "commit": "5672ead2a526e07fea9ed11e58b3725e42013527",
+      "base_commit": "5672ead2a526e07fea9ed11e58b3725e42013527",
+      "review_url": "https://github.com/GavinGeizer/swarmforge-oss/compare/5672ead2a526e07fea9ed11e58b3725e42013527...swarmforge%2Frepo-review-50-20260930%2F33-redactor-core%2Fw-766313bb-191d-42be-b19a-2e68edf40cfc",
+      "dirty": false,
+      "persisted": true
+    },
+    "warnings": [
+      "Report-only pass: no research, tests, probes or source changes; findings are carried over from the earlier review phase and were not re-verified here.",
+      "Reviewer experiments remain under /tmp/rv33/** and /tmp/tool only; /workspace/repo was fetched only and is clean at the assigned baseline.",
+      "No secret file was inspected, no real cloud or model provider was contacted, and all example values were synthetic.",
+      "Sanitization is verified idempotent under the production Redactor plus a manual scan, but the screening that blocked earlier retrieval is external, so a further re-screen may still be required by Swarmforge."
+    ],
+    "needs_followup": true,
+    "followup_reason": "The 5 actionable redaction defects at target d428e0f are unchanged by this sanitization pass and still need an owner: F1 HIGH src/security.ts:18 (username-only and non-http scheme URL credentials leak through `config show` / `serve --check-config` and every diagnostic sink), F2 MEDIUM src/security.ts:20 (query-parameter scrub allowlists only four names), F3 MEDIUM src/security.ts:13 (base64 variant only matches 3-byte-aligned offsets and not the URL-safe alphabet), F4 LOW src/security.ts:97/110 (excerptText reconstructs whitespace-bearing credentials), F5 LOW src/security.ts:7 with src/config.ts:28,47 (1-3 character credentials break the generic query scrub and disable artifact guards). Artifacts: /workspace/.swarmforge/artifacts/review.md and findings.json."
+  }
+}
