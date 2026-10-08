@@ -1,0 +1,1 @@
+{"compilerOptions":{"target":"ES2023","module":"Preserve","moduleResolution":"Bundler","strict":true,"noEmit":true,"types":["@cloudflare/workers-types","node"],"skipLibCheck":true,"noUncheckedIndexedAccess":true,"allowImportingTsExtensions":true},"include":["src","test","cloudflare.config.ts"]}

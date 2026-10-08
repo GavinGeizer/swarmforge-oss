@@ -1,6 +1,6 @@
 # Observability
 
-When enabled, the separate metrics listener exposes `/metrics` on port 9090 by default. Prometheus/Grafana are external consumers. Metrics do not contain worker IDs, task IDs, prompts or commits. Team labels use `SWARMFORGE_METRICS_TEAMS`; unlisted teams map to `other`.
+When enabled, the separate metrics listener exposes `/metrics` only on `127.0.0.1`, port 9090 by default, and requires `SWARMFORGE_API_TOKEN` whenever configured. See [operational access](architecture/operational-access.md) for private scraping. Prometheus/Grafana are external consumers. Metrics do not contain worker IDs, task IDs, prompts or commits. Team labels use `SWARMFORGE_METRICS_TEAMS`; unlisted teams map to `other`.
 
 | Metric | Meaning |
 | --- | --- |

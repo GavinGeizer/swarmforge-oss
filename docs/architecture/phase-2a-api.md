@@ -1,0 +1,17 @@
+# Phase 2A identity API attachment to Phase 1 contracts
+
+The implemented account foundation uses `/v1/me` and `/v1/tenants/{tenant_id}` naming from [Phase 1 contracts](cloud-api-contracts.md). Session-cookie web auth is the only cloud principal implemented in this phase. Github access/App tokens and the local instance bearer are never cloud credentials. Current organization roles are `owner`, `admin`, `member`, as specified by the Phase 2A user request; Phase 1's tentative `operator`/`viewer` split remains a future product decision, not an automatic mapping to paid capabilities.
+
+Metadata routes cover current account, personal organization, tenant metadata/settings, memberships and own sessions. Owner/admin may update the organization display name and list members; ordinary members may read their organization metadata. No invitation/role mutation system is exposed yet. Account creation atomically establishes a personal organization/owner membership from verified provider identity. Existing local `team_id` and `task_id` are never tenant authority.
+
+Website authorization code flow uses separate `/v1/auth/github` and callback routes. It does not replace `swarmforge github login`; CLI linking endpoints from Phase 1 are still unimplemented. Session termination and logout require the authenticated account plus CSRF proof. Account/membership/session state is authoritative at D1 on every request; cached browser account objects and signed cursors do not replace current membership checks.
+
+## Phase 2B CLI and worker prerequisites
+
+CLI cloud linking is a separate `swarmforge cloud login`, website approval of a short-lived initiating-secret-bound link and explicit organization selection. No access to website cookies or CLI GitHub credential files. Use the Phase 1 link-start/approve/exchange schemas, hash initiating secrets, expire in ten minutes, rate-limit starts/polls, atomically consume and issue a distinct audience/scoped credential. Replays require the original initiating secret/key; any encrypted retry cache is bounded by expiry.
+
+A linked installation needs an immutable device/credential ID, user+organization binding, scopes, creation/expiry/rotation epoch, last-used and revoked metadata. Future device listing/revocation must recheck account membership. Rotation must invalidate old credentials and clarify concurrent refresh/replay handling; never give unlimited worker access via a website session. Worker enrollment uses its own invitation/identity/epoch/lease, separate from account/CLI principals. These schemas and routes are intentionally not added until Phase 2B consumers exist.
+
+Entitlements/subscriptions later attach to immutable organization/billing-account identifiers with server-owned projection. Membership role, repository permissions and paid capability are separate checks. No frontend plan/tier claim is authoritative. Billing source of truth will be Stripe, and provider webhooks must be verified, idempotent and auditable; no subscription/customer fields, billing adapter or Stripe dependency are added in Phase 2A because no current route needs them.
+
+Resource reservations and task dispatch require tenant-owned idempotency, atomic quotas and durable supervisor delivery before any hosted worker side effect. Current metadata deduplication is the actual PATCH integration point; it is not a general license to execute paid tasks. Downgrades never block revocation/cleanup. Inference/compute accounting and any repository broker remain independent future prerequisites.

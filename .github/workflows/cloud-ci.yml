@@ -1,0 +1,28 @@
+name: cloud-api-ci
+on:
+  push:
+    branches: [master, phase2a-cloud-foundation]
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  cloud-api:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: apps/cloud
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.2"
+      - run: bun install --frozen-lockfile
+      - run: bun run check
+      - name: D1 migrations, Cloud API, session and tenant integration tests
+        run: bun run test
+      - name: Local configuration binding types and Worker build
+        run: bun run types && bun run build

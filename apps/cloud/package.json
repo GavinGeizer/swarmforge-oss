@@ -1,0 +1,39 @@
+{
+  "name": "@swarmforge/cloud",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "license": "PolyForm-Small-Business-1.0.0",
+  "packageManager": "bun@1.4.2",
+  "engines": {
+    "node": ">=24",
+    "bun": ">=1.4.2"
+  },
+  "scripts": {
+    "check": "tsc --noEmit && biome check src test scripts cloudflare.config.ts",
+    "test": "node --experimental-strip-types --test test/*.integration.ts",
+    "types": "cf workers types --mode local",
+    "build": "cf build --mode local",
+    "dev": "cf dev --mode local --persist-to .cloudflare/state -- --ip 127.0.0.1 --port 8788",
+    "prepare:local": "node scripts/prepare-local.mjs",
+    "migrate:local": "cf d1 migrations apply 00000000-0000-4000-8000-00000000002a --local --mode local --persist-to .cloudflare/state --dir migrations",
+    "deploy:preview": "node scripts/deploy-preview.mjs"
+  },
+  "dependencies": {
+    "zod": "4.6.5"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.4.0",
+    "@cloudflare/workers-types": "5.20261008.1",
+    "@types/node": "24.0.0",
+    "cf": "1.0.0-beta.13",
+    "esbuild": "0.28.2",
+    "miniflare": "5.20261006.0-alpha",
+    "typescript": "5.9.3",
+    "wrangler": "4.148.0"
+  },
+  "trustedDependencies": [
+    "esbuild",
+    "workerd"
+  ]
+}
