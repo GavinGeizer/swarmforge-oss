@@ -100,7 +100,7 @@ test("production Worker bundle completes confidential PKCE login against simulat
     const state = redirect.searchParams.get("state")!,
       browser = start.headers.get("set-cookie")!.split(";")[0]!;
     const callback = await mf.dispatchFetch(
-      `https://api.example.invalid/v1/auth/github/callback?code=runtime-code&state=${state}`,
+      `https://api.example.invalid/v1/auth/github/callback?code=runtime-code&state=${state}&iss=https%3A%2F%2Fgithub.com%2Flogin%2Foauth`,
       { headers: { cookie: browser }, redirect: "manual" },
     );
     assert.equal(
@@ -137,7 +137,7 @@ test("production Worker bundle completes confidential PKCE login against simulat
     assert.equal(
       (
         await mf.dispatchFetch(
-          `https://api.example.invalid/v1/auth/github/callback?code=runtime-code&state=${state}`,
+          `https://api.example.invalid/v1/auth/github/callback?code=runtime-code&state=${state}&iss=https%3A%2F%2Fgithub.com%2Flogin%2Foauth`,
           { headers: { cookie: browser }, redirect: "manual" },
         )
       ).status,

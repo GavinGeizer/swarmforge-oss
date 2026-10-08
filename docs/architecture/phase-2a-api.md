@@ -15,7 +15,7 @@ All IDs below are UUID strings except the internal external-provider subject (Gi
 | GET `/health` | None | 200 `{status:"ok"}` | Public coarse status; safe repeat. |
 | GET `/ready` | None | 200 `{status:"ready"}` or coarse 503 | Public dependency check; no configuration values returned. |
 | GET `/v1/auth/github` | None | 302 fixed GitHub authorize URL and browser-proof cookie | Public flow initiation. Each invocation creates a new ten-minute transaction; no idempotency key. |
-| GET `/v1/auth/github/callback` | Exactly `code` (1–1024 chars), `state` (43-char base64url), browser-proof cookie | 302 fixed `/v1/me` and session cookie | Browser/state bound, verified provider identity. Atomically consumed once; retry requires a new flow. No tenant claim accepted. |
+| GET `/v1/auth/github/callback` | `code` (1–1024 chars), `state` (43-char base64url), optional `iss` exactly `https://github.com/login/oauth`, browser-proof cookie; no other parameters | 302 fixed `/v1/me` and session cookie | Pinned issuer when supplied; browser/state bound, verified provider identity. Atomically consumed once; retry requires a new flow. No tenant claim accepted. |
 | GET `/v1/me` | Optional `limit`, `cursor` | 200 `{subject_id,display_name,memberships:[{tenant_id,role}],next_cursor}` | Active account session; memberships queried only for that user, active organization/membership. |
 | GET `/v1/me/personal-organization` | None | Organization | Account's server-owned personal organization and active membership. Never accepts a requested owner. |
 | GET `/v1/session` | None | Session plus `{csrf_token}` | Current authenticated session only. |

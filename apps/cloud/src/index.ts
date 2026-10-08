@@ -12,6 +12,7 @@ import {
 } from "./crypto.ts";
 import {
   GitHubIdentityProvider,
+  githubIssuer,
   type IdentityProvider,
   type VerifiedIdentity,
 } from "./provider.ts";
@@ -55,10 +56,17 @@ interface Context {
 class HttpError extends Error {
   readonly status: number;
   readonly code: string;
-  constructor(status: number, code: string, message: string) {
+  readonly auditReason: string;
+  constructor(
+    status: number,
+    code: string,
+    message: string,
+    auditReason = code,
+  ) {
     super(message);
     this.status = status;
     this.code = code;
+    this.auditReason = auditReason;
   }
 }
 const unauthenticated = () =>
@@ -356,7 +364,7 @@ async function start(ctx: Context) {
       "{}",
     ),
   ]);
-  const url = new URL("https://github.com/login/oauth/authorize");
+  const url = new URL(`${githubIssuer}/authorize`);
   url.search = new URLSearchParams({
     client_id: ctx.env.GITHUB_CLIENT_ID,
     redirect_uri: `${ctx.env.APP_ORIGIN}/v1/auth/github/callback`,
@@ -379,12 +387,25 @@ async function callback(ctx: Context, provider: IdentityProvider) {
     .object({
       code: z.string().min(1).max(1024),
       state: z.string().regex(secretFormat),
+      iss: z.literal(githubIssuer).optional(),
     })
     .strict()
     .safeParse(Object.fromEntries(new URL(ctx.request.url).searchParams));
   const browser = readCookie(ctx.request, browserCookie);
-  if (!data.success || !browser)
-    throw new HttpError(400, "invalid_state", "OAuth callback is invalid");
+  if (!data.success)
+    throw new HttpError(
+      400,
+      "invalid_state",
+      "OAuth callback is invalid",
+      "oauth_callback_parameters_invalid",
+    );
+  if (!browser)
+    throw new HttpError(
+      400,
+      "invalid_state",
+      "OAuth callback is invalid",
+      "oauth_browser_proof_missing_or_invalid",
+    );
   const transaction = await ctx.env.DB.prepare(
     "UPDATE oauth_transactions SET consumed_at=? WHERE state_hash=? AND browser_hash=? AND expires_at>? AND consumed_at IS NULL RETURNING verifier_ciphertext",
   )
@@ -861,7 +882,7 @@ export function createWorker(
                 ? "login.failure"
                 : "request.denied",
               failure.status >= 500 ? "failure" : "denied",
-              failure.code,
+              failure.auditReason,
             );
         } catch {
           failure = new HttpError(
