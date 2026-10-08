@@ -18,6 +18,7 @@ Executable implementation: `e4c6b94c33a00b3da7d29f8fad175ed1101ae2cd`. CI subseq
 | Existing diagnostics/listeners | Observed metrics 9090, local API 8788 and local inspector 9229 bound to 127.0.0.1; no new public metrics route |
 | `git diff e158702..27846bc --check` | Implementation diff passes; original reviewer Markdown hard breaks are retained unchanged |
 | Fresh detached checkout at `27846bc`: both frozen installs, cloud check/test/types/build | Pass; 52 tests / 0 failed, 16.15 seconds; confirms cloud CI has the root CLI dependencies |
+| GitHub Actions on implementation/CI commit `27846bc` | [Root CI](https://github.com/GavinGeizer/swarmforge-oss/actions/runs/37824059018) and [cloud CI](https://github.com/GavinGeizer/swarmforge-oss/actions/runs/37824058965) completed successfully; verified after final review |
 
 The root skips are the opt-in live Freestyle/OpenCode/model smoke test (`SWARMFORGE_RUN_SMOKE` unset) and the alternate fallback finalization test skipped when the real lifecycle package exists. The actual lifecycle regression runs. No live VM/model exercise, live Phase 2B.1 browser pairing, remote preview sign-in, edge CPU/load result or production deployment is claimed.
 
