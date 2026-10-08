@@ -148,6 +148,156 @@ test("callback replay and arbitrary state cannot create accounts", async () => {
   }
 });
 
+test("GitHub issuer is pinned before state consumption and valid issuer callbacks retain replay protection", async () => {
+  const h = await fixture();
+  try {
+    const start = await h.request("/v1/auth/github");
+    const state = new URL(start.headers.get("location")!).searchParams.get(
+      "state",
+    )!;
+    const browser = start.headers.get("set-cookie")!.split(";")[0]!;
+    const base = `/v1/auth/github/callback?code=verified-provider-code&state=${state}`;
+    for (const issuer of [
+      "https://attacker.invalid/login/oauth",
+      "https://github.com",
+      "http://github.com/login/oauth",
+      "https://github.com/login/oauth/",
+      "https://github.com.evil.invalid/login/oauth",
+      "https://github.com/login/oauth?redirect=private-value",
+      "",
+    ])
+      assert.equal(
+        (
+          await h.request(`${base}&iss=${encodeURIComponent(issuer)}`, {
+            cookie: browser,
+          })
+        ).status,
+        400,
+      );
+    const correct = "https%3A%2F%2Fgithub.com%2Flogin%2Foauth";
+    assert.equal(
+      (
+        await h.request(`${base}&iss=${correct}&iss=${correct}`, {
+          cookie: browser,
+        })
+      ).status,
+      400,
+    );
+    assert.equal(
+      (
+        await h.request(`${base}&iss=${correct}`, {
+          cookie: `__Host-swarmforge-oauth=${"a".repeat(43)}`,
+        })
+      ).status,
+      400,
+    );
+    assert.equal(
+      (
+        await h.db
+          .prepare("SELECT consumed_at FROM oauth_transactions")
+          .first<{ consumed_at: number | null }>()
+      )?.consumed_at,
+      null,
+    );
+    assert.equal(
+      (
+        await h.db
+          .prepare("SELECT count(*) n FROM users")
+          .first<{ n: number }>()
+      )?.n,
+      0,
+    );
+    const callback = await h.request(`${base}&iss=${correct}`, {
+      cookie: browser,
+    });
+    assert.equal(callback.status, 302);
+    assert.equal(
+      (
+        await h.request("/v1/me", {
+          cookie: callback.headers.get("set-cookie")!.split(";")[0]!,
+        })
+      ).status,
+      200,
+    );
+    assert.equal(
+      (await h.request(`${base}&iss=${correct}`, { cookie: browser })).status,
+      400,
+    );
+    const audit = await h.db.prepare("SELECT metadata FROM audit_events").all();
+    const diagnostics = JSON.stringify([h.logs, audit.results]);
+    for (const credential of [
+      state,
+      browser,
+      "verified-provider-code",
+      "private-value",
+    ])
+      assert.equal(diagnostics.includes(credential), false);
+  } finally {
+    await h.mf.dispose();
+  }
+});
+
+test("callback audit distinguishes invalid parameters and missing browser proof without credentials", async () => {
+  const h = await fixture();
+  try {
+    const start = await h.request("/v1/auth/github");
+    const state = new URL(start.headers.get("location")!).searchParams.get(
+      "state",
+    )!;
+    const browser = start.headers.get("set-cookie")!.split(";")[0]!;
+    const code = "private-callback-code";
+    for (const [path, headers] of [
+      [`/v1/auth/github/callback?code=${code}&state=${state}`, {}],
+      [
+        `/v1/auth/github/callback?code=${code}&state=${state}&extra=private-query`,
+        { cookie: browser },
+      ],
+    ] as const) {
+      const response = await h.request(path, headers);
+      assert.equal(response.status, 400);
+      assert.equal(
+        ((await response.json()) as { error: { code: string } }).error.code,
+        "invalid_state",
+      );
+    }
+    const events = await h.db
+      .prepare(
+        "SELECT metadata FROM audit_events WHERE action='login.failure' ORDER BY at",
+      )
+      .all<{ metadata: string }>();
+    assert.deepEqual(
+      new Set(events.results.map((row) => JSON.parse(row.metadata).reason)),
+      new Set([
+        "oauth_callback_parameters_invalid",
+        "oauth_browser_proof_missing_or_invalid",
+      ]),
+    );
+    const diagnostics = JSON.stringify([h.logs, events.results]);
+    for (const credential of [code, state, browser, "private-query"])
+      assert.equal(diagnostics.includes(credential), false);
+    assert.equal(
+      (
+        await h.db
+          .prepare("SELECT count(*) n FROM users")
+          .first<{ n: number }>()
+      )?.n,
+      0,
+    );
+    assert.equal(
+      (
+        await h.db
+          .prepare(
+            "SELECT count(*) n FROM oauth_transactions WHERE consumed_at IS NOT NULL",
+          )
+          .first<{ n: number }>()
+      )?.n,
+      0,
+    );
+  } finally {
+    await h.mf.dispose();
+  }
+});
+
 async function account(h: Awaited<ReturnType<typeof fixture>>, cookie: string) {
   const me = await h.request("/v1/me", { cookie });
   assert.equal(me.status, 200);

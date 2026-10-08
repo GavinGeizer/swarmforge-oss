@@ -1,4 +1,5 @@
 import { z } from "zod";
+export const githubIssuer = "https://github.com/login/oauth";
 export interface ProviderCredentials {
   GITHUB_CLIENT_ID: string;
   GITHUB_CLIENT_SECRET: string;
@@ -62,25 +63,22 @@ export class GitHubIdentityProvider implements IdentityProvider {
     redirect: string,
     env: ProviderCredentials,
   ): Promise<VerifiedIdentity> {
-    const exchange = await this.request(
-      "https://github.com/login/oauth/access_token",
-      {
-        method: "POST",
-        redirect: "manual",
-        signal: AbortSignal.timeout(10000),
-        headers: {
-          accept: "application/json",
-          "content-type": "application/x-www-form-urlencoded",
-        },
-        body: new URLSearchParams({
-          client_id: env.GITHUB_CLIENT_ID,
-          client_secret: env.GITHUB_CLIENT_SECRET,
-          code,
-          code_verifier: verifier,
-          redirect_uri: redirect,
-        }),
+    const exchange = await this.request(`${githubIssuer}/access_token`, {
+      method: "POST",
+      redirect: "manual",
+      signal: AbortSignal.timeout(10000),
+      headers: {
+        accept: "application/json",
+        "content-type": "application/x-www-form-urlencoded",
       },
-    );
+      body: new URLSearchParams({
+        client_id: env.GITHUB_CLIENT_ID,
+        client_secret: env.GITHUB_CLIENT_SECRET,
+        code,
+        code_verifier: verifier,
+        redirect_uri: redirect,
+      }),
+    });
     const result = z
       .object({
         access_token: z.string().min(1).max(4096),
