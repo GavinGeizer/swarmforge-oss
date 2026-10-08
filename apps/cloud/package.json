@@ -1,0 +1,23 @@
+{
+  "name": "@swarmforge/cloud-identity",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "build": "esbuild src/index.ts --bundle --minify --format=esm --outfile=dist/worker.js",
+    "test": "bun test/run.ts",
+    "test:watch": "bun --watch test/run.ts"
+  },
+  "dependencies": {
+    "zod": "^3.22.4"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20240524.0",
+    "miniflare": "^3.20240524.1",
+    "esbuild": "^0.21.0",
+    "typescript": "^5.4.5"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
