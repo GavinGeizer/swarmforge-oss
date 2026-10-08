@@ -1,6 +1,6 @@
 # Phase 2A: cloud control plane, identity and tenant authority
 
-Date: 2026-10-08. Repository: `GavinGeizer/swarmforge-oss`. Implementation branch: `phase2a-cloud-foundation`. Verified baseline: `cda607e5ca66f71f2e12761f8490e3bddf270638`, initially clean. Implementation commits: `20cc5e4` (metrics), `6ef4bc0` (cloud identity), `5b2d9c2` (reproducible local/preview tooling). The final documentation commit follows those changes. Source candidate is published on `swarmforge/phase2a-review-20261008`; no production deployment or merge to master is performed.
+Date: 2026-10-08. Repository: `GavinGeizer/swarmforge-oss`. Implementation branch: `phase2a-cloud-foundation`. Verified baseline: `cda607e5ca66f71f2e12761f8490e3bddf270638`, initially clean. Implementation commits: `20cc5e4` (metrics), `6ef4bc0` (cloud identity), `5b2d9c2` (reproducible local/preview tooling), `5582657` (GitHub OAuth issuer compatibility and safe diagnostics). Documentation commits `79e2787` and `81b43c8` record the original reviews and verified live sign-in. Changes are published on `swarmforge/phase2a-review-20261008`; the OAuth fix is also on `swarmforge/phase2a-oauth-issuer-fix-20261008`. No production deployment or merge to master is performed.
 
 ## Baseline and deviations
 
@@ -46,6 +46,8 @@ Migration has been executed through local cf/D1 and real workerd/D1 tests. It ca
 
 A dedicated confidential GitHub web OAuth app provides read:user identity with fixed HTTPS endpoints, exact configured callback, server-side code exchange, S256 PKCE, ten-minute random browser-bound state and immutable numeric GitHub ID verified via `/user`. Replayed, wrong-browser, arbitrary/expired state and malformed/conflicting client claims cannot create identities or sessions. The provider receives only its own credentials, not D1 or unrelated session authority. Production always uses the real fixed GitHub adapter; dependency injection exists for tests without an environment login bypass.
 
+GitHub callbacks accept `code`, `state` and optional `iss`. The decoded issuer, when supplied, must exactly equal `https://github.com/login/oauth`; validation occurs before state consumption or provider exchange. Missing issuer remains supported for the existing fixed single-provider contract. Other issuer values, unrelated fields and duplicate parameters are rejected. The issuer never chooses an endpoint or grants account/tenant authority. Real local Brave sign-in with the dedicated app is now verified; the full failure, correction, persistence and review evidence is attached below.
+
 Sign-in returns a random 256-bit session cookie: __Host prefix, Secure, HttpOnly, SameSite=Lax, 12-hour absolute expiry. SHA-256 hash is stored in D1; raw cookies never appear in response JSON/account metadata/audit. Every protected request queries the current session and active account; no cross-request authority cache. Current membership and active organization determine tenant access. Owner/admin may change minimal settings and list members; member may read organization metadata. Other/unknown tenant IDs return 404. Team/task labels, repository names, CLI claims, GitHub/App tokens and local global bearer grant no cloud authority.
 
 Mutations require exact trusted Origin and HMAC CSRF proof bound to the opaque session. Signed cursors bind user, organization/list scope, purpose and ten-minute expiry; pagination rechecks membership. Idempotency replay also rechecks authority. Revoked/deleted memberships and revoked/expired sessions lose subsequent access. Already-authorized in-flight reads may finish; privileged writes recheck authority in their transaction. There is no IP/user-agent fingerprint binding, which would not prove token possession and would cause legitimate mobile/proxy failures; stealing a valid cookie remains a bearer credential risk mitigated by cookie flags, expiry and revocation.
@@ -79,14 +81,15 @@ Commands from repository root unless noted:
 | `bun run build`, `bun run package`, `bun run package:verify` | Compiled CLI and archive/hash/layout verification pass; candidate metadata is 5b2d9c2. No release publication. |
 | `cd apps/cloud; bun install --frozen-lockfile` | Pass; independent lock preserved. |
 | Cloud `bun run check` | Strict TypeScript/Biome pass, 18 files. |
-| Cloud `bun run test` | **23 pass / 0 fail / 0 skip**, 10.29s, real D1/workerd plus provider/tooling checks. |
+| Cloud `bun run test` | Latest: **25 pass / 0 fail / 0 skip**, 8.46s at source5582657, real D1/workerd plus provider/tooling/issuer checks. Original acceptance: 23 pass at5b2d9c2. |
 | Cloud `bun run types`, `bun run build` | Generated bindings and cf local Worker build pass. Docker permission probe warning is nonfatal; no containers required. |
-| Cloud `bun run prepare:local`, `bun run migrate:local`, `bun run dev` | Private environment file; schema applied; repeat reports []; actual localhost API/inspector bind verified. Health200; unauthenticated me401; missing GitHub configuration ready503. |
+| Cloud `bun run prepare:local`, `bun run migrate:local`, `bun run dev` | Private environment file; schema applied; repeat reports []; localhost API/inspector bind verified. After OAuth configuration: health200, ready200, unauthenticated me401, GitHub initiation302. Previously missing configuration correctly returned ready503. |
+| Real local GitHub browser sign-in | Owner completed sign-in in Brave; local D1 confirms verified identity, persistent account, personal organization, owner membership, active session and successful-login audit. |
 | `git diff --check`; source comparison against cda607e | Pass; only root metrics source changed. |
 
 Cloud tests cover valid/repeated/concurrent login, numeric identity and username changes/collisions; invalid/wrong-browser/expired/replayed state; disabled users; missing/expired/revoked/forged sessions; repository bearer rejection; session revocation and CSRF; role policies; cross-tenant reads/lists/updates/dedupe/cursors; deleted/revoked memberships; conditional mutation concurrency; audit rollback/bootstrap failure; database/provider/config failures; strict JSON/query/cookie/CORS/size/headers; credential-free diagnostics/persistence. The bundled deployed default Worker runs in workerd with simulated upstream GitHub HTTPS and checks the decrypted verifier against its actual PKCE challenge. It is not merely a mocked auth middleware test.
 
-The two root skips are existing conditional finalization placeholder and optional billable live Freestyle/OpenCode/model smoke. Actual lifecycle/provider tests run. Live GitHub web sign-in, production deployment, remote D1 migrations, real secrets upload, website integration, live Cloudflare quota/load and full recovery drills have not run. The owner chose to create a dedicated web OAuth app after code is ready. A temporary restricted execution profile prevented local tests/Git writes with EPERM/read-only errors; after access restoration the full suites above passed. No test bypass was introduced for that environment.
+The two root skips are existing conditional finalization placeholder and optional billable live Freestyle/OpenCode/model smoke. Actual lifecycle/provider tests run. Real local GitHub web sign-in has now passed with the owner's dedicated OAuth app. Production deployment, remote preview sign-in, remote D1 migrations, real Cloudflare secrets upload, website integration, live Cloudflare quota/load and full recovery drills have not run. Root full-suite/packaging and generated-type results above belong to the original acceptance candidate; the cloud-only issuer fix reran cloud checks/tests/build, with root source and dependencies unchanged. A temporary restricted execution profile prevented local tests/Git writes with EPERM/read-only errors; after access restoration the original full suites passed. No test bypass was introduced for that environment.
 
 ## Independent reviews and disposition
 
@@ -110,7 +113,7 @@ Final cleanup inventory for team `phase2a-cloud-20261008`: all three workers are
 
 ## Exact Phase 2B prerequisites and order
 
-1. Configure separate GitHub web OAuth apps/secrets, exercise real browser local/isolated preview sign-in, revocation and recovery, and establish abuse/cleanup/quota policy. Obtain separate approval for remote preview or production changes.
+1. Local GitHub web app setup and real browser sign-in are complete. Configure separate preview app/secrets, exercise isolated preview sign-in, revocation and recovery, and establish abuse/cleanup/quota policy. Obtain separate approval for remote preview or production changes.
 2. Add separate cloud CLI link-start/approve/exchange and immutable device credential schema. Bind short-lived initiating secret, verified user and explicit active organization; atomically consume, hash credentials, define audience/scopes/expiry/rotation/replay/revocation. Preserve existing github login and local configuration.
 3. Add worker enrollment with distinct identities/invitation/epoch/lease and tenant authority. Workers cannot use website cookies, customer global instance bearer or unrestricted GitHub user credentials.
 4. Add organization-owned server entitlements and atomic reservations at actual resource admission, then durable Bun supervisor outbox/claim/lease/stop and quota/partition tests. No paid workload dispatch before these boundaries are tested together.
@@ -119,6 +122,50 @@ Final cleanup inventory for team `phase2a-cloud-20261008`: all three workers are
 
 Managed compute/inference and metered billing remain later phases. Current identity IDs, memberships, audit and D1 transaction boundaries support those additions without changing local orchestration or redesigning tenant authority.
 
-## Live OAuth follow-up
+## Attached live OAuth verification and follow-up review
 
-After the original Phase 2A acceptance, the owner configured a dedicated local GitHub OAuth app and attempted real browser sign-in. GitHub supplied an `iss` query parameter that the original callback schema rejected. Source commit `5582657` accepts only the exact GitHub issuer when supplied, retains state/cookie/PKCE checks and adds credential-free internal diagnostics. All 25 cloud tests, static checks and Worker build pass. The owner then completed real Brave sign-in; read-only local D1 verification confirmed persistent account, verified identity, personal organization, owner membership, session and login audit. See [failure, correction and follow-up review](cloud-oauth-issuer-follow-up.md). Earlier test/review and untested-live-sign-in statements above describe the original acceptance candidate; they are not claims about this subsequent fix. Production and remote preview remain undeployed.
+Source fix: `55826573b717e88023e9b271816cf222e8b22974`, against original Phase 2A documentation commit `79e2787481ec9f7661817f60e3bdebec7242b81e`. Documentation and review evidence were committed in `81b43c86053faea3ace82d0ba2fa95ec64bf6a43`. The complete follow-up is incorporated here; the [standalone record](cloud-oauth-issuer-follow-up.md) remains available. Existing CLI GitHub Device Flow, root orchestration source and local engine dependencies are unchanged.
+
+### Actual failure and correction
+
+The owner registered a dedicated GitHub web OAuth app, populated the private local configuration and exercised sign-in in Brave. GitHub returned `code`, `iss` and `state`; the original strict callback schema accepted only `code` and `state`. It returned `invalid_state` before consuming the pending transaction or exchanging the code. Initial simulated provider/default-Worker tests omitted the issuer parameter, so their success did not establish real provider compatibility. The browser cookie was not identified as the cause of this rejection.
+
+The callback now accepts an optional issuer whose decoded string must exactly equal `https://github.com/login/oauth`. This fixed value matches the observed real GitHub callback and existing authorization/token endpoint prefix. The provider exports the constant; authorization and token endpoints retain their previous fixed URLs. The client never fetches an endpoint supplied by `iss` or treats it as customer identity.
+
+[RFC 9207 section 2.4](https://www.rfc-editor.org/rfc/rfc9207#section-2.4) describes exact issuer comparison and permits static configuration when server metadata is not used. GitHub's root OAuth metadata URL returned 404 during investigation; no discovery metadata or support flag was invented. Missing `iss` remains accepted under the existing single-provider contract. A supplied wrong/empty/malformed/duplicate issuer is denied before transaction consumption or provider exchange. A future additional provider must define its own issuer/support policy and bind it to each flow.
+
+Strict rejection of unrelated fields, browser-bound state, PKCE, verified numeric GitHub identity, session issuance, replay defense and tenant authority remain intact. Safe internal audit reasons now distinguish `oauth_callback_parameters_invalid` from `oauth_browser_proof_missing_or_invalid`; the public error remains generic `invalid_state`. Neither reason contains incoming code, state, issuer, cookie or arbitrary query values.
+
+### Automated and live verification
+
+| Check | Evidence |
+| --- | --- |
+| Cloud `bun run check` | Strict TypeScript and Biome pass, 18 files. |
+| Cloud `bun run test` | 25 pass, zero failures/skips, 8.46s. Two added tests cover issuer validation/replay and safe diagnostic distinctions. Existing no-issuer, tenant/session/CSRF, atomic audit and D1-failure cases pass. |
+| Bundled default Worker/workerd | URL-encoded issuer callback completes confidential exchange and actual PKCE verifier/challenge equality against simulated upstream GitHub HTTPS with real D1. |
+| Hostile callback inputs | Wrong host/scheme/path/trailing slash, empty/duplicate issuer and wrong-browser requests cannot consume state or create an account. Credential values are absent from emitted diagnostic records. |
+| Cloud `bun run build` | Pass; no deployment performed. |
+| Real owner browser sign-in | Owner reported successful sign-in in Brave after the fix. Read-only local D1 verification confirmed the persisted records below. |
+
+The live local database contained exactly one active user, one verified GitHub identity, one personal organization, one active owner membership, one active session and one successful-login audit. The personal organization's owner membership matched its server-owned user. IDs, profile data and credentials were omitted from the verification output. Session revocation remains covered by automated D1 tests; the owner's live session was not revoked as part of this read-only check.
+
+The API remained loopback-only. `.dev.vars` is ignored and private (0600); its values were neither printed nor committed. The dev-output check found no callback query values, and credential screening found no configured client secret or AUTH_SECRET in dev/test/build output or staged documentation. No migrations, Cloudflare secret uploads or infrastructure provisioning were introduced by this fix. Earlier full-root/packaging results remain historical evidence, not a claimed rerun for this cloud-only change.
+
+### Independent review and preserved evidence
+
+SwarmForge reviewer `w-670eb68c-2893-4a39-908a-266cd866ade8`, team `phase2a-oauth-20261008`, run `20f35b3b-c293-4803-ae39-f408e1c81f1c`, returned **APPROVED** and independently ran all 25 cloud tests. No substantive P0/P1 finding was reported. The [original report](reviews/phase-2a/oauth-issuer-review.md), [original structured result](reviews/phase-2a/oauth-issuer-result.json) and [evidence adjudication](reviews/phase-2a/README.md#oauth-issuer-follow-up) are retained.
+
+| Original evidence | Artifact ID | SHA-256 |
+| --- | --- | --- |
+| Review report | art-fd99bfe3-06dd-4256-a309-d730dac7daa6 | 8941fda8e19f47e8aacf030168d41a0742c22433555d5c5e3df29c5547272d3c |
+| Structured result | art-ce3658c4-3c6e-4c86-9518-8e16f1e59cc8 | 7212c1ead453d2b9dcf1c8ef7867d52f5df06fea10362fb4a974bfc3f2cf5626 |
+
+The reviewer created redundant merge commit `ea3583845f9a5d8b54eb224ed8df67d32d3aaa82` despite the read-only Git instruction. Both that commit and source fix `5582657` have exactly the same complete Git tree `cd4038b613a5152787042c3c7f2e78416708617f`; independent `git diff --exit-code` confirmed no file differences. No reviewer commits were integrated. The auto-recorded clone base `9f2953e` differs from intended inspection base `79e2787`, explicitly named in the report. Actual VM HEAD, clean attached branch, remote persistence and preserved output were verified before normal settled destruction.
+
+Report wording about a GitHub "breaking change" describes the observed callback incompatibility; an official rollout date or behavior of every OAuth client was not verified. Duplicate-parameter denial occurs in the router before schema parsing. This is GitHub web OAuth, not an implemented OIDC system; broad "no vulnerabilities" wording is limited to reviewed source and tested cases. Missing-issuer compatibility is documented local policy for the fixed single-provider flow.
+
+### Cleanup and remaining scope
+
+The follow-up team inventory contained exactly one worker, destroyed through normal settled cleanup with outputs preserved, no pending work/controls and no additional page. The original three Phase 2A workers remain destroyed. No unrelated worker was cleaned up for this follow-up.
+
+Source fix and live-verification documentation are committed and pushed to both Phase 2A review branches. Production and remote preview remain undeployed. Public rollout abuse limits, quota/CPU checks, cross-browser verification, retention and recovery gates still apply; successful local sign-in is not a production deployment, load test or compliance claim.
