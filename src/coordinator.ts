@@ -864,6 +864,11 @@ export class Coordinator {
       await this.bounded(this.agent.abort(w));
     } catch {}
     try {
+      if (this.provider.stopWorkerRuntime) {
+        await this.bounded(this.provider.stopWorkerRuntime(w));
+        return "stopped";
+      }
+      // Compatibility for existing injected providers that predate the runtime hook.
       const stopped = await this.bounded(
         this.provider.exec(
           w.vm_id,

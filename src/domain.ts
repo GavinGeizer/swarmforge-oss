@@ -277,6 +277,10 @@ export interface WorkerProvider {
   getWorker(id: string): Promise<VmInfo | null>;
   listWorkers(): Promise<VmInfo[]>;
   prepare(w: Worker): Promise<string>;
+  // Resolve only after verifying that the guest runtime can no longer execute agent work.
+  // Aborting a session alone is insufficient; reject an uncertain stop so the coordinator
+  // keeps its VM pause/missing safeguards. Omission retains the legacy OpenCode stop.
+  stopWorkerRuntime?(w: Worker): Promise<void>;
   pushBranch(w: Worker): Promise<{
     branch: string;
     commit: string;

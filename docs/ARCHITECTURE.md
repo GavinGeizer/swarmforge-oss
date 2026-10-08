@@ -1,5 +1,10 @@
 # Architecture
 
+See the [Phase 1 product architecture](architecture/phase-1-summary.md) for the
+code-supported audit, edition matrix, identity/tenant boundaries, entitlement and
+cloud API contracts, deployment constraints, and implementation order. Hosted
+capabilities there are proposed; this document describes the current coordinator.
+
 ```text
 Trusted team leads → MCP /mcp → Coordinator → WorkerProvider → Freestyle VM
                                 │                            OpenCode → external model

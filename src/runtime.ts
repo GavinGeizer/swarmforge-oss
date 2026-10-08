@@ -193,10 +193,20 @@ export function eventLogger(c: Coordinator, path: string) {
         vm_id?: string | null;
         error?: string | null;
       };
-      console.log(renderEvent(event, safe));
+      // Event data is serialized JSON: screen its values and credential-named fields
+      // after parsing, then screen the rendered text before it reaches the terminal.
+      // Parsing can reconstruct a credential hidden behind JSON escape sequences.
+      let data: string;
+      try {
+        data = JSON.stringify(redactor.value(JSON.parse(event.data)));
+      } catch {
+        data = redactor.text(event.data);
+      }
+      const safeEvent = { ...event, data };
+      console.log(redactor.text(renderEvent(safeEvent, safe)));
       const line = JSON.stringify(
         redactor.value({
-          ...event,
+          ...safeEvent,
           ...meta,
         }),
       );

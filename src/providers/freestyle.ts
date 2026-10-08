@@ -341,6 +341,15 @@ export class FreestyleProvider implements WorkerProvider {
       ...(review_url ? { review_url } : {}),
     };
   }
+  async stopWorkerRuntime(w: Worker) {
+    if (!w.vm_id) throw new Error("Worker has no VM");
+    const stopped = await this.exec(
+      w.vm_id,
+      "systemctl stop swarmforge-opencode.service && ! systemctl is-active --quiet swarmforge-opencode.service",
+    );
+    if (stopped.code !== 0)
+      throw new Error("Worker runtime stop could not be verified");
+  }
   async pauseWorker(id: string) {
     await this.client.vms.ref(id).pause();
   }
