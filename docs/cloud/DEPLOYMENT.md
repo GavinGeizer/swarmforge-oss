@@ -6,7 +6,7 @@ The cloud API lives in `apps/cloud` and uses an independent Bun lockfile. The se
 
 `apps/cloud/cloudflare.config.ts` supports `local` and `preview` only. Other modes are rejected. It declares no production custom domains, routes or resource bindings. Local worker name is `swarmforge-cloud-local`; metrics remain with the external coordinator, not the Worker. Local API origin is `http://localhost:8788` and the D1 local UUID is `00000000-0000-4000-8000-00000000002a`.
 
-Preview uses worker/database name `swarmforge-cloud-preview`. Configuration requires explicit `CF_PREVIEW_D1_ID` and HTTPS `CF_PREVIEW_API_ORIGIN`; optionally `CF_PREVIEW_WEBSITE_ORIGIN`, otherwise same origin. `scripts/deploy-preview.mjs` checks the actual D1 database name before deployment and refuses other names. All CLI operations use `cf`; existing Wrangler website commands remain separate. Preview is an isolated persistent Worker configuration, not a request to deploy the commercial production service.
+Preview uses worker/database name `swarmforge-cloud-preview`. Configuration requires explicit `CF_PREVIEW_D1_ID` and HTTPS `CF_PREVIEW_API_ORIGIN`; optionally `CF_PREVIEW_WEBSITE_ORIGIN`, otherwise same origin. `scripts/deploy-preview.mjs` and `scripts/migrate-preview.mjs` check the actual D1 database name before any writes and refuse other names. Deployment disables automatic resource provisioning. All account operations use `cf`; the new companion `wrangler.config.ts` contains only local backend tooling settings. Existing Wrangler website commands remain separate. Preview is an isolated persistent Worker configuration, not a request to deploy the commercial production service.
 
 Secrets are `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `AUTH_SECRET` via Cloudflare secret bindings and private local `.dev.vars`. The client ID is not confidential but is kept in the same per-environment configuration process. `scripts/prepare-local.mjs` generates a random local AUTH_SECRET without printing it or overwriting an existing file. Never commit `.dev.vars`, export the provider secret to the browser, reuse the CLI OAuth app or put secrets into command arguments/history. Keep local and preview GitHub apps/secrets separate.
 
@@ -35,3 +35,55 @@ Configuration enables logs/traces, strips request query strings at platform leve
 D1 is authoritative for sessions, account/membership status and dedupe. No cross-request auth cache. Take encrypted metadata backups and test restore before live customers; never restore revoked sessions as active authority. Issuer tokens are not stored in the schema. Audit retention is a documented technical recommendation, pending owner policy; cleanup must not erase live dedupe or pending OAuth state. Local/preview migration and exact check commands are recorded with the final implementation summary and package README.
 
 No Cloudflare production resources, website routing or production secrets are changed by this phase. Production deployment needs separate authorization and operational validation.
+
+## Reproducible local setup
+
+From the repository root, run:
+
+```sh
+cd apps/cloud
+bun install --frozen-lockfile
+bun run prepare:local
+bun run migrate:local
+bun run types
+bun run check
+bun run test
+bun run build
+bun run dev
+```
+
+Migrations and dev use `.wrangler/state`; the backend tooling file pins API to `127.0.0.1:8788` and inspector to `127.0.0.1:9229`. Keep the inspector private. The root Bun coordinator/metrics are separate listeners. The pinned beta does not forward post-separator dev arguments, so these options are configuration rather than ineffective CLI flags. Local migrations await the public cf `runMain` entrypoint and flush output before exit, working around its retained filesystem watcher without guessing completion from output or terminating pending writes. Repeating migration reports `[]` and leaves the schema intact.
+
+`curl -i http://localhost:8788/health` returns 200. With generated AUTH_SECRET and migrated database, `/v1/me` without a cookie returns 401. `/ready` and OAuth initiation return 503 until the dedicated GitHub app is configured. No synthetic sign-in is enabled. The automated default Worker test uses intercepted upstream HTTPS responses in workerd; live sign-in still needs the owner's app setup.
+
+## Preview procedure (not executed in this phase)
+
+These commands create/change isolated remote preview resources. Run them only when preview setup is authorized, after checking the account and dedicated OAuth application. They are not production deployment commands.
+
+```sh
+cd apps/cloud
+cf auth login
+export CLOUDFLARE_ACCOUNT_ID='<preview-account-id>'
+cf d1 create --name swarmforge-cloud-preview
+# Use the UUID returned above. No existing production database is permitted.
+export CF_PREVIEW_D1_ID='<new-preview-database-uuid>'
+export CF_PREVIEW_API_ORIGIN='https://swarmforge-cloud-preview.<account-subdomain>.workers.dev'
+# Default website origin is the API origin. Use a same-site origin if separate.
+bun run migrate:preview
+```
+
+Create a private file outside the repository with JSON keys `AUTH_SECRET`, `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET` and their string values. Generate AUTH_SECRET with at least 32 random bytes; do not copy a local key or put values into shell arguments. A local editor or secret manager can fill the file. Register the preview callback at exactly `${CF_PREVIEW_API_ORIGIN}/v1/auth/github/callback` on its separate OAuth app before deploying.
+
+```sh
+chmod 600 /private/path/swarmforge-preview-secrets.json
+export CF_PREVIEW_SECRETS_FILE='/private/path/swarmforge-preview-secrets.json'
+bun run deploy:preview
+```
+
+The wrapper performs read-only `cf d1 get` to check the name, then `cf deploy --mode preview --provision=false --secrets-file <private-file>` to upload the version and its secrets together. Origins/configuration are validated and production modes rejected. For later secret changes use the same reviewed deployment procedure; never use diagnostic dry-run output with real secret values. Remove the private transfer file securely according to the workstation's storage policy. The resource commands/flags were checked against the installed pinned CLI; no remote migration/deployment, public callback, or secret upload was exercised here.
+
+## Retention and recovery policy
+
+Owner approval is still needed for the audit retention period (technical recommendation: 90 days), account deletion/export and incident procedures. Operator cleanup should remove expired OAuth transactions, expired dedupe rows and expired/revoked sessions only after their security/audit retention obligations are met. Delete dependent dedupe rows before session deletion; preserve live idempotency records and unexpired sessions. Audits use immutable references and safe reason codes, not provider profile payloads or secrets.
+
+D1 batch is atomic; an audit failure rolls back account bootstrap and settings/session mutations. Callback state is consumed before contacting GitHub: a failed/ambiguous exchange or database failure requires starting sign-in again. Disabling accounts/organizations or revoking membership/session takes effect on the next authorization lookup; already-authorized in-flight reads may complete. Restore from backup must revoke restored sessions before opening service, and invalidate pending state/CSRF/cursors through coordinated AUTH_SECRET rotation. Validate this operator recovery procedure in preview before live customers.

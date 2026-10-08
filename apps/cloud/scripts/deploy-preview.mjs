@@ -1,21 +1,25 @@
 import { execFileSync } from "node:child_process";
+import { statSync } from "node:fs";
+import { previewTarget } from "./preview-target.mjs";
 
-const databaseId = process.env.CF_PREVIEW_D1_ID;
-const accountId = process.env.CLOUDFLARE_ACCOUNT_ID;
-const origin = process.env.CF_PREVIEW_API_ORIGIN;
-if (!databaseId || !accountId || !origin) {
+const secretsFile = process.env.CF_PREVIEW_SECRETS_FILE;
+if (!secretsFile || (statSync(secretsFile).mode & 0o077) !== 0) {
   throw new Error(
-    "Set CF_PREVIEW_D1_ID, CLOUDFLARE_ACCOUNT_ID and CF_PREVIEW_API_ORIGIN for an isolated preview.",
+    "CF_PREVIEW_SECRETS_FILE must identify a private secrets file (mode 0600).",
   );
 }
-const database = JSON.parse(
-  execFileSync("cf", ["d1", "get", databaseId], { encoding: "utf8" }),
-);
-if (database.name !== "swarmforge-cloud-preview") {
-  throw new Error(
-    "Preview deployment requires a database named swarmforge-cloud-preview; other databases are refused.",
-  );
-}
+previewTarget();
 // Metadata retrieval is read-only. Deployment never targets a production mode,
 // custom domain, or an unverified database. The configuration contains no prod.
-execFileSync("cf", ["deploy", "--mode", "preview"], { stdio: "inherit" });
+execFileSync(
+  "cf",
+  [
+    "deploy",
+    "--mode",
+    "preview",
+    "--provision=false",
+    "--secrets-file",
+    secretsFile,
+  ],
+  { stdio: "inherit" },
+);

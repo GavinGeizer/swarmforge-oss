@@ -10,13 +10,14 @@
     "bun": ">=1.4.2"
   },
   "scripts": {
-    "check": "tsc --noEmit && biome check src test scripts cloudflare.config.ts",
+    "check": "tsc --noEmit && biome check src test scripts cloudflare.config.ts wrangler.config.ts",
     "test": "node --experimental-strip-types --test test/*.integration.ts",
     "types": "cf workers types --mode local",
     "build": "cf build --mode local",
-    "dev": "cf dev --mode local --persist-to .cloudflare/state -- --ip 127.0.0.1 --port 8788",
+    "dev": "cf dev --mode local",
     "prepare:local": "node scripts/prepare-local.mjs",
-    "migrate:local": "cf d1 migrations apply 00000000-0000-4000-8000-00000000002a --local --mode local --persist-to .cloudflare/state --dir migrations",
+    "migrate:local": "node scripts/migrate-local.mjs",
+    "migrate:preview": "node scripts/migrate-preview.mjs",
     "deploy:preview": "node scripts/deploy-preview.mjs"
   },
   "dependencies": {

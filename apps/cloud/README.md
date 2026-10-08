@@ -2,7 +2,7 @@
 
 Standalone Workers/D1 application. It does not import the Bun coordinator, local SQLite lifecycle, Freestyle or CLI GitHub credentials. No task execution, worker enrollment, payments or inference endpoints are implemented.
 
-Requirements: Bun 1.4.2 for dependencies, Node 24 for cf/testing. The cloud dependency lock is independent of the root app. cf 1.0.0-beta.13 uses the pinned Wrangler build/dev backend; commands and configuration remain cf/cloudflare.config.ts. Miniflare is pinned to the matching current SDK alpha; integration tests use its shipped v4-option converter and real workerd/D1, not mocked SQL.
+Requirements: Bun 1.4.2 for dependencies, Node 24 for cf/testing. The cloud dependency lock is independent of the root app. cf 1.0.0-beta.13 uses the pinned Wrangler build/dev backend; Cloudflare operations use cf/cloudflare.config.ts. The companion wrangler.config.ts pins the backend's API/inspector to loopback and port 8788/9229; it contains no infrastructure configuration. Miniflare is pinned to the matching current SDK alpha; integration tests use its shipped v4-option converter and real workerd/D1, not mocked SQL.
 
 From this directory:
 
@@ -16,6 +16,8 @@ bun run test
 bun run build
 bun run dev
 ```
+
+`migrate:local` invokes the public cf CLI entrypoint, waits for completion, and exits after flushing output: the pinned beta otherwise retains a local filesystem watcher. Migrations and cf dev share `.wrangler/state`. The cf beta currently drops post-separator dev arguments, so local listener settings live in the documented backend tooling configuration.
 
 `prepare:local` creates private `.dev.vars` without printing secrets or overwriting existing configuration. Add the separate web GitHub OAuth app's ID/secret there. Local homepage is `http://localhost:8788`, callback `http://localhost:8788/v1/auth/github/callback`. Navigate to `/v1/auth/github` to sign in. Missing credentials return 503; no fake login or development authentication bypass exists. Use localhost exactly, not another Host/IP. Browser Secure cookies are supported on localhost; otherwise develop with HTTPS.
 
@@ -53,7 +55,7 @@ Audit events contain generated actor/resource references, fixed actions/outcomes
 
 ## Preview and secrets
 
-See [deployment operations](../../docs/cloud/DEPLOYMENT.md). Configuration has local/preview modes only, no production route or binding. Preview requires explicit HTTPS origin and separate D1 UUID. The deployment wrapper refuses databases not named swarmforge-cloud-preview. Before invoking it, register a dedicated preview GitHub OAuth app and configure secret bindings. No production deployment or live GitHub sign-in is performed by the local tests.
+See [deployment operations](../../docs/cloud/DEPLOYMENT.md). Configuration has local/preview modes only, no production route or binding. Preview requires explicit HTTPS origin and separate D1 UUID. Migration and deployment wrappers refuse databases not named swarmforge-cloud-preview; deployment disables automatic resource provisioning and requires a private secrets file. Before invoking it, register a dedicated preview GitHub OAuth app and configure secret bindings. No production deployment or live GitHub sign-in is performed by the local tests.
 
 ## Verification scope
 
