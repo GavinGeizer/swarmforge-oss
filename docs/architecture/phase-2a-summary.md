@@ -100,7 +100,7 @@ Final cleanup inventory for team `phase2a-cloud-20261008`: all three workers are
 
 ## Remaining risks and rollout gates
 
-- Dedicated local/preview GitHub OAuth app registration and real-browser sign-in remain owner setup tasks; no provider secret is committed. Verify localhost Secure-cookie behavior in supported browsers, or use HTTPS locally. A separate website must be same-site with the API under Lax cookies; unrelated site needs a future BFF design.
+- Dedicated local OAuth app registration and real Brave sign-in were completed in the follow-up below; preview app setup and real preview sign-in remain outstanding. No provider secret is committed. Local cookie behavior was verified in that browser, not every supported browser; use HTTPS where necessary. A separate website must be same-site with the API under Lax cookies; unrelated site needs a future BFF design.
 - Auth/denial routes currently have no application rate limiter. Unrestricted public signup/denial traffic can exhaust Free D1 writes/storage and OAuth capacity. Configure/test edge abuse limits and bounded state/audit cleanup before public pilot; no production launch is claimed safe here.
 - Validate CPU/query/write volume, quota exhaustion, secrets rotation, backup restore with revoked sessions, monitoring and retention before customers. Audit90days is a technical recommendation awaiting owner retention/deletion policy. Operator cleanup is documented, not automatically scheduled.
 - cf and matching Miniflare use beta/alpha tooling pinned for reproducibility. Local setup workaround is tested, but future toolchain upgrades require regression checks. A build probes Docker and warns when inaccessible.
@@ -118,3 +118,7 @@ Final cleanup inventory for team `phase2a-cloud-20261008`: all three workers are
 6. Attach website billing in a separately scoped phase: verified Stripe events as billing source of truth, billing account to org subscription/projection, downgrade/revocation and reservation effects. Never trust frontend plan claims; retain cleanup/revocation access after downgrade.
 
 Managed compute/inference and metered billing remain later phases. Current identity IDs, memberships, audit and D1 transaction boundaries support those additions without changing local orchestration or redesigning tenant authority.
+
+## Live OAuth follow-up
+
+After the original Phase 2A acceptance, the owner configured a dedicated local GitHub OAuth app and attempted real browser sign-in. GitHub supplied an `iss` query parameter that the original callback schema rejected. Source commit `5582657` accepts only the exact GitHub issuer when supplied, retains state/cookie/PKCE checks and adds credential-free internal diagnostics. All 25 cloud tests, static checks and Worker build pass. The owner then completed real Brave sign-in; read-only local D1 verification confirmed persistent account, verified identity, personal organization, owner membership, session and login audit. See [failure, correction and follow-up review](cloud-oauth-issuer-follow-up.md). Earlier test/review and untested-live-sign-in statements above describe the original acceptance candidate; they are not claims about this subsequent fix. Production and remote preview remain undeployed.

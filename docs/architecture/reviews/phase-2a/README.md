@@ -40,3 +40,15 @@ The rejected coder's remote head147b0c0 and extra VM headc0740c8 were never used
 ## Final cleanup
 
 The team-scoped inventory (`phase2a-cloud-20261008`, limit100, offset0, next_offset null) contains exactly these three workers, all destroyed with no pending controls/messages. Both reviewer runs finalized as preserved and passed normal settled destruction; their actual clean attached HEAD and remote assigned branches were verified at5b2d9c2. The rejected coder required forced destruction only after source durability checks; its missing-output finalization remains abandoned. No other teams' workers were destroyed for this task.
+
+## OAuth issuer follow-up
+
+After the owner completed local OAuth app registration, live GitHub callbacks supplied `iss=https://github.com/login/oauth`. The strict original callback rejected this supported field. [Source fix 5582657 and live verification](../../cloud-oauth-issuer-follow-up.md) are subsequent to the original Phase 2A acceptance; original reviews remain tied to5b2d9c2.
+
+Independent SwarmForge reviewer w-670eb68c-2893-4a39-908a-266cd866ade8, team phase2a-oauth-20261008, run20f35b3b-c293-4803-ae39-f408e1c81f1c, **APPROVED**, 25 cloud tests pass. [Original report](oauth-issuer-review.md) and [structured result](oauth-issuer-result.json) are retained. Report artifact art-fd99bfe3-06dd-4256-a309-d730dac7daa6 has original SHA2568941fda8e19f47e8aacf030168d41a0742c22433555d5c5e3df29c5547272d3c; result art-ce3658c4-3c6e-4c86-9518-8e16f1e59cc8 has SHA2567212c1ead453d2b9dcf1c8ef7867d52f5df06fea10362fb4a974bfc3f2cf5626. Markdown whitespace is normalized locally; original preserved bytes remain available.
+
+The reviewer created redundant merge commit ea3583845f9a5d8b54eb224ed8df67d32d3aaa82 instead of retaining the exact requested source HEAD55826573b717e88023e9b271816cf222e8b22974. Lead checks established their complete trees are identical (cd4038b613a5152787042c3c7f2e78416708617f), with no file diff, a clean attached VM branch and matching remote handoff. The auto-recorded clone base9f2953e differs from the intended inspected base79e2787, explicitly identified in the report. No reviewer commit was merged into the implementation.
+
+Report wording about a GitHub "breaking change" describes the observed callback incompatibility; an official rollout date or behavior of every OAuth client was not verified. Duplicate-parameter denial occurs in the router before schema parsing, rather than being a property of Zod strict mode alone. This is GitHub web OAuth, not an implemented OIDC system, and broad "no vulnerabilities" wording is limited to the reviewed source and tested cases. Missing-issuer compatibility is a documented local policy for the fixed single-provider flow, not a claim to enforce every optional RFC deployment policy.
+
+The reviewer finalized outputs as preserved and was destroyed through normal settled cleanup. Scoped inventory: one worker, destroyed, no pending controls/messages, next_offset null. Original Phase 2A workers remain destroyed; no unrelated worker was cleaned up for this follow-up.
