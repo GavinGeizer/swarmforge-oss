@@ -309,6 +309,9 @@ export function createMcpServer(c: Coordinator, signal?: AbortSignal) {
       revision: z.string().max(200).optional(),
     },
     (a) => {
+      // Redaction remembers repository credentials in SQLite. Synchronize that
+      // metadata before capturing a revision, including on unchanged replies.
+      redactor.text("");
       const revision = c.store.revision();
       const { revision: previousRevision, ...query } = a;
       const key = JSON.stringify(query);
