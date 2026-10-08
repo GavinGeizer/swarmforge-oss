@@ -20,6 +20,9 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: "1.4.2"
+      - name: Install CLI dependencies for the real CLI integration test
+        working-directory: .
+        run: bun install --frozen-lockfile
       - run: bun install --frozen-lockfile
       - run: bun run check
       - name: D1 migrations, Cloud API, session and tenant integration tests
