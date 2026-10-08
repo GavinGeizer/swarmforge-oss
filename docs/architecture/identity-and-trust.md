@@ -67,3 +67,5 @@ Managed inference should use tenant/task-limited proxy credentials with server b
 - Arbitrary echoed GitHub App tokens/SSH material are not demonstrated screened; redaction cannot serve as a permission boundary. This phase does not modify repository credential flows. Prioritize explicit registration/screening and secret-custody review before hosted use.
 - Raw preserved-artifact downloads return bytes to instance-authorized operators. Future cloud download authorization must verify tenant/task ownership and retention policy separately from content screening.
 - Current host/origin/shared bearer checks prevent several instance-level attacks but provide no cross-customer isolation. Do not expose them directly as cloud APIs.
+
+Phase 2B.1 implementation: [CLI linking and worker identity API](phase-2b1-api.md), [operational procedures](../cloud/IDENTITY.md). Historical future contracts above remain proposals where the implementation document does not mark a route implemented.

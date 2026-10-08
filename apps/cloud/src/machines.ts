@@ -127,6 +127,16 @@ export async function machineAuth(ctx: Context, audience: Machine["audience"]) {
   const expected = cli ? cliScopes : workerScopes;
   if (JSON.stringify(JSON.parse(row.scopes)) !== JSON.stringify(expected))
     throw new HttpError(401, "unauthenticated", "Credential scope is invalid");
+  if (cli) {
+    // Activity metadata is approximate, never authority. Bound actual writes to
+    // one per five minutes and recheck the credential before updating the row.
+    const guard = machineGuard(row, now);
+    await ctx.env.DB.prepare(
+      `UPDATE cli_installations SET last_seen_at=? WHERE installation_id=? AND (last_seen_at IS NULL OR last_seen_at<=?) AND ${guard.sql}`,
+    )
+      .bind(now, row.resource_id, now - 300000, ...guard.args)
+      .run();
+  }
   ctx.actor = row.user_id;
   return row;
 }

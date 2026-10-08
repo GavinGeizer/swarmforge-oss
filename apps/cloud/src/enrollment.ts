@@ -317,7 +317,7 @@ export async function enrollmentRoute(ctx: Context) {
   if ((cli || type === "workers") && !id && method === "GET") {
     const p = await page(ctx, tenant, type);
     const query = cli
-      ? `SELECT installation_id,organization_id tenant_id,user_id subject_id,client_name,status,created_at,authorization_expires_at,revoked_at FROM cli_installations WHERE organization_id=? ${mem.role === "member" ? "AND user_id=?" : ""} AND installation_id>? ORDER BY installation_id LIMIT ?`
+      ? `SELECT installation_id,organization_id tenant_id,user_id subject_id,client_name,status,created_at,last_seen_at,authorization_expires_at,revoked_at FROM cli_installations WHERE organization_id=? ${mem.role === "member" ? "AND user_id=?" : ""} AND installation_id>? ORDER BY installation_id LIMIT ?`
       : `SELECT worker_id,organization_id tenant_id,name,status state,epoch registration_epoch,created_at,revoked_at FROM cloud_workers WHERE organization_id=? AND worker_id>? ORDER BY worker_id LIMIT ?`;
     const rows = await ctx.env.DB.prepare(query)
       .bind(
@@ -336,6 +336,7 @@ export async function enrollmentRoute(ctx: Context) {
         client_name: nameSchema,
         status: z.enum(["active", "revoked"]),
         created_at: z.number().int(),
+        last_seen_at: z.number().int().nullable(),
         authorization_expires_at: z.number().int(),
         revoked_at: z.number().int().nullable(),
       })

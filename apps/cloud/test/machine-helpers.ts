@@ -16,9 +16,8 @@ const bundled = build({
   format: "esm",
   target: "es2023",
 });
-export async function fixture() {
+export async function fixture(origin = "https://api.example.invalid") {
   let subject = 100;
-  const origin = "https://api.example.invalid";
   const mf = new Miniflare(
     convertV4MiniflareOptions({
       modules: true,
@@ -28,7 +27,7 @@ export async function fixture() {
       bindings: {
         APP_ORIGIN: origin,
         WEBSITE_ORIGIN: origin,
-        ENVIRONMENT: "preview",
+        ENVIRONMENT: origin.startsWith("http:") ? "local" : "preview",
         GITHUB_CLIENT_ID: "client",
         GITHUB_CLIENT_SECRET: "provider-secret",
         AUTH_SECRET: "test-auth-secret-with-at-least-thirty-two-characters",

@@ -175,3 +175,5 @@ Read-idempotent; no Stripe IDs, card details, checkout operation, model keys or 
 ## Contract acceptance before Phase 2 rollout
 
 Tests must reject cross-tenant IDs on every resource route (including usage, cursors, artifacts and references), wrong machine audiences, revoked epochs, expired linking/enrollment secrets, double consumes, changed idempotency payloads, parallel quota admissions, fabricated usage and stale subscriptions. Exercise CSRF, rate limits, credential-safe response/logging and account membership revocation. No route is considered delivered merely because its schema exists. Task leasing/delivery/result reporting, credential rotation and reliable external stop are required dependencies, intentionally not implemented in Phase 1.
+
+Phase 2B.1 implementation: [CLI linking and worker identity API](phase-2b1-api.md), [operational procedures](../cloud/IDENTITY.md). Historical future contracts above remain proposals where the implementation document does not mark a route implemented.

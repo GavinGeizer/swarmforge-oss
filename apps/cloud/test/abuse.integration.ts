@@ -87,11 +87,14 @@ test("bounded cleanup deletes expired unconsumed state/caches and preserves iden
       404,
     );
     assert.equal((await h.register(invite)).status, 404);
-    await cleanupIdentity(env,now);assert.equal(await count(h,"cli_installations"),1);
-    const before=await count(h,"audit_events");assert.ok(before>0);
-    await cleanupIdentity(env,now,now);assert.equal(await count(h,"audit_events"),0);
-    assert.equal(await count(h,"cli_installations"),1);
-    await assert.rejects(()=>cleanupIdentity(env,Number.NaN));
+    await cleanupIdentity(env, now);
+    assert.equal(await count(h, "cli_installations"), 1);
+    const before = await count(h, "audit_events");
+    assert.ok(before > 0);
+    await cleanupIdentity(env, now, now);
+    assert.equal(await count(h, "audit_events"), 0);
+    assert.equal(await count(h, "cli_installations"), 1);
+    await assert.rejects(() => cleanupIdentity(env, Number.NaN));
   } finally {
     await h.mf.dispose();
   }

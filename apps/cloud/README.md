@@ -1,6 +1,6 @@
 # SwarmForge Cloud account API
 
-Standalone Workers/D1 application. It does not import the Bun coordinator, local SQLite lifecycle, Freestyle or CLI GitHub credentials. No task execution, worker enrollment, payments or inference endpoints are implemented.
+Standalone Workers/D1 application. It does not import the Bun coordinator, local SQLite lifecycle, Freestyle or CLI GitHub credentials. Phase 2B.1 adds browser-approved CLI linking and separate worker identity enrollment. No task execution, provisioning, payments or inference endpoints are implemented.
 
 Requirements: Bun 1.4.2 for dependencies, Node 24 for cf/testing. The cloud dependency lock is independent of the root app. cf 1.0.0-beta.13 uses the pinned Wrangler build/dev backend; Cloudflare operations use cf/cloudflare.config.ts. The companion wrangler.config.ts pins the backend's API/inspector to loopback and port 8788/9229; it contains no infrastructure configuration. Miniflare is pinned to the matching current SDK alpha; integration tests use its shipped v4-option converter and real workerd/D1, not mocked SQL.
 
@@ -39,7 +39,7 @@ bun run dev
 | `PATCH /v1/tenants/{id}` | Owner/admin only; JSON `{display_name}`, CSRF and Idempotency-Key required. Atomic current authority recheck, dedupe, mutation and audit. |
 | `GET /v1/tenants/{id}/memberships` | Owner/admin, tenant-qualified bounded list/cursor. |
 
-Roles owner/admin/member follow Phase 2A's requirements. Session cookies alone authenticate this API; GitHub/App/instance bearers do not. Ordinary members can read organization metadata but cannot update settings or list all members. Future invitation/identity-linking/role mutations are not exposed. Query pagination is limit 1–100 and signed user/tenant/purpose-bound cursor; authorization is rechecked on every read and before returning a deduped mutation. Unknown routes, including hosted execution/billing/enrollment, return 404. Mutations fail with 403 when CSRF/origin is missing, 400 for malformed strict inputs, 413 over 128 KiB, 409 for conflicting/expired idempotency keys, safe 503 for database/authorization/audit dependency failure.
+Roles owner/admin/member follow Phase 2A's requirements. Session cookies authenticate website routes; separate SwarmForge CLI/worker bearer credentials authenticate only their respective machine routes. GitHub/App/instance bearers do not authenticate cloud resources. Ordinary members can read organization metadata but cannot update settings or list all members. Future invitation/identity-linking/role mutations are not exposed. Query pagination is limit 1–100 and signed user/tenant/purpose-bound cursor; authorization is rechecked on every read and before returning a deduped mutation. Unknown routes, including hosted execution/billing, return 404. Mutations fail with 403 when CSRF/origin is missing, 400 for malformed strict inputs, 413 over 128 KiB, 409 for conflicting/expired idempotency keys, safe 503 for database/authorization/audit dependency failure.
 
 Responses have generated X-Request-ID, no-store, nosniff, no-referrer and CSP/frame protection; HTTPS adds HSTS. CORS is exact APP_ORIGIN or WEBSITE_ORIGIN, never wildcard. Mutation origin is mandatory. With SameSite=Lax cookies, an optional separate website must be same-site with the API; unrelated workers.dev/website sites need a separate future BFF design, not weaker cookie defaults. No public operational metrics exist here.
 
@@ -53,7 +53,7 @@ OAuth state/browser proof expire in ten minutes, are hashed and consumed with at
 
 GitHub callbacks may include RFC 9207 `iss`. If present, its decoded value must exactly equal `https://github.com/login/oauth`; other issuers and duplicate or unrelated query fields are rejected before state consumption or provider exchange. Callbacks without `iss` remain supported for compatibility with the existing single-provider contract. Always start browser sign-in at `/v1/auth/github` in the same browser that completes it. Safe callback audit reasons distinguish invalid parameters from missing/invalid browser proof without recording incoming values.
 
-Audit events contain generated actor/resource references, fixed actions/outcomes, timestamp/request ID and safe reason metadata. No codes, cookies, tokens, verifier plaintext, client secrets, unverified email or IP address are stored in diagnostic records. Suggested audit retention is 90 days, pending owner policy. Pending OAuth/expired sessions/dedupe cleanup must be operator-scheduled and tested: retain unexpired state/keys, keep security audit according to policy, revoke sessions after restoring older backups. No automatic retention microservice is introduced.
+Audit events contain generated actor/resource references, fixed actions/outcomes, timestamp/request ID and safe reason metadata. No codes, cookies, tokens, verifier plaintext, client secrets, unverified email or IP address are stored in diagnostic records. Suggested audit retention is 90 days, pending owner policy. A bounded scheduled handler cleans expired transient records every ten minutes. It preserves referenced identity records and audit events; audit deletion requires an explicit operator retention choice. Revoke sessions and machine grants after restoring older backups. See the Phase 2B.1 operations guide.
 
 ## Preview and secrets
 
@@ -62,3 +62,20 @@ See [deployment operations](../../docs/cloud/DEPLOYMENT.md). Configuration has l
 ## Verification scope
 
 Node tests execute the handler against real local D1 and execute the bundled default Worker in workerd with simulated GitHub endpoints. They cover actual confidential exchange, PKCE verifier equality, persistent identity/tenant/session, replay/expiry/revocation, cross-tenant authorization/cursors/dedupe, concurrency/atomic rollback, strict requests, dependency failures and credential-free persistence/logging. Provider redirect/invalid/oversize data tests exercise the real provider adapter. Local results do not establish provider production availability, Cloudflare Free CPU/quotas under load or compliance.
+
+## CLI linking and worker identity
+
+See [implemented API contracts](../../docs/architecture/phase-2b1-api.md) and [Phase 2B.1 operations](../../docs/cloud/IDENTITY.md). From the root checkout, use:
+
+```sh
+bun --no-env-file src/cli.ts cloud login --cloud-url http://localhost:8788 --no-browser
+bun --no-env-file src/cli.ts cloud status
+bun --no-env-file src/cli.ts cloud organizations
+bun --no-env-file src/cli.ts cloud use <organization-uuid>
+bun --no-env-file src/cli.ts cloud rotate
+bun --no-env-file src/cli.ts cloud logout
+```
+
+Open the displayed approval URL in your browser, sign in using the existing web OAuth flow, enter the CLI's pairing code, and explicitly approve an active organization. `cloud use` requires fresh browser approval. The CLI receives no website cookies or GitHub credentials. Installed executables use `swarmforge` instead of the Bun prefix. JSON output contains safe metadata only; the displayed short-lived pairing code is intended for manual approval.
+
+Migration `0002_machine_identity.sql` adds links, CLI installations, worker invitations/identities, hashed audience-separated credentials, encrypted retry caches and bounded rate-limit counters. CLI tokens expire after 24 hours; worker tokens after one hour. Rotation cannot extend either authorization grant past 30 days; fresh enrollment is required. Owner/admin website sessions can issue worker invitations and manage workers; workers can verify identity and rotate only. No dispatch authority follows enrollment.
