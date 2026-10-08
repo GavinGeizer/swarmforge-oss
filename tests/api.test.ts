@@ -282,6 +282,39 @@ test("redaction scrubs known secrets, credential fields and URL passwords recurs
   });
 });
 
+test("MCP diagnostics redact cloud machine credentials without loading a cloud account", async () => {
+  const h = harness();
+  const tokens = ["sfcli_", "sfworker_", "sfenroll_"].map(
+    (prefix) => prefix + "A".repeat(43),
+  );
+  const worker = h.store.create({ ...task, timeout_seconds: 60 });
+  h.store.patch(worker.worker_id, { error: tokens.join(" ") });
+  const server = createMcpServer(h.coordinator);
+  const client = new Client({ name: "redaction-test", version: "1" });
+  const [a, b] = InMemoryTransport.createLinkedPair();
+  await server.connect(a);
+  await client.connect(b);
+  try {
+    const result = await client.callTool({
+      name: "get_worker",
+      arguments: { worker_id: worker.worker_id },
+    });
+    for (const token of tokens)
+      expect(JSON.stringify(result)).not.toContain(token);
+    expect(JSON.stringify(result)).toContain("[REDACTED]");
+    expect(
+      new Redactor(() => []).value({ credential: "opaque-value" }),
+    ).toEqual({
+      credential: "[REDACTED]",
+    });
+  } finally {
+    await client.close();
+    await server.close();
+    await h.coordinator.stop();
+    h.store.close();
+  }
+});
+
 test("artifact resource links can actually be read through an MCP client", async () => {
   const {
     h,

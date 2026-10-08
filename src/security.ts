@@ -50,12 +50,20 @@ export class Redactor {
     }
     for (let index = low; index < variants.length; index++)
       text = text.replaceAll(variants[index]!, "[REDACTED]");
-    return text
-      .replace(/(https?:\/\/)[^\s/@]+:[^\s/@]+@/g, "$1[REDACTED]@")
-      .replace(
-        /([?&](?:token|key|api_key|password)=)[^&\s]+/gi,
-        "$1[REDACTED]",
-      );
+    return (
+      text
+        // Recognize machine credentials even when a diagnostic contains a token
+        // this local coordinator has never loaded. No cloud account is consulted.
+        .replace(
+          /(?<![A-Za-z0-9_-])(?:sfcli_|sfworker_|sfenroll_)[A-Za-z0-9_-]{43}(?![A-Za-z0-9_-])/g,
+          "[REDACTED]",
+        )
+        .replace(/(https?:\/\/)[^\s/@]+:[^\s/@]+@/g, "$1[REDACTED]@")
+        .replace(
+          /([?&](?:token|key|api_key|password)=)[^&\s]+/gi,
+          "$1[REDACTED]",
+        )
+    );
   }
   value(value: unknown): unknown {
     if (typeof value === "string") return this.text(value);
@@ -64,7 +72,9 @@ export class Redactor {
       return Object.fromEntries(
         Object.entries(value).map(([k, v]) => [
           k,
-          /^(?:authorization|api[_-]?key|.*password|.*secret|.*token)$/i.test(k)
+          /^(?:authorization|credential|api[_-]?key|.*password|.*secret|.*token)$/i.test(
+            k,
+          )
             ? "[REDACTED]"
             : this.value(v),
         ]),
