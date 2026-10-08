@@ -1,6 +1,6 @@
 import { createInterface } from "node:readline/promises";
 import { Writable } from "node:stream";
-import type { InitField } from "./init";
+import type { InitQuestion } from "./init";
 
 /** Readline handles editing; its output is muted while a credential is entered. */
 export function terminalPrompt() {
@@ -24,7 +24,8 @@ export function terminalPrompt() {
   reader.on("SIGINT", () => controller.abort());
   reader.on("close", () => controller.abort());
   return {
-    async ask(field: InitField): Promise<string> {
+    signal: controller.signal,
+    async ask(field: InitQuestion): Promise<string> {
       process.stdout.write(
         `${field.label}${field.secret ? " (hidden)" : ""}: `,
       );

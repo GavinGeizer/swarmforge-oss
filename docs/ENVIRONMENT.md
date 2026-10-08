@@ -78,3 +78,7 @@ Keep snapshots free of infrastructure credentials. SQLite contains prompts and w
 - `SWARMFORGE_BUDGET_USD`: optional deployment estimate alert threshold, not an enforced spending limit.
 
 See [Operator workflows](OPERATOR-WORKFLOWS.md) for usage coverage, retained VM accounting and conservative expiry behavior.
+
+## GitHub OAuth repository access
+
+For GitHub device login, use `SWARMFORGE_GIT_PUSH_MODE=github-oauth`, `SWARMFORGE_GITHUB_OAUTH_REPOSITORY=OWNER/REPO` and `SWARMFORGE_GITHUB_OAUTH_CREDENTIALS_PATH=/absolute/private/credential/file`. `SWARMFORGE_GIT_TREE` must be the matching GitHub HTTPS URL. Run `swarmforge github login` first; follow [the complete OAuth setup guide](GITHUB-OAUTH.md).

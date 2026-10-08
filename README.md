@@ -2,7 +2,7 @@
 
 SwarmForge lets an AI lead launch isolated coding workers, follow their progress, send follow-up tasks, and collect their results through MCP. Each worker runs OpenCode in a Freestyle VM against your model endpoint and Git repository. Worker state and results are stored in SQLite; the terminal dashboard shows current activity.
 
-The global `swarmforge` executable provides `init`, `doctor`, `serve`, and `status`, plus configuration inspection and artifact retrieval. You supply the VM snapshot, model service, and Git access. SwarmForge does not host Git, serve models, or create pull requests.
+The global `swarmforge` executable provides `init`, `doctor`, `serve`, and `status`, plus GitHub OAuth repository authorization, configuration inspection and artifact retrieval. You supply the VM snapshot, model service, and Git access. SwarmForge does not host Git, serve models, or create pull requests.
 
 ## License
 
@@ -41,7 +41,7 @@ Have these infrastructure details ready before initialization:
 | `SWARMFORGE_MODEL_NAME` | The exact model ID accepted by the endpoint. The model must support tool calls. |
 | `SWARMFORGE_GIT_TREE` | A cloneable Git URL or path available to the worker. Use `none` or `none:/prepared/path` to use a prepared workspace instead of cloning. |
 
-The **worker snapshot** must contain OpenCode compatible with SDK 1.18.31, Python 3, Git, Bash, systemd, and the tools needed for your tasks. OpenCode must be on the service PATH and the guest workspace must be writable. Repository credentials, mounts, and networking are prepared externally. These guest prerequisites are separate from the control-plane host.
+The **worker snapshot** must contain OpenCode compatible with SDK 1.18.31, Python 3, Git, Bash, systemd, and the tools needed for your tasks. OpenCode must be on the service PATH and the guest workspace must be writable. Repository access can be connected through GitHub OAuth during initialization or configured through GitHub App or SSH credentials. Mounts and networking are prepared externally. These guest prerequisites are separate from the control-plane host.
 
 Installing and initializing create no worker VMs. Spawning a worker provisions a billable VM; completed workers retain their VMs until explicitly destroyed.
 
@@ -71,7 +71,7 @@ bun install --frozen-lockfile
 bun run setup
 ```
 
-`setup` compiles the standalone command, installs it at `~/.local/bin/swarmforge`, and starts the interactive initialization questions. It installs for your user without `sudo`. Secret inputs are hidden. Enter all six required values from the table above; invalid values are explained and requested again.
+`setup` compiles the standalone command, installs it at `~/.local/bin/swarmforge`, and starts the interactive initialization questions. It installs for your user without `sudo`. Secret inputs are hidden. Enter all six required values from the table above; invalid values are explained and requested again. For a GitHub repository, setup also offers browser device authorization to enable authenticated clone and push.
 
 For a source ZIP download, extract it, open a terminal in its directory, and run the same `bun install --frozen-lockfile` and `bun run setup` commands. A ZIP build reports an unknown Git commit because the download contains no repository metadata.
 
@@ -109,6 +109,10 @@ swarmforge init
 ```
 
 `init` creates `.env` in the **current directory** with permissions `0600`. It records your required settings, an absolute database path under that directory's `data/`, and a unique stable instance ID. Keep the instance ID and database path when upgrading an existing deployment.
+
+For GitHub HTTPS or `git@github.com:OWNER/REPO.git` repository URLs, `init` asks whether to connect GitHub OAuth. Answer `yes`, enter your OAuth App **Client ID**, then open the printed GitHub device URL and enter the one-time code. Device Flow must already be enabled in the app. After authorization and a push-access check, `init` stores the token in a separate private file and writes the matching HTTPS repository, `github-oauth` push mode and credential path into `.env`. You do not need to paste a token or edit Git settings afterward.
+
+Answer `no` or press Enter to skip OAuth. Other repository hosts and prepared workspaces keep the regular initialization flow. OAuth uses GitHub’s broad `repo` scope; see [the access-scope and credential-storage details](docs/GITHUB-OAUTH.md).
 
 When the global configuration is absent, `init` also creates `~/.config/swarmforge/config.toml` pointing to that environment file by its absolute path. An absolute `XDG_CONFIG_HOME` changes the configuration location. After initialization, the global command can find this deployment from any directory.
 
@@ -201,7 +205,20 @@ Ask your connected AI lead to call `spawn_worker`. Start with a small task to co
 
 Completed, failed, cancelled, and paused workers can retain billable VMs and consume capacity. Check `get_swarm_status` for leftovers before leaving. All 26 tools are described in [MCP-API.md](docs/MCP-API.md).
 
-For coding tasks, configure `SWARMFORGE_GIT_PUSH_MODE=github-app` or `ssh` to push and verify each worker branch automatically. `get_worker_result.git` then records the branch and commit, with a GitHub compare URL where supported. The default `none` uses your external Git workflow. See [Git handoff configuration](docs/ENVIRONMENT.md).
+### Connect GitHub with OAuth
+
+Register a GitHub OAuth App, enable **Device Flow**, and copy its client ID. On a new deployment, run `swarmforge init` and accept its GitHub OAuth prompt. If Device Flow is already enabled, no further app setup is needed.
+
+For an existing deployment, connect separately:
+
+```sh
+swarmforge github login --client-id YOUR_CLIENT_ID --repository OWNER/REPO
+swarmforge github status
+```
+
+The CLI displays a code to authorize in your browser, verifies repository push access, saves credentials privately, and prints the configuration to enable worker clone/push. No client secret is needed. See [GitHub OAuth setup and access scope](docs/GITHUB-OAUTH.md) before connecting private repositories.
+
+For coding tasks, configure `SWARMFORGE_GIT_PUSH_MODE=github-app`, `github-oauth` or `ssh` to push and verify each worker branch automatically. `get_worker_result.git` then records the branch and commit, with a GitHub compare URL where supported. The default `none` uses your external Git workflow. See [Git handoff configuration](docs/ENVIRONMENT.md).
 
 ## Preserve outputs and recover failed collection
 

@@ -55,6 +55,7 @@ export class Store {
       CREATE INDEX IF NOT EXISTS dispatch_worker ON dispatches(worker_id);
       CREATE TABLE IF NOT EXISTS usage(worker_id TEXT NOT NULL,message_id TEXT NOT NULL,model TEXT NOT NULL,input INTEGER NOT NULL,output INTEGER NOT NULL,reasoning INTEGER NOT NULL,cache_read INTEGER NOT NULL,cache_write INTEGER NOT NULL,PRIMARY KEY(worker_id,message_id));
       CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY,value TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS credential_screening(secret TEXT PRIMARY KEY);
     `);
     this.db.exec(`CREATE INDEX IF NOT EXISTS workers_team_task ON workers(team_id,task_id);
       CREATE INDEX IF NOT EXISTS workers_activity ON workers(json_extract(body,'$.last_activity_at'),worker_id);
@@ -72,12 +73,17 @@ export class Store {
     };
     return `${this.epoch}:${row.changes}:${external.data_version}:${this.db.inTransaction ? "transaction" : "committed"}`;
   }
+  rememberCredential(secret: string) {
+    this.db
+      .query("INSERT OR IGNORE INTO credential_screening(secret) VALUES(?)")
+      .run(secret);
+  }
   credentials() {
     const read = () =>
       (
         this.db
           .query(
-            "SELECT json_extract(body,'$.server_password') password FROM workers",
+            "SELECT json_extract(body,'$.server_password') password FROM workers UNION SELECT secret AS password FROM credential_screening",
           )
           .all() as { password: string | null }[]
       )

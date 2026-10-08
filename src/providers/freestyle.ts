@@ -5,6 +5,7 @@ import type { Config } from "../config";
 import { gitTree, workerEnvironment } from "../config";
 import type { VmInfo, Worker, WorkerProvider } from "../domain";
 import { branchFor, githubInstallationToken } from "../git-handoff";
+import { githubOauthToken } from "../github-oauth";
 import {
   guestStagingRoot,
   HelperArtifactTransport,
@@ -249,8 +250,14 @@ export class FreestyleProvider implements WorkerProvider {
     let failure: unknown;
     let failed = false;
     try {
-      if (mode === "github-app") {
-        const token = await githubInstallationToken(this.config);
+      if (mode === "github-app" || mode === "github-oauth") {
+        const token =
+          mode === "github-app"
+            ? await githubInstallationToken(this.config)
+            : githubOauthToken(
+                this.config.SWARMFORGE_GITHUB_OAUTH_CREDENTIALS_PATH!,
+                this.config.SWARMFORGE_GITHUB_OAUTH_REPOSITORY!,
+              );
         await vm.fs.writeTextFile(paths[1]!, token, { mode: 0o600 });
         await vm.fs.writeTextFile(
           paths[0]!,
@@ -300,10 +307,11 @@ export class FreestyleProvider implements WorkerProvider {
     const vm = this.client.vms.ref(w.vm_id);
     const repo = `${this.config.SWARMFORGE_WORKSPACE}/repo`;
     const branch = branchFor(w);
-    const target =
-      this.config.SWARMFORGE_GIT_PUSH_MODE === "github-app"
-        ? this.config.SWARMFORGE_GIT_TREE
-        : this.config.SWARMFORGE_GIT_PUSH_URL!;
+    const target = ["github-app", "github-oauth"].includes(
+      this.config.SWARMFORGE_GIT_PUSH_MODE,
+    )
+      ? this.config.SWARMFORGE_GIT_TREE
+      : this.config.SWARMFORGE_GIT_PUSH_URL!;
     const result = await this.withGitAuth(w.vm_id, async (auth) =>
       vm.exec({
         command: `set -eu; cd ${quote(repo)}; test "$(git branch --show-current)" = ${quote(branch)}; git_status=$(git status --porcelain --untracked-files=all) || exit 1; test -z "$git_status"; base=$(cat ${quote(`${this.config.SWARMFORGE_WORKSPACE}/.swarmforge/git-base`)}); commit=$(git rev-parse HEAD); git merge-base --is-ancestor "$base" "$commit"; ${auth} git push -- ${quote(target)} ${quote(`HEAD:refs/heads/${branch}`)} >&2; remote=$(${auth} git ls-remote -- ${quote(target)} ${quote(`refs/heads/${branch}`)}); remote_sha=$(printf '%s\n' "$remote" | cut -f1); test "$remote_sha" = "$commit"; git update-ref ${quote(`refs/remotes/origin/${branch}`)} "$commit"; printf '%s\n%s\n' "$base" "$commit"`,
@@ -321,10 +329,11 @@ export class FreestyleProvider implements WorkerProvider {
       !/^[0-9a-f]{40,64}$/.test(commit ?? "")
     )
       throw new Error("Git push verification returned invalid commit IDs");
-    const review_url =
-      this.config.SWARMFORGE_GIT_PUSH_MODE === "github-app"
-        ? `https://github.com/${this.config.SWARMFORGE_GITHUB_REPOSITORY}/compare/${base_commit}...${encodeURIComponent(branch)}`
-        : undefined;
+    const review_url = ["github-app", "github-oauth"].includes(
+      this.config.SWARMFORGE_GIT_PUSH_MODE,
+    )
+      ? `https://github.com/${this.config.SWARMFORGE_GIT_PUSH_MODE === "github-oauth" ? this.config.SWARMFORGE_GITHUB_OAUTH_REPOSITORY : this.config.SWARMFORGE_GITHUB_REPOSITORY}/compare/${base_commit}...${encodeURIComponent(branch)}`
+      : undefined;
     return {
       branch,
       base_commit: base_commit!,

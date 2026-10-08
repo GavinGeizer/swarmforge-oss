@@ -77,7 +77,7 @@ except `schema_version`.
 | `model.api_key` | string | `SWARMFORGE_MODEL_API_KEY` | Worker-scoped inference key. Credential. |
 | `model.name` | string | `SWARMFORGE_MODEL_NAME` | Exact model ID. |
 | `git.tree` | string | `SWARMFORGE_GIT_TREE` | Clone URL, local path, or `none[:tree]`. |
-| `git.push_mode` | string | `SWARMFORGE_GIT_PUSH_MODE` | `none`, `github-app` or `ssh`. |
+| `git.push_mode` | string | `SWARMFORGE_GIT_PUSH_MODE` | `none`, `github-app`, `github-oauth` or `ssh`. |
 | `git.push_timeout_ms` | int | `SWARMFORGE_GIT_PUSH_TIMEOUT_MS` | Clone and push budget. |
 | `git.author_name` | string | `SWARMFORGE_GIT_AUTHOR_NAME` | Commit author name. |
 | `git.author_email` | string | `SWARMFORGE_GIT_AUTHOR_EMAIL` | Commit author email. |
@@ -291,3 +291,9 @@ budget_usd = 25.0
 ```
 
 Rates above are illustrative. Usage settings accept nonnegative finite decimal values from 0 through 1,000,000; each is optional. Environment names are `SWARMFORGE_` plus the uppercase usage key. Retention environment names are `SWARMFORGE_RETENTION_MODE` and `SWARMFORGE_RETENTION_SECONDS`; the latter is 1 through 6,048,000 seconds (default 86,400). Missing rates produce partial/unconfigured estimates. See [Operator workflows](OPERATOR-WORKFLOWS.md) for expiry gates and billing limitations.
+
+### GitHub repository OAuth
+
+`[git.github_oauth]` supports `credentials_path` (host path; environment key `SWARMFORGE_GITHUB_OAUTH_CREDENTIALS_PATH`) and `repository` (`OWNER/REPO`; environment key `SWARMFORGE_GITHUB_OAUTH_REPOSITORY`). Use these with `git.push_mode = "github-oauth"` and an exactly matching GitHub HTTPS `git.tree`. These keys are separate from `[git.github_app]`.
+
+[GitHub OAuth setup](GITHUB-OAUTH.md) explains registration, login, credential storage and access scope. OAuth commands operate independently of server configuration; use `--credentials PATH` to manage a nondefault credential file.

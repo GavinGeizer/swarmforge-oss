@@ -169,6 +169,20 @@ const gitFields: Field[] = [
   },
 ];
 
+const githubOauthFields: Field[] = [
+  {
+    path: "git.github_oauth.credentials_path",
+    kind: "host_path",
+    key: "SWARMFORGE_GITHUB_OAUTH_CREDENTIALS_PATH",
+    env: ["SWARMFORGE_GITHUB_OAUTH_CREDENTIALS_PATH"],
+  },
+  {
+    path: "git.github_oauth.repository",
+    kind: "text",
+    key: "SWARMFORGE_GITHUB_OAUTH_REPOSITORY",
+    env: ["SWARMFORGE_GITHUB_OAUTH_REPOSITORY"],
+  },
+];
 const githubAppFields: Field[] = [
   {
     path: "git.github_app.app_id",
@@ -440,6 +454,7 @@ const controlFields: Field[] = [
   ...modelFields,
   ...gitFields,
   ...githubAppFields,
+  ...githubOauthFields,
   ...sshFields,
   ...workspaceFields,
   ...serverFields,
@@ -489,6 +504,7 @@ const documentSchema = z.strictObject({
   git: z
     .strictObject({
       ...leaves(gitFields),
+      github_oauth: table(githubOauthFields, "git.github_oauth").optional(),
       github_app: table(githubAppFields, "git.github_app").optional(),
       ssh: table(sshFields, "git.ssh").optional(),
     })

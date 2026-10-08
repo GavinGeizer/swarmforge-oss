@@ -2,6 +2,7 @@ import { randomBytes } from "node:crypto";
 import { link, lstat, mkdir, open, unlink } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { type Config, configFieldError, loadConfig } from "../config";
+import { githubRepository, loginGithub } from "../github-oauth";
 import { plain } from "../settings/inspect";
 import {
   anchorPath,
@@ -10,11 +11,15 @@ import {
   homeDirectory,
 } from "../settings/paths";
 
-export interface InitField {
-  name: keyof Config;
+export interface InitQuestion {
+  name: string;
   label: string;
   hint: string;
   secret: boolean;
+}
+
+export interface InitField extends InitQuestion {
+  name: keyof Config;
 }
 
 export const initFields: readonly InitField[] = [
@@ -93,9 +98,84 @@ export interface InitOptions {
   configPath?: string;
   ask: (field: InitField) => Promise<string>;
   write: (message: string) => void;
+  github?: {
+    ask: (question: InitQuestion) => Promise<string>;
+    signal: AbortSignal;
+  };
 }
 
-/** Configuration creation only: installed init needs no checkout or compiler. */
+async function connectGithub(
+  options: InitOptions,
+  values: Record<string, string>,
+  credentialDirectory: string,
+) {
+  if (!options.github) return;
+  const match =
+    /^(?:https:\/\/github\.com\/|git@github\.com:)([^/]+\/[^/]+?)\/?$/.exec(
+      values.SWARMFORGE_GIT_TREE!,
+    );
+  const repository = match?.[1]?.replace(/\.git$/, "");
+  if (!repository || !githubRepository.test(repository)) return;
+  const { ask, signal } = options.github;
+  options.write(
+    "\nOptional GitHub OAuth: connect clone/push access for this repository. GitHub's repo scope grants broad repository access to your account. Use GitHub App mode for narrower installation permissions.",
+  );
+  while (true) {
+    const answer = (
+      await ask({
+        name: "github_oauth_connect",
+        label: "Connect GitHub with OAuth? [y/N]",
+        hint: "",
+        secret: false,
+      })
+    )
+      .trim()
+      .toLowerCase();
+    if (!answer || answer === "n" || answer === "no") return;
+    if (answer === "y" || answer === "yes") break;
+    options.write("Enter yes or no.");
+  }
+  options.write(
+    "Use your GitHub OAuth App's Client ID. Device Flow must be enabled; no client secret is required.",
+  );
+  let clientId: string;
+  while (true) {
+    clientId = (
+      await ask({
+        name: "github_oauth_client_id",
+        label: "GitHub OAuth App client ID",
+        hint: "",
+        secret: false,
+      })
+    ).trim();
+    if (/^[A-Za-z0-9_.-]{1,256}$/.test(clientId)) break;
+    options.write(
+      "Enter a nonempty GitHub client ID containing letters, numbers, dots, underscores or hyphens.",
+    );
+  }
+  // Separate deployments must not replace one another's active GitHub credentials.
+  const path = join(
+    credentialDirectory,
+    `github-oauth-${values.SWARMFORGE_INSTANCE_ID}.json`,
+  );
+  await loginGithub({
+    clientId,
+    repository,
+    path,
+    signal,
+    write: options.write,
+    showConfiguration: false,
+  });
+  values.SWARMFORGE_GIT_TREE = `https://github.com/${repository}.git`;
+  values.SWARMFORGE_GIT_PUSH_MODE = "github-oauth";
+  values.SWARMFORGE_GITHUB_OAUTH_REPOSITORY = repository;
+  values.SWARMFORGE_GITHUB_OAUTH_CREDENTIALS_PATH = path;
+  options.write(
+    `GitHub clone/push enabled for this deployment. Inspect it with:\n  swarmforge github status --credentials ${shellQuote(path)}`,
+  );
+}
+
+/** Installed init needs no checkout or compiler. OAuth is opt-in. */
 export async function initialize(options: InitOptions) {
   const cwd = resolve(options.cwd ?? process.cwd());
   if (/[\r\n\0]/.test(cwd))
@@ -132,6 +212,9 @@ export async function initialize(options: InitOptions) {
   // Absolute paths keep a global executable on the same database in another CWD.
   values.SWARMFORGE_DB_PATH = join(cwd, "data", "swarmforge.sqlite");
   values.SWARMFORGE_INSTANCE_ID = randomBytes(6).toString("hex");
+  loadConfig(values);
+  await connectGithub(options, values, dirname(defaultConfigPath(env)));
+  options.github?.signal.throwIfAborted();
   loadConfig(values);
   // Single quotes are literal in our env-file parser, including $, # and quotes
   // within the body. The file is data and is never sourced by a shell.

@@ -1,6 +1,7 @@
 import { accessSync, constants, existsSync, statSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import type { Config } from "../config";
+import { githubOauthToken } from "../github-oauth";
 import { redactedText } from "../settings/inspect";
 import {
   type ResolvedSettings,
@@ -123,6 +124,27 @@ export async function doctorChecks(
         : `Artifact storage is not a writable directory: ${config.SWARMFORGE_ARTIFACT_DIR}.`,
     });
 
+    if (config.SWARMFORGE_GIT_PUSH_MODE === "github-oauth") {
+      try {
+        githubOauthToken(
+          config.SWARMFORGE_GITHUB_OAUTH_CREDENTIALS_PATH!,
+          config.SWARMFORGE_GITHUB_OAUTH_REPOSITORY!,
+        );
+        checks.push({
+          name: "GitHub OAuth",
+          status: "pass",
+          message:
+            "Private credential file is valid and bound to the configured repository. Remote access has not been checked.",
+        });
+      } catch {
+        checks.push({
+          name: "GitHub OAuth",
+          status: "fail",
+          message:
+            "Credentials are unavailable, expired, insecure or bound to another repository. Run swarmforge github login.",
+        });
+      }
+    }
     for (const [name, path] of [
       [
         "GitHub App private key",

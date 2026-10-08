@@ -52,6 +52,13 @@ export type ParsedCommand =
       configPath?: string;
       envFiles: string[];
     }
+  | {
+      kind: "github";
+      action: "login" | "status" | "logout";
+      clientId?: string;
+      repository?: string;
+      credentials?: string;
+    }
   | { kind: "help" }
   | { kind: "version" }
   | { kind: "init"; configPath?: string }
@@ -333,6 +340,7 @@ export function parseArguments(args: readonly string[]): ParsedCommand {
   if (head === "--version" || head === "-V") return { kind: "version" };
   if (head === "status") return status(rest);
   if (head === "serve") return serve(rest);
+  if (head === "github") return github(rest);
   if (head === "init") return initialization(rest);
   if (head === "doctor") return doctor(rest);
   if (head === "config") return configuration(rest);
@@ -445,4 +453,39 @@ function operatorCommand(
     envFiles,
     ...(url ? { overrides: { SWARMFORGE_URL: url } } : {}),
   };
+}
+
+function github(rest: readonly string[]): ParsedCommand {
+  if (rest.some(isHelp)) return { kind: "help" };
+  const [action, ...tail] = rest;
+  if (action !== "login" && action !== "status" && action !== "logout")
+    throw new UsageError("github requires login, status or logout");
+  const command: Extract<ParsedCommand, { kind: "github" }> = {
+    kind: "github",
+    action,
+  };
+  const iterator = tail[Symbol.iterator]();
+  const seen = new Set<string>();
+  for (const arg of iterator) {
+    if (seen.has(arg)) throw new UsageError("Duplicate GitHub option");
+    seen.add(arg);
+    if (arg === "--credentials")
+      command.credentials = value(iterator, arg, "a path");
+    else if (arg === "--client-id" && action === "login")
+      command.clientId = value(iterator, arg, "a client ID");
+    else if (arg === "--repository" && action === "login")
+      command.repository = value(iterator, arg, "OWNER/REPO");
+    else throw new UsageError("Unknown GitHub option; use --help");
+  }
+  if (
+    action === "login" &&
+    (!command.clientId ||
+      !/^[A-Za-z0-9_.-]{1,256}$/.test(command.clientId) ||
+      !command.repository ||
+      !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(command.repository))
+  )
+    throw new UsageError(
+      "github login requires --client-id ID and --repository OWNER/REPO",
+    );
+  return command;
 }

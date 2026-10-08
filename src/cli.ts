@@ -37,6 +37,8 @@ import { COMMIT, LICENSE_ID, LICENSE_URL, VERSION } from "./version";
 const usage = `SwarmForge control plane
 
 Usage:
+  swarmforge github login --client-id ID --repository OWNER/REPO [--credentials PATH]
+  swarmforge github status|logout [--credentials PATH]
   swarmforge init [--config PATH]
   swarmforge doctor [--live] [--vm ID] [--config PATH] [--env-file PATH] [--json]
   swarmforge [status] [--url URL] [--json] [--no-interactive]
@@ -56,7 +58,9 @@ Usage:
   swarmforge --help
 
 Commands:
-  init      Ask for required settings and create .env in the current directory.
+  github    Authorize repository clone/push access through GitHub device login.
+  init      Ask for required settings, offer GitHub OAuth for GitHub repositories,
+            and create .env in the current directory.
   doctor    Check local setup; --live explicitly probes remote readiness.
             --vm ID checks tools in an existing running VM, without provisioning.
   status    Show the swarm overview from a running server. Used when no command
@@ -497,6 +501,10 @@ async function run(command: ParsedCommand): Promise<number> {
     case "version":
       write(VERSION);
       return 0;
+    case "github": {
+      const { githubCommand } = await import("./cli/github");
+      return githubCommand(command, write);
+    }
     case "init": {
       const { initialize } = await import("./cli/init");
       const { terminalPrompt } = await import("./cli/prompt");
@@ -506,6 +514,7 @@ async function run(command: ParsedCommand): Promise<number> {
           configPath: command.configPath,
           ask: prompt.ask,
           write,
+          github: { ask: prompt.ask, signal: prompt.signal },
         });
         return 0;
       } finally {

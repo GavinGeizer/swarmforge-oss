@@ -56,7 +56,7 @@ const inputSchema = z
     SWARMFORGE_MODEL_NAME: z.string().min(1),
     SWARMFORGE_GIT_TREE: z.string().min(1).max(2048),
     SWARMFORGE_GIT_PUSH_MODE: z
-      .enum(["none", "github-app", "ssh"])
+      .enum(["none", "github-app", "github-oauth", "ssh"])
       .default("none"),
     SWARMFORGE_GIT_PUSH_TIMEOUT_MS: positive(120000),
     SWARMFORGE_GIT_AUTHOR_NAME: z
@@ -70,6 +70,14 @@ const inputSchema = z
     SWARMFORGE_GIT_PUSH_URL: z.string().min(1).max(2048).optional(),
     SWARMFORGE_GIT_SSH_KEY_PATH: z.string().startsWith("/").optional(),
     SWARMFORGE_GIT_SSH_KNOWN_HOSTS_PATH: z.string().startsWith("/").optional(),
+    SWARMFORGE_GITHUB_OAUTH_CREDENTIALS_PATH: z
+      .string()
+      .startsWith("/")
+      .optional(),
+    SWARMFORGE_GITHUB_OAUTH_REPOSITORY: z
+      .string()
+      .regex(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/)
+      .optional(),
     SWARMFORGE_GITHUB_APP_ID: z.string().regex(/^\d+$/).optional(),
     SWARMFORGE_GITHUB_INSTALLATION_ID: z.string().regex(/^\d+$/).optional(),
     SWARMFORGE_GITHUB_PRIVATE_KEY_PATH: z.string().startsWith("/").optional(),
@@ -157,6 +165,22 @@ const inputSchema = z
           code: "custom",
           path: ["SWARMFORGE_GIT_TREE"],
           message: "Must be the configured GitHub repository over HTTPS",
+        });
+    }
+    if (v.SWARMFORGE_GIT_PUSH_MODE === "github-oauth") {
+      required("SWARMFORGE_GITHUB_OAUTH_CREDENTIALS_PATH");
+      required("SWARMFORGE_GITHUB_OAUTH_REPOSITORY");
+      if (
+        v.SWARMFORGE_GITHUB_OAUTH_REPOSITORY &&
+        ![
+          `https://github.com/${v.SWARMFORGE_GITHUB_OAUTH_REPOSITORY}`,
+          `https://github.com/${v.SWARMFORGE_GITHUB_OAUTH_REPOSITORY}.git`,
+        ].includes(v.SWARMFORGE_GIT_TREE)
+      )
+        ctx.addIssue({
+          code: "custom",
+          path: ["SWARMFORGE_GIT_TREE"],
+          message: "Must be the configured GitHub OAuth repository over HTTPS",
         });
     }
     if (v.SWARMFORGE_GIT_PUSH_MODE === "ssh") {

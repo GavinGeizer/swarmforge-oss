@@ -1,5 +1,6 @@
 import type { Coordinator } from "./coordinator";
 import { excerptLimit, type WorkerResult } from "./domain";
+import { oauthSecrets, readOauthCredential } from "./github-oauth";
 import {
   recoveryGuidance,
   taskProgress,
@@ -80,15 +81,35 @@ export function redactorFor(c: Coordinator) {
   let redactor = redactors.get(c);
   if (!redactor) {
     let cached: { version: unknown; values: string[] } | undefined;
-    const version = () =>
-      c.store.db.inTransaction
+    const remembered = new Set<string>();
+    const version = () => {
+      if (
+        c.config.SWARMFORGE_GIT_PUSH_MODE === "github-oauth" &&
+        c.config.SWARMFORGE_GITHUB_OAUTH_CREDENTIALS_PATH
+      ) {
+        try {
+          readOauthCredential(
+            c.config.SWARMFORGE_GITHUB_OAUTH_CREDENTIALS_PATH,
+          );
+        } catch {}
+      }
+      for (const secret of oauthSecrets()) {
+        if (!remembered.has(secret)) {
+          c.store.rememberCredential(secret);
+          // A transaction may roll back; only cache durable writes.
+          if (!c.store.db.inTransaction) remembered.add(secret);
+        }
+      }
+      return c.store.db.inTransaction
         ? Symbol("transactional credentials")
         : JSON.stringify([
             c.store.revision(),
+            oauthSecrets(),
             c.config.FREESTYLE_API_TOKEN,
             c.config.SWARMFORGE_MODEL_API_KEY,
             c.config.SWARMFORGE_API_TOKEN,
           ]);
+    };
     redactor = new Redactor(() => {
       const current = version();
       if (cached?.version !== current)
@@ -99,6 +120,7 @@ export function redactorFor(c: Coordinator) {
             c.config.SWARMFORGE_MODEL_API_KEY,
             c.config.SWARMFORGE_API_TOKEN ?? "",
             ...c.store.credentials(),
+            ...oauthSecrets(),
           ],
         };
       return cached!.values;
