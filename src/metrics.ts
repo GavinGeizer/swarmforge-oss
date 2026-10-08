@@ -1,5 +1,45 @@
+import { timingSafeEqual } from "node:crypto";
 import { Counter, Gauge, Histogram, Registry } from "prom-client";
 import type { Coordinator } from "./coordinator";
+
+// Operational diagnostics are never published with the API bind. They may be
+// accessed locally (or through an operator-managed tunnel), with the instance
+// bearer required whenever one is configured. No public allowed-host override.
+export function createMetricsHandler(c: Coordinator) {
+  const metrics = new Metrics(c);
+  return async (request: Request): Promise<Response> => {
+    const url = new URL(request.url);
+    if (!["127.0.0.1", "localhost", "[::1]"].includes(url.hostname))
+      return new Response("Invalid host", { status: 403 });
+    const origin = request.headers.get("origin");
+    if (origin && origin !== url.origin)
+      return new Response("Forbidden origin", { status: 403 });
+    const token = c.config.SWARMFORGE_API_TOKEN;
+    if (token) {
+      const actual = Buffer.from(request.headers.get("authorization") ?? "");
+      const expected = Buffer.from(`Bearer ${token}`);
+      if (
+        actual.length !== expected.length ||
+        !timingSafeEqual(actual, expected)
+      )
+        return new Response("Unauthorized", { status: 401 });
+    }
+    if (url.pathname !== "/metrics")
+      return new Response("Not found", { status: 404 });
+    if (request.method !== "GET")
+      return new Response("Method not allowed", {
+        status: 405,
+        headers: { allow: "GET" },
+      });
+    return new Response(await metrics.render(), {
+      headers: {
+        "content-type": "text/plain; version=0.0.4; charset=utf-8",
+        "cache-control": "no-store",
+        "x-content-type-options": "nosniff",
+      },
+    });
+  };
+}
 
 // Artifact kinds are recorded by the capture path, so the label set is fixed here: an
 // unexpected kind becomes "other" instead of creating unbounded metric cardinality. The names

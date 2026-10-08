@@ -29,7 +29,7 @@ Configuration files are explicit: use `swarmforge init` to create `.env` and reg
 | `OPENCODE_PORT` | `4096` | Guest server port, 1–65535. |
 | `OPENCODE_START_COMMAND` | `opencode serve --hostname 0.0.0.0 --port "$OPENCODE_PORT"` | Administrator-supplied command run by the guest systemd service. Keep it compatible with the configured port. |
 | `SWARMFORGE_DB_PATH` | `$XDG_DATA_HOME/swarmforge/swarmforge.sqlite`, otherwise `~/.local/share/swarmforge/swarmforge.sqlite` | Persistent local SQLite file. `init` sets an absolute path to `data/swarmforge.sqlite` in the initialization directory. Existing explicit paths stay in effect; no database is migrated. Server disallows `:memory:`. Parent directory is created. |
-| `SWARMFORGE_HOST` | `127.0.0.1` | MCP and metrics listen interface. |
+| `SWARMFORGE_HOST` | `127.0.0.1` | MCP listen interface. Metrics always bind 127.0.0.1. |
 | `SWARMFORGE_ALLOWED_HOSTS` | Empty | Comma-separated public hostnames/IPs accepted in addition to loopback and the bind address. Set for a reverse proxy or wildcard bind; host validation prevents DNS rebinding. Any non-loopback entry here also requires `SWARMFORGE_API_TOKEN`, even when `SWARMFORGE_HOST` stays on loopback. |
 | `SWARMFORGE_PORT` | `8787` | MCP HTTP port. |
 | `SWARMFORGE_API_TOKEN` | Unset on loopback | Shared trusted-lead bearer token, minimum 24 characters. Required whenever any accepted hostname is non-loopback, which includes a public entry in `SWARMFORGE_ALLOWED_HOSTS` and a non-loopback `SWARMFORGE_HOST`. When it is set, every accepted hostname requires the token, so a loopback-only deployment cannot reach a proxied hostname anonymously. No per-team authorization. |
@@ -42,7 +42,7 @@ Configuration files are explicit: use `swarmforge init` to create `.env` and reg
 | `SWARMFORGE_POLL_INTERVAL_MS` | `2000` | Worker polling interval; owned-VM reconciliation also runs periodically. |
 | `SWARMFORGE_API_TIMEOUT_MS` | `30000` | Bound on external operations. A timed-out provider operation may still finish remotely and is reconciled. |
 | `SWARMFORGE_METRICS_ENABLED` | `true` | Exactly `true` or `false`. |
-| `SWARMFORGE_METRICS_PORT` | `9090` | Separate Prometheus listener; must differ from MCP port. Protect externally if public. |
+| `SWARMFORGE_METRICS_PORT` | `9090` | Loopback-only Prometheus listener; must differ from MCP port. Configured instance bearer is required for scraping. |
 | `SWARMFORGE_METRICS_TEAMS` | `default` | Comma-separated team label allowlist; all other IDs aggregate under `other`. |
 | `SWARMFORGE_ARTIFACT_DIR` | `artifacts` beside `SWARMFORGE_DB_PATH` | Absolute private storage root for preserved artifacts and diagnostics. An in-memory database uses a private temporary directory, so nothing lands in a world-readable place. |
 | `SWARMFORGE_ARTIFACT_MAX_BYTES` | `1073741824` | Maximum bytes for one captured file or archive. A larger source is refused, never truncated. |

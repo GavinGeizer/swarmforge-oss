@@ -1,0 +1,11 @@
+# Operational access policy
+
+Phase 2A keeps the customer Bun coordinator separate from the cloud API. The coordinator's API bind defaults to loopback and non-loopback accepted hosts require its existing shared bearer. API liveness, event replay, artifact downloads and MCP inherit the existing host, bearer and origin boundary. Worker OpenCode endpoints use per-worker passwords and provider TLS; they are not cloud account endpoints.
+
+The separate Prometheus listener now binds **only `127.0.0.1`**, independently of `SWARMFORGE_HOST`. Public allowed-host settings do not apply to it. Its handler accepts loopback hostnames only, rejects cross-origin requests, requires GET, sends no-store/nosniff, and requires the existing instance bearer whenever `SWARMFORGE_API_TOKEN` is configured. With no instance bearer, loopback diagnostics remain accessible to local operators. Operators may disable it with `SWARMFORGE_METRICS_ENABLED=false`.
+
+Remote scraping uses an operator-managed private connection/tunnel to loopback and supplies the configured bearer. Do not publish this listener through a public reverse proxy or forward its credentials into a customer browser. There is no new cloud metrics endpoint; cloud health/readiness expose only coarse status. Local metrics bind/auth changes require restarting the running coordinator before they take effect.
+
+Tests exercise the real server with a public API bind: authorized API access on a non-loopback interface succeeds, metrics on that interface cannot connect, unauthenticated loopback metrics return 401 with a configured token, and authorized loopback metrics remain usable. Handler tests cover hostile host/origin/method; no-token local diagnostics remain available. The interface test is explicitly skipped on systems without a non-loopback IPv4 interface.
+
+Cloud logs accept only generated request ID, route template, status and fixed outcome fields. OAuth codes, cookies, authorization headers, raw provider tokens, verifier secrets and client secrets must never enter audit metadata or error logs. Existing local event redaction and CLI settings redaction remain operational; raw cloud authentication material is not registered into the local SQLite credential-screening table.

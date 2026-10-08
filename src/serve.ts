@@ -2,7 +2,7 @@ import type { Config } from "./config";
 import { Coordinator } from "./coordinator";
 import type { CodingAgent, WorkerProvider } from "./domain";
 import { createHttpHandler } from "./http";
-import { Metrics } from "./metrics";
+import { createMetricsHandler } from "./metrics";
 import { FreestyleProvider } from "./providers/freestyle";
 import { OpenCodeAgent } from "./providers/opencode";
 import { acquireProcessLock, eventLogger } from "./runtime";
@@ -175,18 +175,10 @@ export async function startServer(
       idleTimeout: 60,
     });
     if (config.SWARMFORGE_METRICS_ENABLED) {
-      const metrics = new Metrics(coordinator);
       metricsServer = Bun.serve({
-        hostname: config.SWARMFORGE_HOST,
+        hostname: "127.0.0.1",
         port: config.SWARMFORGE_METRICS_PORT,
-        fetch: async (request) =>
-          new URL(request.url).pathname === "/metrics"
-            ? new Response(await metrics.render(), {
-                headers: {
-                  "content-type": "text/plain; version=0.0.4; charset=utf-8",
-                },
-              })
-            : new Response("Not found", { status: 404 }),
+        fetch: createMetricsHandler(coordinator),
       });
     }
     flush = eventLogger(coordinator, `${config.SWARMFORGE_DB_PATH}.log`);
