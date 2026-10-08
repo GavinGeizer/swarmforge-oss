@@ -9,11 +9,21 @@ const display = z
   .string()
   .min(1)
   .max(100)
-  .regex(/^[^\u0000-\u001f\u007f-\u009f]*$/u);
-const credentialSchema = cloudCredentialSchema.omit({
-  version: true,
-  server_url: true,
-});
+  .refine(
+    (v) =>
+      ![...v].some((c) => {
+        const n = c.codePointAt(0)!;
+        return n < 32 || (n >= 127 && n <= 159);
+      }),
+  );
+const credentialSchema = z
+  .object(cloudCredentialSchema.shape)
+  .omit({
+    version: true,
+    server_url: true,
+  })
+  .strict()
+  .refine((v) => v.expires_at <= v.authorization_expires_at);
 const linkSchema = z
   .object({
     link_id: id,

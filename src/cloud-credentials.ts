@@ -86,7 +86,7 @@ function parent(path: string, create = false) {
     at = next;
   }
   for (const d of chain) {
-    let s;
+    let s: ReturnType<typeof lstatSync>;
     try {
       s = lstatSync(d);
     } catch (e) {
