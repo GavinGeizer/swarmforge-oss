@@ -39,6 +39,10 @@ const usage = `SwarmForge control plane
 Usage:
   swarmforge github login --client-id ID --repository OWNER/REPO [--credentials PATH]
   swarmforge github status|logout [--credentials PATH]
+  swarmforge cloud login [--cloud-url URL] [--credentials PATH] [--name NAME] [--no-browser] [--json]
+  swarmforge cloud status|logout [--credentials PATH] [--json]
+  swarmforge cloud organizations [--credentials PATH] [--json]
+  swarmforge cloud use --tenant-id UUID [--cloud-url URL] [--credentials PATH] [--no-browser]
   swarmforge init [--config PATH]
   swarmforge doctor [--live] [--vm ID] [--config PATH] [--env-file PATH] [--json]
   swarmforge [status] [--url URL] [--json] [--no-interactive]
@@ -59,6 +63,7 @@ Usage:
 
 Commands:
   github    Authorize repository clone/push access through GitHub device login.
+  cloud     Authenticate and interact with cloud server via device login.
   init      Ask for required settings, offer GitHub OAuth for GitHub repositories,
             and create .env in the current directory.
   doctor    Check local setup; --live explicitly probes remote readiness.
@@ -74,6 +79,7 @@ Commands:
   templates List or render built-in task recipes locally; never spawns workers.
 
 Options:
+  --cloud-url URL    Cloud API endpoint, overriding SWARMFORGE_CLOUD_URL.
   --url URL          MCP endpoint for client commands, overriding SWARMFORGE_URL.
   --json             Print structured command output as JSON.
   --no-interactive   Print one snapshot and exit.
@@ -504,6 +510,10 @@ async function run(command: ParsedCommand): Promise<number> {
     case "github": {
       const { githubCommand } = await import("./cli/github");
       return githubCommand(command, write);
+    }
+    case "cloud": {
+      const { cloudCommand } = await import("./cli/cloud");
+      return cloudCommand(command, write);
     }
     case "init": {
       const { initialize } = await import("./cli/init");

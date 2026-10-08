@@ -90,6 +90,16 @@ export type ParsedCommand =
       action: ConfigAction;
       configPath?: string;
       envFiles: string[];
+    }
+  | {
+      kind: "cloud";
+      action: "login" | "status" | "logout" | "organizations" | "use";
+      cloudUrl?: string;
+      credentials?: string;
+      clientName?: string;
+      noBrowser?: boolean;
+      json?: boolean;
+      tenantId?: string;
     };
 
 const configActions = ["path", "show", "validate"];
@@ -341,6 +351,7 @@ export function parseArguments(args: readonly string[]): ParsedCommand {
   if (head === "status") return status(rest);
   if (head === "serve") return serve(rest);
   if (head === "github") return github(rest);
+  if (head === "cloud") return cloud(rest);
   if (head === "init") return initialization(rest);
   if (head === "doctor") return doctor(rest);
   if (head === "config") return configuration(rest);
@@ -487,5 +498,58 @@ function github(rest: readonly string[]): ParsedCommand {
     throw new UsageError(
       "github login requires --client-id ID and --repository OWNER/REPO",
     );
+  return command;
+}
+
+function cloud(rest: readonly string[]): ParsedCommand {
+  if (rest.some(isHelp)) return { kind: "help" };
+  const [action, ...tail] = rest;
+  if (
+    action !== "login" &&
+    action !== "status" &&
+    action !== "logout" &&
+    action !== "organizations" &&
+    action !== "use"
+  )
+    throw new UsageError(
+      "cloud requires login, status, logout, organizations, or use",
+    );
+  const command: Extract<ParsedCommand, { kind: "cloud" }> = {
+    kind: "cloud",
+    action,
+  };
+  const iterator = tail[Symbol.iterator]();
+  for (const arg of iterator) {
+    if (isHelp(arg)) return { kind: "help" };
+    else if (arg === "--cloud-url")
+      command.cloudUrl = value(iterator, arg, "an HTTPS URL");
+    else if (arg === "--credentials")
+      command.credentials = value(iterator, arg, "a path");
+    else if (arg === "--name" && action === "login")
+      command.clientName = value(iterator, arg, "a client name");
+    else if (arg === "--no-browser") command.noBrowser = true;
+    else if (arg === "--json") command.json = true;
+    else if (arg === "--tenant-id" && action === "use")
+      command.tenantId = value(iterator, arg, "a tenant UUID");
+    else throw new UsageError(`Unknown cloud option: ${arg}`);
+  }
+  if (action === "use" && !command.tenantId)
+    throw new UsageError("cloud use requires --tenant-id UUID");
+  if (
+    action === "login" &&
+    command.clientName &&
+    !/^[ -~]{1,100}$/.test(command.clientName)
+  )
+    throw new UsageError(
+      "Client name must be 1-100 printable ASCII characters",
+    );
+  if (
+    action === "use" &&
+    command.tenantId &&
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+      command.tenantId,
+    )
+  )
+    throw new UsageError("Tenant ID must be a valid UUID");
   return command;
 }
