@@ -186,14 +186,18 @@ async function authorize(ctx: Context, tenant: string, installation: string) {
   const cipher = await seal(ctx.env.AUTH_SECRET, JSON.stringify(issued.reply));
   // Same-window predicates: browser session, installation epoch/user/status,
   // and installation authorization window are all rechecked inside the batch
-  // (TOCTOU between the pre-read and the insert closes here). The
-  // UNIQUE(installation_id, session_id, idempotency_key) loser inserts zero
-  // rows; the final SELECT then returns the winner's ciphertext for clean
-  // replay — but a replay that no longer passes hostedAuth (revoked/rotated)
-  // is rejected, never resurrected.
+  // (TOCTOU between the pre-read and the insert closes here). The INSERT
+  // carries ON CONFLICT DO NOTHING on UNIQUE(installation, session, key): a
+  // racing loser's write no-ops instead of throwing (D1 batches are atomic;
+  // a throw would abort the whole batch AND escape as 503). The final SELECT
+  // then reads the winner's ciphertext for clean replay. The winner's own
+  // row decrypts to its credential (re-authorized below: revoked/rotated
+  // winners are rejected, never resurrected). The loser's phantom grant_id
+  // never lands, so the conditional audit writes nothing for it — atomic
+  // audit with no new resource.
   const result = await ctx.env.DB.batch([
     ctx.env.DB.prepare(
-      `INSERT INTO hosted_execution_grants SELECT ?,?,?,?,?,?,?,?,?,?,?,?,?,?,NULL WHERE ${guard.sql} AND EXISTS(SELECT 1 FROM cli_installations WHERE installation_id=? AND organization_id=? AND user_id=? AND status='active' AND epoch=? AND authorization_expires_at=?)`,
+      `INSERT INTO hosted_execution_grants SELECT ?,?,?,?,?,?,?,?,?,?,?,?,?,?,NULL WHERE ${guard.sql} AND EXISTS(SELECT 1 FROM cli_installations WHERE installation_id=? AND organization_id=? AND user_id=? AND status='active' AND epoch=? AND authorization_expires_at=?) ON CONFLICT(installation_id,session_id,idempotency_key) DO NOTHING`,
     ).bind(
       issued.reply.grant_id,
       issued.hash,
@@ -251,7 +255,13 @@ async function authorize(ctx: Context, tenant: string, installation: string) {
       headers: { authorization: `Bearer ${value.credential}` },
     }),
   });
-  return json(hostedExecutionCredentialReplySchema, value, 201);
+  // 201 for the issuer whose row landed; 200 replay when the ciphertext
+  // belongs to a racing winner (our insert no-op'd on the key conflict).
+  return json(
+    hostedExecutionCredentialReplySchema,
+    value,
+    value.grant_id === issued.reply.grant_id ? 201 : 200,
+  );
 }
 
 export async function revokeExecutionGrant(ctx: Context, p: HostedPrincipal) {

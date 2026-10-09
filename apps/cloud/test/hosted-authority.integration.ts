@@ -122,6 +122,76 @@ test("concurrent same-key issuance serializes: one grant, identical replay bodie
   }
 });
 
+test("issuance race loser is handled cleanly: revoked-winner forces the loser batch path to 409, never 500/503, one row, no phantom audit", async () => {
+  // Deterministic equivalent of the lead's barrier evidence (miss-miss
+  // interleaving: two empty replay reads before either write). We force the
+  // loser's exact position: the winner row exists but the loser's pre-read
+  // MUST miss it (revoked filter), so the loser proceeds to its batch INSERT
+  // and hits UNIQUE(installation, session, key) — the identical constraint
+  // the barrier loser's batch hit.
+  // OLD code: the batch THROWS and the request escapes as 503 (D1 error is
+  // not an HttpError) — this test FAILS RED there (expects 409, gets 503).
+  // FIXED code: ON CONFLICT DO NOTHING + read-winner + re-authorize: the
+  // revoked winner cannot re-authorize, so a clean 409 authorization_conflict
+  // with exactly one grant row and no phantom-grant audit row.
+  const h = await hostedFixture();
+  try {
+    const a = await h.login();
+    const device = await h.linkedDevice(a);
+    const k = crypto.randomUUID();
+    const first = await h.authorizeExecution(
+      a,
+      a.tenant,
+      device.installation_id,
+      k,
+    );
+    assert.equal(first.status, 201);
+    const winner = (await first.json()) as { grant_id: string };
+    // Revoke the winner so the loser's pre-read misses while the UNIQUE
+    // scope still collides.
+    await h.db
+      .prepare(
+        "UPDATE hosted_execution_grants SET revoked_at=? WHERE grant_id=?",
+      )
+      .bind(Date.now(), winner.grant_id)
+      .run();
+    const auditsBefore = (await h.db
+      .prepare(
+        "SELECT count(*) n FROM audit_events WHERE action='hosted.execution_authorized'",
+      )
+      .first<{ n: number }>())!;
+    const loser = await h.authorizeExecution(
+      a,
+      a.tenant,
+      device.installation_id,
+      k,
+    );
+    // Counts only: never copy raw credential values into evidence.
+    assert.equal(loser.status, 409);
+    const body = (await loser.json()) as { error: { code: string } };
+    assert.equal(body.error.code, "authorization_conflict");
+    const rows = (await h.db
+      .prepare(
+        "SELECT count(*) n FROM hosted_execution_grants WHERE organization_id=? AND installation_id=? AND idempotency_key=?",
+      )
+      .bind(a.tenant, device.installation_id, k)
+      .first<{ n: number }>())!;
+    assert.equal(rows.n, 1);
+    const auditsAfter = (await h.db
+      .prepare(
+        "SELECT count(*) n FROM audit_events WHERE action='hosted.execution_authorized'",
+      )
+      .first<{ n: number }>())!;
+    assert.equal(
+      auditsAfter.n,
+      auditsBefore.n,
+      "loser must not audit a phantom grant",
+    );
+  } finally {
+    await h.mf.dispose();
+  }
+});
+
 test("execution grant denial: wrong installation/user/tenant, missing CSRF, machine credentials", async () => {
   const h = await hostedFixture();
   try {

@@ -26,6 +26,7 @@ import { convertV4MiniflareOptions, Miniflare } from "miniflare";
 // (00000000-0000-4000-8000-00000000002a) via .wrangler/state; imported
 // statically to keep the seam honest if the config value ever changes.
 import { localDatabaseId } from "../cloudflare.config.ts";
+
 void localDatabaseId;
 
 if (process.env.SWARMFORGE_LOCAL_OPERATOR !== "1") {
