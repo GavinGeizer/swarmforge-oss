@@ -43,19 +43,38 @@ async function setup() {
 }
 type Setup = Awaited<ReturnType<typeof setup>>;
 async function seed(x: Setup, meter = true) {
+  let now = Date.now();
   const { h, a, w } = x,
-    now = Date.now(),
     task = crypto.randomUUID(),
     reservation = crypto.randomUUID(),
     outbox = crypto.randomUUID(),
     allowance = meter ? crypto.randomUUID() : null;
-  if (allowance)
+  if (allowance) {
+    // Separate seeded meters need distinct real period starts. Fast fixtures
+    // can allocate twice within one millisecond; retain the schema invariant
+    // and wait for the actual clock rather than inventing a future timestamp.
+    for (let attempt = 0; ; attempt++) {
+      const existing = await h.db
+        .prepare(
+          "SELECT allowance_id FROM hosted_allowances WHERE organization_id=? AND resource='compute_ms' AND resource_class='controlled' AND period_start=?",
+        )
+        .bind(a.tenant, now)
+        .first();
+      if (!existing) break;
+      if (attempt >= 8)
+        throw new Error(
+          "Fixture clock did not advance to a distinct allowance period",
+        );
+      await Bun.sleep(1);
+      now = Date.now();
+    }
     await h.db
       .prepare(
         "INSERT INTO hosted_allowances(allowance_id,organization_id,entitlement_id,resource,unit,resource_class,allowed_quantity,consumed_quantity,reserved_quantity,period_start,period_end,created_at) SELECT ?,?,entitlement_id,'compute_ms','millisecond','controlled','60000','0','10000',?,?,? FROM hosted_entitlements WHERE organization_id=? ORDER BY version DESC LIMIT 1",
       )
       .bind(allowance, a.tenant, now, now + 86400000, now, a.tenant)
       .run();
+  }
   await h.db.batch([
     h.db
       .prepare(
