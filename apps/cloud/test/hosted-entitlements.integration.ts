@@ -3,7 +3,8 @@ import { test } from "node:test";
 import {
   activePolicyGuard,
   addQuantities,
-  allowanceCasStatement,
+  allowanceReserveStatement,
+  allowanceSettleStatement,
   controlledConsumption,
   currentPolicy,
   evaluatePolicy,
@@ -471,47 +472,56 @@ test("allowance CAS helper is exact; controlled meter mapping enforced", async (
     });
     const allowance = (await h.db
       .prepare(
-        "SELECT allowance_id,entitlement_id FROM hosted_allowances WHERE organization_id=? AND resource='compute_ms'",
+        "SELECT allowance_id,entitlement_id,resource,unit,resource_class,period_start,period_end FROM hosted_allowances WHERE organization_id=? AND resource='compute_ms'",
       )
       .bind(a.tenant)
-      .first<{ allowance_id: string; entitlement_id: string }>())!;
-    // CAS reserve 100ms of runtime: exact expected strings required.
-    const cas = allowanceCasStatement(
-      ctx as never,
-      allowance.allowance_id,
-      a.tenant,
-      allowance.entitlement_id,
-      "0",
-      "0",
-      "100",
-      "0",
-    );
+      .first<{
+        allowance_id: string;
+        entitlement_id: string;
+        resource: string;
+        unit: string;
+        resource_class: string;
+        period_start: number;
+        period_end: number;
+      }>())!;
+    const casBase = {
+      allowanceId: allowance.allowance_id,
+      tenant: a.tenant,
+      entitlementId: allowance.entitlement_id,
+      resource: allowance.resource,
+      unit: allowance.unit,
+      resourceClass: allowance.resource_class,
+      periodStart: allowance.period_start,
+      periodEnd: allowance.period_end,
+    } as const;
+    // Reserve-only helper: CAS reserve 100ms of runtime, exact strings.
+    const cas = allowanceReserveStatement(ctx as never, {
+      ...casBase,
+      expectedReserved: "0",
+      expectedConsumed: "0",
+      newReserved: "100",
+      newConsumed: "0",
+    });
     const casResult = await h.db.batch([cas]);
     assert.equal(casResult[0]!.meta.changes, 1);
     // Stale expectations (still "0") now fail: no silent double-reserve.
-    const stale = allowanceCasStatement(
-      ctx as never,
-      allowance.allowance_id,
-      a.tenant,
-      allowance.entitlement_id,
-      "0",
-      "0",
-      "200",
-      "0",
-    );
+    const stale = allowanceReserveStatement(ctx as never, {
+      ...casBase,
+      expectedReserved: "0",
+      expectedConsumed: "0",
+      newReserved: "200",
+      newConsumed: "0",
+    });
     const staleResult = await h.db.batch([stale]);
     assert.equal(staleResult[0]!.meta.changes, 0);
-    // Settlement CAS: reserved 100 -> consumed 100 lands exactly.
-    const settle = allowanceCasStatement(
-      ctx as never,
-      allowance.allowance_id,
-      a.tenant,
-      allowance.entitlement_id,
-      "100",
-      "0",
-      "0",
-      "100",
-    );
+    // Trusted settlement: reserved 100 -> consumed 100 lands exactly.
+    const settle = allowanceSettleStatement(ctx as never, {
+      ...casBase,
+      expectedReserved: "100",
+      expectedConsumed: "0",
+      newReserved: "0",
+      newConsumed: "100",
+    });
     const settleResult = await h.db.batch([settle]);
     assert.equal(settleResult[0]!.meta.changes, 1);
     const landed = (await h.db
@@ -526,16 +536,179 @@ test("allowance CAS helper is exact; controlled meter mapping enforced", async (
     });
     // Malformed CAS quantities throw before any write.
     assert.throws(() =>
-      allowanceCasStatement(
-        ctx as never,
-        allowance.allowance_id,
-        a.tenant,
-        allowance.entitlement_id,
-        "01",
-        "0",
-        "1",
-        "0",
-      ),
+      allowanceReserveStatement(ctx as never, {
+        ...casBase,
+        expectedReserved: "01",
+        expectedConsumed: "0",
+        newReserved: "1",
+        newConsumed: "0",
+      }),
+    );
+    // Unsupported meter triple rejected for controlled admission.
+    assert.throws(
+      () =>
+        allowanceReserveStatement(ctx as never, {
+          ...casBase,
+          resource: "inference_tokens",
+          unit: "token",
+          resourceClass: "model-x",
+          expectedReserved: "0",
+          expectedConsumed: "100",
+          newReserved: "1",
+          newConsumed: "100",
+        }),
+      /unsupported meter/,
+    );
+    // Measuring interval escaping the allowance period rejected.
+    assert.throws(
+      () =>
+        allowanceReserveStatement(ctx as never, {
+          ...casBase,
+          expectedReserved: "0",
+          expectedConsumed: "100",
+          newReserved: "0",
+          newConsumed: "100",
+          measuredStart: allowance.period_start - 10,
+          measuredEnd: allowance.period_end,
+        }),
+      /measured interval/,
+    );
+  } finally {
+    await h.mf.dispose();
+  }
+});
+
+test("trusted settlement lands after policy expiry; reserve-only does not", async () => {
+  const h = await hostedFixture();
+  try {
+    const a = await h.login();
+    const ctx = {
+      env: {
+        DB: h.db,
+        AUTH_SECRET: "test-auth-secret-with-at-least-thirty-two-characters",
+        APP_ORIGIN: "https://api.example.invalid",
+        WEBSITE_ORIGIN: "https://api.example.invalid",
+        ENVIRONMENT: "local",
+      },
+      request: new Request("https://api.example.invalid/"),
+      request_id: crypto.randomUUID(),
+      route: "operator.policy",
+      actor: a.user,
+    };
+    await h.seedPolicy(a.tenant, {
+      ...defaultPolicy,
+      allowances: [
+        {
+          resource: "compute_ms",
+          unit: "millisecond",
+          resource_class: "controlled",
+          allowed_quantity: "60000",
+        },
+      ],
+    });
+    const allowance = (await h.db
+      .prepare(
+        "SELECT allowance_id,entitlement_id,resource,unit,resource_class,period_start,period_end FROM hosted_allowances WHERE organization_id=? AND resource='compute_ms'",
+      )
+      .bind(a.tenant)
+      .first<{
+        allowance_id: string;
+        entitlement_id: string;
+        resource: string;
+        unit: string;
+        resource_class: string;
+        period_start: number;
+        period_end: number;
+      }>())!;
+    const casBase = {
+      allowanceId: allowance.allowance_id,
+      tenant: a.tenant,
+      entitlementId: allowance.entitlement_id,
+      resource: allowance.resource,
+      unit: allowance.unit,
+      resourceClass: allowance.resource_class,
+      periodStart: allowance.period_start,
+      periodEnd: allowance.period_end,
+    } as const;
+    // Reserve while live.
+    assert.equal(
+      (
+        await h.db.batch([
+          allowanceReserveStatement(ctx as never, {
+            ...casBase,
+            expectedReserved: "0",
+            expectedConsumed: "0",
+            newReserved: "100",
+            newConsumed: "0",
+          }),
+        ])
+      )[0]!.meta.changes,
+      1,
+    );
+    // Expire the policy: reserve-only now updates 0 (never strand silently).
+    await h.db
+      .prepare(
+        "UPDATE hosted_entitlements SET valid_until=? WHERE entitlement_id=?",
+      )
+      .bind(Date.now() - 1, allowance.entitlement_id)
+      .run();
+    assert.equal(
+      (
+        await h.db.batch([
+          allowanceReserveStatement(ctx as never, {
+            ...casBase,
+            expectedReserved: "100",
+            expectedConsumed: "0",
+            newReserved: "200",
+            newConsumed: "0",
+          }),
+        ])
+      )[0]!.meta.changes,
+      0,
+    );
+    // Trusted settlement still lands: ownership + triple + period + exact
+    // quantities checked, commercial window ignored. Stop evidence is never
+    // stranded by expiry.
+    assert.equal(
+      (
+        await h.db.batch([
+          allowanceSettleStatement(ctx as never, {
+            ...casBase,
+            expectedReserved: "100",
+            expectedConsumed: "0",
+            newReserved: "0",
+            newConsumed: "100",
+          }),
+        ])
+      )[0]!.meta.changes,
+      1,
+    );
+    const landed = (await h.db
+      .prepare(
+        "SELECT reserved_quantity,consumed_quantity FROM hosted_allowances WHERE allowance_id=?",
+      )
+      .bind(allowance.allowance_id)
+      .first<{ reserved_quantity: string; consumed_quantity: string }>())!;
+    assert.deepEqual(landed, {
+      reserved_quantity: "0",
+      consumed_quantity: "100",
+    });
+    // Cross-tenant settlement with identical quantities updates 0.
+    const b = await h.login(200);
+    assert.equal(
+      (
+        await h.db.batch([
+          allowanceSettleStatement(ctx as never, {
+            ...casBase,
+            tenant: b.tenant,
+            expectedReserved: "0",
+            expectedConsumed: "100",
+            newReserved: "0",
+            newConsumed: "200",
+          }),
+        ])
+      )[0]!.meta.changes,
+      0,
     );
   } finally {
     await h.mf.dispose();

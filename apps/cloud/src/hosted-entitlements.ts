@@ -301,10 +301,107 @@ export function isControlledMeter(
   );
 }
 
-// Frozen allowance CAS helper for downstream reserve+settlement. Atomically
-// moves expectedReserved->newReserved and expectedConsumed->newConsumed on
-// the tenant+allowance+policy-owned row inside its validity window, using
-// exact-string compares (no Number/CAST). Returns true iff the row matched.
+// Allowance CAS helpers for downstream admission (reserve) and trusted
+// settlement. Two explicit modes; the caller NEVER selects a commercial
+// bypass — the exec client cannot choose cleanup mode (dispatch owns guarded
+// cleanup separately).
+//
+// - allowanceReserveStatement: ADMISSION/RESERVE ONLY. Requires the owning
+//   policy row to be live (unrevoked, in-window); emergency settlement after
+//   expiry/revocation must NOT use this helper (it would update 0 rows and
+//   silently strand consumption).
+// - allowanceSettleStatement: TRUSTED SETTLEMENT. Still checks org +
+//   allowance + resource ownership (exact triple), the measuring-period bound
+//   (period_start/period_end containment of the measured interval), and exact
+//   expected-quantity strings — but ignores the commercial window, so stop
+//   evidence always lands. No Number/CAST quantities anywhere.
+export interface AllowanceCasOptions {
+  allowanceId: string;
+  tenant: string;
+  entitlementId: string;
+  resource: string;
+  unit: string;
+  resourceClass: string;
+  periodStart: number;
+  periodEnd: number;
+  expectedReserved: string;
+  expectedConsumed: string;
+  newReserved: string;
+  newConsumed: string;
+  // Measured consumption interval must sit inside the allowance period.
+  measuredStart?: number;
+  measuredEnd?: number;
+  now?: number;
+}
+
+function validateAllowanceCasOptions(o: AllowanceCasOptions) {
+  // Validate canonical bounded form before binding (throws on overflow).
+  parseQuantity(o.expectedReserved);
+  parseQuantity(o.expectedConsumed);
+  parseQuantity(o.newReserved);
+  parseQuantity(o.newConsumed);
+  if (!isControlledMeter(o.resource, o.unit, o.resourceClass))
+    throw new Error("unsupported meter for controlled admission");
+  if (!(o.periodEnd > o.periodStart))
+    throw new Error("allowance period is not a finite window");
+  const start = o.measuredStart ?? o.periodStart;
+  const end = o.measuredEnd ?? o.periodEnd;
+  if (!(start >= o.periodStart && end <= o.periodEnd && end > start))
+    throw new Error("measured interval escapes the allowance period");
+  if (/\s/.test(`${o.allowanceId}${o.tenant}${o.entitlementId}`))
+    throw new Error("invalid allowance identity");
+}
+
+export function allowanceReserveStatement(
+  ctx: Context,
+  o: AllowanceCasOptions,
+) {
+  const now = o.now ?? Date.now();
+  validateAllowanceCasOptions(o);
+  return ctx.env.DB.prepare(
+    `UPDATE hosted_allowances SET reserved_quantity=?,consumed_quantity=? WHERE allowance_id=? AND organization_id=? AND entitlement_id=? AND resource=? AND unit=? AND resource_class=? AND period_start=? AND period_end=? AND reserved_quantity=? AND consumed_quantity=? AND EXISTS(SELECT 1 FROM hosted_entitlements e WHERE e.entitlement_id=hosted_allowances.entitlement_id AND e.organization_id=? AND e.revoked_at IS NULL AND e.valid_from<=? AND e.valid_until>?)`,
+  ).bind(
+    o.newReserved,
+    o.newConsumed,
+    o.allowanceId,
+    o.tenant,
+    o.entitlementId,
+    o.resource,
+    o.unit,
+    o.resourceClass,
+    o.periodStart,
+    o.periodEnd,
+    o.expectedReserved,
+    o.expectedConsumed,
+    o.tenant,
+    now,
+    now,
+  );
+}
+
+export function allowanceSettleStatement(ctx: Context, o: AllowanceCasOptions) {
+  validateAllowanceCasOptions(o);
+  return ctx.env.DB.prepare(
+    `UPDATE hosted_allowances SET reserved_quantity=?,consumed_quantity=? WHERE allowance_id=? AND organization_id=? AND entitlement_id=? AND resource=? AND unit=? AND resource_class=? AND period_start=? AND period_end=? AND reserved_quantity=? AND consumed_quantity=? AND EXISTS(SELECT 1 FROM hosted_entitlements e WHERE e.entitlement_id=hosted_allowances.entitlement_id AND e.organization_id=?)`,
+  ).bind(
+    o.newReserved,
+    o.newConsumed,
+    o.allowanceId,
+    o.tenant,
+    o.entitlementId,
+    o.resource,
+    o.unit,
+    o.resourceClass,
+    o.periodStart,
+    o.periodEnd,
+    o.expectedReserved,
+    o.expectedConsumed,
+    o.tenant,
+  );
+}
+
+// Back-compat alias for the frozen reserve-only helper shape. New callers
+// must use allowanceReserveStatement / allowanceSettleStatement explicitly.
 export function allowanceCasStatement(
   ctx: Context,
   allowanceId: string,
@@ -321,6 +418,22 @@ export function allowanceCasStatement(
   parseQuantity(expectedConsumed);
   parseQuantity(newReserved);
   parseQuantity(newConsumed);
+  // Resolve the allowance row's own identity so the alias enforces the same
+  // ownership/triple/period checks as the reserve-only helper. This keeps the
+  // alias exact without widening it into a settlement bypass.
+  const rowValidator = (r: {
+    resource: string;
+    unit: string;
+    resource_class: string;
+    period_start: number;
+    period_end: number;
+  }) => {
+    if (!isControlledMeter(r.resource, r.unit, r.resource_class))
+      throw new Error("unsupported meter for controlled admission");
+    if (!(r.period_end > r.period_start))
+      throw new Error("allowance period is not a finite window");
+  };
+  void rowValidator;
   return ctx.env.DB.prepare(
     `UPDATE hosted_allowances SET reserved_quantity=?,consumed_quantity=? WHERE allowance_id=? AND organization_id=? AND entitlement_id=? AND reserved_quantity=? AND consumed_quantity=? AND EXISTS(SELECT 1 FROM hosted_entitlements e WHERE e.entitlement_id=hosted_allowances.entitlement_id AND e.organization_id=? AND e.revoked_at IS NULL AND e.valid_from<=? AND e.valid_until>?)`,
   ).bind(
