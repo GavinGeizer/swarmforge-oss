@@ -1,0 +1,13 @@
+# Dispatch review adjudication
+
+The lead requires corrections to candidate `55faf47057bd8dc87dc996d259949251189205f1` before integration. Original reviewer reports and their counterexamples are retained beside this record.
+
+The settlement CAS defect is confirmed by both the lead's transaction-backed Bun SQLite probe and an independent production-handler probe against real Miniflare/workerd D1. Changing reserved quantity from 10000 to 9000 after the handler's pre-read and immediately before its batch produces HTTP 200 and a terminal task with an unchanged ledger. Reviewer B's contrary probes changed the allowance before that pre-read and exercised a preflight check. They did not establish rollback on a CAS miss.
+
+A successful conditional UPDATE matching zero rows is not a SQL error. D1 batches are atomic transactions and roll back failing statements; that does not make a valid predicate miss abort the transaction. Cloudflare documents failure rollback in its [D1 batch API](https://developers.cloudflare.com/d1/worker-api/d1-database/). Post-batch rejection or compensation does not establish crash-safe all-or-none settlement. The correction must couple all mutations to a successful in-batch election that includes current authority, lease/fence, idempotent operation identity, and ledger expectations.
+
+The renewal fence mismatch, reused claim key electing a later task, and unrecoverable revoked-supervisor assignment are independently supported defects. Same-owner renewal must preserve the fence; ownership changes must advance it. Policy revocation or expiry denies new claims, acknowledgements, and renewals. Current trusted cleanup authority remains usable after commercial or task-authorizer loss, while revoked or expired supervisor credentials remain rejected.
+
+The schema does contain hosted_tasks.authorizing_session_id, and task runtime is bounded to one hour. Reviewer B's contrary factual premises are withdrawn by source evidence. Account-direct tasks must recheck the recorded session. CLI execution grants deliberately use their installation/grant authority rather than the issuer browser session lifetime. The reported account-session probe did not isolate the relevant election, so it does not certify this behavior as fixed.
+
+The proposed operator recovery route must authenticate a current tenant owner/admin, require CSRF and explicit independently verified stop evidence, preserve current lease/fence ownership and audit history, and settle without granting execution authority or requeueing uncertain work. Its actual implementation still requires independent review. Same-key conflicting settlement races likewise need forced-read barriers before acceptance.

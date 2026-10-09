@@ -1,0 +1,23 @@
+# Adjudication: lead counterexamples accepted — batch atomicity, session column, 1 h ceiling (55faf47)
+
+- This adjudication corrects my follow-up file `cloud-dispatch-review-followup.md` on three points per the lead's final ruling. The original review (`cloud-dispatch-review-original.md`, CHANGES_REQUESTED) stands except as narrowed below. No product edits; no suites rerun; HEAD `fec6697` clean.
+
+## A1 CONCEDED — D1 batch CAS-miss CAN commit terminal with ledger unchanged; my C1/R1 exercised the preflight, not the CAS
+
+- The lead's forced-interleaving probe is decisive: production pre-reads `reserved 10000`, a facade injects a real `UPDATE → 9000` at actual batch entry, then the real `DB.batch` runs → **200 / task `completed` / reservation `consumed(100)` / ledger `reserved 9000/consumed 0`**. My C1/R1 corrupted rows BEFORE the production pre-reads, so the `:689 reserved < quantity` preflight denied with 409 — a different code path that never reached the CAS. I claimed "batch atomicity bounds S1 to LOW"; that defense is wrong for the precise reason the lead states: **atomic batches roll back SQL errors; conditional UPDATEs matching zero rows are not errors.** The task UPDATE matches (guard passes), the reservation UPDATE matches (state active + task completed), the ledger CAS matches zero rows — all "succeed", the final SELECT sees `completed` → 200. I defended unsupported batch behavior; I stop doing so.
+- Corrected standing: **S1 is a CONFIRMED HIGH defect** (terminal-committed + ledger-stale + reservation-consumed on CAS miss), requiring the executor-independent witness the CAS-verification note already specified (re-read allowance in-batch and require computed values, or chain the ledger predicate to the terminal row). My C2 (200-consistent via post-write re-read) remains a correct observation of the re-read path but does not cover the interleaving.
+- Label note: the lead's probe used `sqlite.transaction` (Lead SQLite probe label), not sequential autocommit and not D1 `batch()` — the transaction makes the interleaving deterministic while preserving the zero-row-match semantics. My "correctly labeled IFF bun:sqlite-driven" framing understated this: the probe is a faithful model of the statement-level logic, and its result transfers to D1 `batch()` because the batch commits per-statement conditional writes the same way.
+
+## A2 CONCEDED — `authorizing_session_id` EXISTS; my "no column" premise is factually wrong
+
+- `0003_hosted_execution.sql:192` defines `authorizing_session_id TEXT REFERENCES sessions(session_id)` on `hosted_tasks`, with comment context (`:32-36`, `:182-183`): the session is recorded for audit; admission rechecks the grant against live installation epoch/user/tenant/expiry. I asserted "no authorizing_session_id column anywhere in the 0003 DDL" — false; I evidently grepped the dispatch module (whose `DispatchTaskRow` :57-75 indeed omits the column) instead of the DDL. Likewise `max_task_runtime` is a finite 1 h ceiling (`:59`, `BETWEEN 1 AND 3600000`), so my "month-long-task premise" is incorrect.
+- Corrected standing: the F2-adjacent question is NARROWER and still open: `DispatchTaskRow` does not carry `authorizing_session_id`, and `taskAuthorizerGuard` never predicates on it — which matches the DDL comment's own semantics (session = audit record; live authority = grant/installation/user/tenant checks). Whether any dispatch path SHOULD consult the recorded session (e.g. browser-issued sessions revoked mid-lease) remains a lead ruling, but my premise for dismissing it was wrong and I withdraw the "nothing to omit" claim. The genuinely confirmed part of F2 stands: claim-after-authorizer-revoke observably returns 401 (L3 LIVE) vs the code comment's 200-null — comment fix only, LOW.
+
+## Retained findings (genuinely confirmed, unaffected by the above)
+
+- **F1 renew fence+1 vs frozen Bun same-fence gate** (live renew chain 1→2→3 server-side; Bun `renewOnce` rejects fence≠mapping): cross-tree incompatibility stands as written.
+- **H2 reused claim key elects a new task** (LIVE 200 with different task id): stands as written (MEDIUM).
+- **F3 revoked-supervisor held task unrecoverable by fresh supervisor** (LIVE 409 `lease_conflict`; comment-seam insufficient): stands as written (HIGH).
+- H3/H4 refutations (changed-payload ack 409 pre-batch; same-key different-consumption second settle 409 via prior-fp pre-check) stand as executed observations.
+- Outstanding variants where no barrier forced both prior reads (e.g. exact concurrent-settle same-key races, concurrent-claim same-key across supervisors) are **inconclusive**, not refuted — recorded as such per the ruling.
+
