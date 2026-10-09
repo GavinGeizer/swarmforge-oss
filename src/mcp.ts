@@ -17,6 +17,7 @@ import { usageEstimate } from "./operator-insights";
 import { retentionPreview } from "./retention";
 import { publicWorker, redactorFor } from "./security";
 import { applyTaskTemplate, taskTemplates } from "./task-templates";
+import { VERSION } from "./version";
 
 // Model-facing artifact reads stay bounded and credential screened: a lead sees at most
 // safeReadLimit bytes of screened text per call, never raw bytes and never a whole binary
@@ -57,7 +58,7 @@ const dashboardSnapshots = new WeakMap<
 >();
 export function createMcpServer(c: Coordinator, signal?: AbortSignal) {
   const server = new McpServer(
-    { name: "swarmforge", version: "0.1.0" },
+    { name: "swarmforge", version: VERSION },
     {
       instructions:
         "For artifact text, use read_worker_artifact for live worker files or read_artifact for preserved artifact IDs. These return bounded plaintext directly: do not decode base64 or run Python to read text. For complete, large or binary artifacts, preserve the file if needed, then run swarmforge artifacts download ARTIFACT_ID --output PATH to stream and verify it locally. Keep file bytes out of model context. get_worker_artifact/resources-read is a legacy binary resource interface.",

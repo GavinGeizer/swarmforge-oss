@@ -5,6 +5,7 @@ import { loadConfig } from "../src/config";
 import { Coordinator } from "../src/coordinator";
 import { createHttpHandler } from "../src/http";
 import { Store } from "../src/store";
+import { VERSION } from "../src/version";
 import { FakeAgent, FakeProvider, harness, task } from "./helpers";
 
 test("HTTP transport authenticates leads, rejects hostile origins and serves real MCP calls", async () => {
@@ -44,6 +45,10 @@ test("HTTP transport authenticates leads, rejects hostile origins and serves rea
         },
       ),
     );
+    expect(client.getServerVersion()).toEqual({
+      name: "swarmforge",
+      version: VERSION,
+    });
     const r = await client.callTool({ name: "spawn_worker", arguments: task });
     expect(r.isError).not.toBe(true);
     expect((r.structuredContent as { state: string }).state).toBe("queued");

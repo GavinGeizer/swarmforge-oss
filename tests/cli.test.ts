@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { connectSwarmForge } from "../src/cli/client";
 import { createHttpHandler } from "../src/http";
+import { VERSION } from "../src/version";
 import { harness, task } from "./helpers";
 
 test("overview client reads every worker page through authenticated MCP", async () => {
@@ -14,10 +15,19 @@ test("overview client reads every worker page through authenticated MCP", async 
       request_id: `request-${index}`,
       timeout_seconds: 60,
     });
+  const handler = createHttpHandler(h.coordinator);
+  let advertisedVersion: string | undefined;
   const server = Bun.serve({
     hostname: "127.0.0.1",
     port: 0,
-    fetch: createHttpHandler(h.coordinator),
+    async fetch(request) {
+      if (request.method === "POST") {
+        const message = await request.clone().json();
+        if (message.method === "initialize")
+          advertisedVersion = message.params.clientInfo.version;
+      }
+      return handler(request);
+    },
   });
   const url = `http://127.0.0.1:${server.port}/mcp`;
   let client: Awaited<ReturnType<typeof connectSwarmForge>> | undefined;
@@ -26,6 +36,7 @@ test("overview client reads every worker page through authenticated MCP", async 
       url,
       "a-test-token-with-enough-characters",
     );
+    expect(advertisedVersion).toBe(VERSION);
     const overview = await client.overview();
     expect(overview.url).toBe(url);
     expect(overview.workers).toHaveLength(101);

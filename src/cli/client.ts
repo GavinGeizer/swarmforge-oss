@@ -5,6 +5,7 @@ import type { notificationFeed } from "../notifications";
 import type { UsageEstimate } from "../operator-insights";
 import type { retentionPreview } from "../retention";
 import { redact } from "../settings/inspect";
+import { VERSION } from "../version";
 import { downloadArtifact } from "./artifact-download";
 import type { WorkerFilters, WorkerSort } from "./filters";
 import type { OverviewData, WorkerSummary } from "./overview";
@@ -73,7 +74,7 @@ export async function connectSwarmForge(
   token?: string,
   scrubText: (text: string) => string = (text) => redact(text, [token ?? ""]),
 ) {
-  const client = new Client({ name: "swarmforge-cli", version: "0.1.0" });
+  const client = new Client({ name: "swarmforge-cli", version: VERSION });
   const headers = token ? { authorization: `Bearer ${token}` } : undefined;
   const attempt = async <T>(operation: () => Promise<T>): Promise<T> => {
     try {

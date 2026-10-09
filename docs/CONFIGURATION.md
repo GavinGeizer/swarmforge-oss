@@ -81,6 +81,8 @@ except `schema_version`.
 | `git.push_timeout_ms` | int | `SWARMFORGE_GIT_PUSH_TIMEOUT_MS` | Clone and push budget. |
 | `git.author_name` | string | `SWARMFORGE_GIT_AUTHOR_NAME` | Commit author name. |
 | `git.author_email` | string | `SWARMFORGE_GIT_AUTHOR_EMAIL` | Commit author email. |
+| `git.github_oauth.repository` | string | `SWARMFORGE_GITHUB_OAUTH_REPOSITORY` | Authorized GitHub `owner/repo`; must match the clone target and credential file. |
+| `git.github_oauth.credentials_path` | path | `SWARMFORGE_GITHUB_OAUTH_CREDENTIALS_PATH` | Private repository-bound OAuth credentials on this host. |
 | `git.github_app.repository` | string | `SWARMFORGE_GITHUB_REPOSITORY` | `owner/repo`. |
 | `git.github_app.app_id` | string | `SWARMFORGE_GITHUB_APP_ID` | Numeric App ID. |
 | `git.github_app.installation_id` | string | `SWARMFORGE_GITHUB_INSTALLATION_ID` | Numeric installation ID. |

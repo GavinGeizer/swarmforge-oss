@@ -1,8 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import {
-  closeSync,
+  chmodSync,
   mkdtempSync,
-  openSync,
   readFileSync,
   rmSync,
   writeFileSync,
@@ -258,10 +257,12 @@ describe("github-oauth regression", () => {
         login: "test",
         accessToken: "fake_access_token",
       }),
+      { mode: 0o600 },
     );
-    closeSync(openSync(path, "w", 0o644));
 
     const { githubOauthToken } = require("../src/github-oauth");
+    expect(githubOauthToken(path, "test/test")).toBe("fake_access_token");
+    chmodSync(path, 0o644);
     expect(() => githubOauthToken(path, "test/test")).toThrow(
       /not privately owned/i,
     );

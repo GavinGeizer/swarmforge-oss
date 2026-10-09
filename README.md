@@ -59,13 +59,13 @@ Installing and initializing create no worker VMs. Spawning a worker provisions a
 
 ### Install the published executable
 
-After gathering the six required settings above, run this in Bash on the supported host. This pins the published **v0.1.2** release:
+After gathering the six required settings above, run this in Bash on the supported host. This pins the published **v0.1.3** release:
 
 ```sh
 mkdir -p ~/my-swarmforge
 cd ~/my-swarmforge
 curl -fsSL https://getswarmforge.tech/install -o install-swarmforge.sh
-bash install-swarmforge.sh --version 0.1.2 --install-only --no-modify-path
+bash install-swarmforge.sh --version 0.1.3 --install-only --no-modify-path
 export PATH="$HOME/.local/bin:$PATH"
 swarmforge --version
 swarmforge init --config "$PWD/config.toml"
@@ -73,7 +73,7 @@ swarmforge doctor --config ./config.toml
 swarmforge serve --config ./config.toml
 ```
 
-You can [inspect the installer](https://getswarmforge.tech/install) before executing it. It downloads versioned GitHub assets, verifies both archive and executable checksums, and installs at `~/.local/bin/swarmforge`. These flags keep installation separate from initialization and leave shell profiles unchanged. `--version` should print `0.1.2`. To persist PATH, follow [these shell instructions](#make-the-command-available-in-your-terminal-and-workspace).
+You can [inspect the installer](https://getswarmforge.tech/install) before executing it. It downloads versioned GitHub assets, verifies both archive and executable checksums, and installs at `~/.local/bin/swarmforge`. These flags keep installation separate from initialization and leave shell profiles unchanged. `--version` should print `0.1.3`. To persist PATH, follow [these shell instructions](#make-the-command-available-in-your-terminal-and-workspace).
 
 `init` asks for your real infrastructure settings and creates a private `.env` plus `config.toml` here. Keep passing this `--config` to select the deployment independently of global configuration. Exported SwarmForge/provider environment variables still take precedence; inspect `swarmforge config show --config ./config.toml` if settings differ from what you entered. If `.env` already exists, skip `init` and follow [the existing-environment instructions](#if-you-already-have-an-environment-file).
 
@@ -407,7 +407,7 @@ If you have downloaded a release archive, place it under `dist/` and set `VERSIO
 ```sh
 (
   set -eu
-  VERSION=0.1.2
+  VERSION=0.1.3
   tmp="$(mktemp -d)"
   trap 'rm -rf "$tmp"' EXIT
   tar -xzf "dist/swarmforge-v${VERSION}-linux-x64-glibc.tar.gz" -C "$tmp"
