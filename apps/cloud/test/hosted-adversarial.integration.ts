@@ -1,25 +1,44 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
+import {
+  type AdmissionReply,
+  admissionReplySchema,
+} from "../src/hosted-types.ts";
 import { fixture } from "./machine-helpers.ts";
 
-// Phase 2B.2 hostile admission/concurrency acceptance (RED checkpoint).
+// Phase 2B.2 hostile admission/concurrency acceptance — CORRECTED RED checkpoint.
 //
-// These tests invoke the DEFAULT production Worker (real D1/workerd via the
-// miniflare fixture) against the frozen b61 schema. Admission/dispatch routes
-// are NOT wired yet, so the admission-shaped requests below are expected to
-// fail with the production 404/405 envelope; the assertions pin the exact
-// failing responses as RED evidence for the backend owner. No in-memory fake
-// quota algorithms are used: every test goes through the real identity
-// login+link+enroll fixture and real D1 rows. Restrictive controlled test-org
-// policy/allowance rows are seeded explicitly inside each fixture (test-only
-// data, never a product seed).
+// The prior turn (commit 7300825, preserved as test-report-rejected-7300825.md
+// and tag rejected-7300825-green404) pinned 404 envelopes as passing
+// assertions: green missing-route probes, not acceptance tests. This file
+// asserts DESIRED protocol behavior instead, so every test FAILS against the
+// unwired production Worker and only passes once the backend wires the routes.
+// A future endpoint implementation can never pass by weakening these
+// assertions; it must produce the required codes, bodies and row counts.
 //
-// Simulated GitHub identity only: the fixture's outbound service returns
-// synthetic provider users (user100/user200/...) and never contacts GitHub.
-// No secrets are printed; error bodies carry codes/messages only.
+// Desired contract (frozen protocol + dispatch):
+// - valid policy + registered worker + browser submission
+//   => 202 + AdmissionReply + exactly one active reservation + one queued outbox.
+// - same idempotency key + same body => identical 202, same task, exactly one row.
+// - same key + different body => 409 conflict, no additional rows.
+// - concurrent N distinct submissions => EXACTLY the configured ceiling wins
+//   (worker-exclusive with one worker; task-quota ceiling with several workers),
+//   the rest real quota 409, zero partial writes.
+// - absent/expired/revoked capability => 403 with an error envelope
+//   (exact code defined by the backend later; status + envelope shape asserted).
+// - malformed execution_class/duration/runtime/extra fields => 400.
+// - wrong audience or missing auth on admission => 401.
+// - cross-org submission => 404 containment (zero rows).
+// - supervisor claim/renew/settle without a supervisor credential => 401.
+//
+// All tests invoke the DEFAULT production Worker (real D1/workerd via the
+// miniflare fixture) with real identity login+link+enroll. Policy rows are
+// browser-seeded TECHNICAL fixtures only (finite ceilings, no pricing). The
+// meter/allowance contract is still undefined, so pure-concurrency tests seed
+// NO allowance rows; only the technical entitlement ceiling governs.
+// Simulated GitHub identity only (synthetic provider users); no secrets printed.
 
-const ADMISSION = "/v1/tenants";
 const CLAIM = "/v1/supervisor/claim";
 
 async function statements(migration: string) {
@@ -35,13 +54,12 @@ type Setup = {
   tenant: string;
   user: string;
   workerId: string;
-  device: { credential: string };
   account: Awaited<ReturnType<Awaited<ReturnType<typeof fixture>>["login"]>>;
 };
 
 async function setup(h: Awaited<ReturnType<typeof fixture>>): Promise<Setup> {
   const account = await h.login();
-  const device = await h.linked(account);
+  await h.linked(account);
   const invite = await h.enroll(account);
   const reg = await h.register(invite);
   assert.equal(reg.status, 201);
@@ -54,23 +72,50 @@ async function setup(h: Awaited<ReturnType<typeof fixture>>): Promise<Setup> {
     tenant: account.tenant,
     user: account.user,
     workerId: worker.worker_id,
-    device,
     account,
   };
 }
 
-// Restrictive controlled policy: exactly one concurrent worker slot and two
-// active task slots so concurrency attacks have a concrete ceiling to hammer.
+async function extraWorker(
+  h: Awaited<ReturnType<typeof fixture>>,
+  s: Setup,
+): Promise<string> {
+  const invite = await h.enroll(s.account);
+  const reg = await h.register(invite);
+  assert.equal(reg.status, 201);
+  return ((await reg.json()) as { worker_id: string }).worker_id;
+}
+
+type PolicyOptions = {
+  version?: number;
+  maxWorkers?: number | null;
+  maxTasks?: number | null;
+  maxReservations?: number | null;
+  validFrom?: number;
+  validUntil?: number;
+  revokedAt?: number | null;
+};
+
+// Technical policy fixture only: finite ceilings, no pricing, no meter rows.
 async function seedPolicy(
   h: Awaited<ReturnType<typeof fixture>>,
   s: Setup,
-  version = 1,
+  options: PolicyOptions = {},
 ) {
   const now = Date.now();
+  const {
+    version = 1,
+    maxWorkers = null,
+    maxTasks = null,
+    maxReservations = null,
+    validFrom = now - 1000,
+    validUntil = now + 3600000,
+    revokedAt = null,
+  } = options;
   const entitlementId = crypto.randomUUID();
   await h.db
     .prepare(
-      "INSERT INTO hosted_entitlements(entitlement_id,organization_id,version,hosted_control_plane,remote_worker_enrollment,hosted_task_execution,max_concurrent_workers,max_active_tasks,max_task_runtime,maximum_resource_reservations,valid_from,valid_until,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+      "INSERT INTO hosted_entitlements(entitlement_id,organization_id,version,hosted_control_plane,remote_worker_enrollment,hosted_task_execution,max_concurrent_workers,max_active_tasks,max_task_runtime,maximum_resource_reservations,valid_from,valid_until,revoked_at,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
     )
     .bind(
       entitlementId,
@@ -79,29 +124,13 @@ async function seedPolicy(
       1,
       1,
       1,
-      1,
-      2,
+      maxWorkers,
+      maxTasks,
       60000,
-      2,
-      now - 1000,
-      now + 3600000,
-      now,
-    )
-    .run();
-  await h.db
-    .prepare(
-      "INSERT INTO hosted_allowances(allowance_id,organization_id,entitlement_id,resource,unit,resource_class,allowed_quantity,period_start,period_end,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
-    )
-    .bind(
-      crypto.randomUUID(),
-      s.tenant,
-      entitlementId,
-      "compute_ms",
-      "millisecond",
-      "controlled",
-      "2",
-      now - 1000,
-      now + 3600000,
+      maxReservations,
+      validFrom,
+      validUntil,
+      revokedAt,
       now,
     )
     .run();
@@ -109,15 +138,15 @@ async function seedPolicy(
 }
 
 function tasksUrl(s: Setup) {
-  return `${ADMISSION}/${s.tenant}/tasks`;
+  return `/v1/tenants/${s.tenant}/tasks`;
 }
 
-function submitBody(workerId: string, runtimeMs = 10000) {
+function submitBody(workerId: string) {
   return {
     request_id: crypto.randomUUID(),
     worker_id: workerId,
     execution_class: "controlled",
-    runtime_ms: runtimeMs,
+    runtime_ms: 10000,
     controlled_duration_ms: 100,
   };
 }
@@ -126,197 +155,345 @@ function keyHeaders(k = crypto.randomUUID()) {
   return { "idempotency-key": k };
 }
 
-test("RED: task admission against production routes returns the exact unwired envelope", async () => {
+async function count(
+  h: Awaited<ReturnType<typeof fixture>>,
+  table: string,
+): Promise<number> {
+  // Real count query against the migrated test DB. A missing table is a
+  // failure, never a zero: nothing here may swallow SQL errors.
+  return (await h.db.prepare(`SELECT count(*) n FROM ${table}`).first<{
+    n: number;
+  }>())!.n;
+}
+
+async function admission(
+  h: Awaited<ReturnType<typeof fixture>>,
+  s: Setup,
+  headers: Record<string, string>,
+  body: unknown,
+) {
+  return h.request(tasksUrl(s), headers, "POST", body);
+}
+
+test("valid policy and registered worker admit exactly one task with reservation and outbox", async () => {
   const h = await fixture();
   try {
     const s = await setup(h);
-    await seedPolicy(h, s);
-    const response = await h.request(
-      tasksUrl(s),
+    await seedPolicy(h, s, { maxTasks: 10 });
+    const response = await admission(
+      h,
+      s,
       { ...s.account.headers, ...keyHeaders() },
-      "POST",
       submitBody(s.workerId),
     );
-    const body = (await response.json()) as {
-      error: { code: string; message: string; request_id: string };
-    };
-    // RED evidence: admission is not wired, so the DEFAULT production Worker
-    // answers with its standard unknown-route envelope. Acceptance requires
-    // 202 + AdmissionReply once the backend candidate integrates.
-    assert.equal(response.status, 404);
-    assert.equal(body.error.code, "not_found");
-    assert.ok(!JSON.stringify(body).includes(s.device.credential));
+    // DESIRED: 202 AdmissionReply. TODAY: 404 (unwired) => RED failure.
+    assert.equal(response.status, 202);
+    const reply = admissionReplySchema.parse(
+      (await response.json()) as AdmissionReply,
+    );
+    assert.equal(reply.task.tenant_id, s.tenant);
+    assert.equal(reply.task.worker_id, s.workerId);
+    assert.equal(reply.task.state, "queued");
+    assert.equal(reply.reservation_id, reply.task.reservation_id);
+    assert.equal(await count(h, "hosted_tasks"), 1);
+    const reservation = (await h.db
+      .prepare("SELECT state,task_id FROM hosted_reservations")
+      .first<{ state: string; task_id: string }>())!;
+    assert.equal(reservation.state, "active");
+    assert.equal(reservation.task_id, reply.task.task_id);
+    const outbox = (await h.db
+      .prepare("SELECT state,task_id FROM hosted_outbox")
+      .first<{ state: string; task_id: string }>())!;
+    assert.equal(outbox.state, "queued");
+    assert.equal(outbox.task_id, reply.task.task_id);
   } finally {
     await h.mf.dispose();
   }
 });
 
-test("RED: missing capability (zero/absent policy) denies admission while malformed bodies stay 4xx", async () => {
+test("same idempotency key replays the same task; changed body conflicts without new rows", async () => {
   const h = await fixture();
   try {
     const s = await setup(h);
-    // No policy seeded: zero/absent policy must deny new work once wired.
-    const denied = await h.request(
-      tasksUrl(s),
-      { ...s.account.headers, ...keyHeaders() },
-      "POST",
-      submitBody(s.workerId),
-    );
-    assert.equal(denied.status, 404);
-    // Malformed submission (shell class) must stay a 4xx rejection, never an
-    // admission, even before the route exists. Today every path 404s; the
-    // distinction is pinned for the wired backend to satisfy.
-    const hostile = await h.request(
-      tasksUrl(s),
-      { ...s.account.headers, ...keyHeaders() },
-      "POST",
-      { ...submitBody(s.workerId), execution_class: "shell" },
-    );
-    assert.equal(hostile.status, 404);
-    const rows = (await h.db
-      .prepare("SELECT count(*) n FROM hosted_tasks")
-      .first<{ n: number }>())!;
-    assert.equal(rows.n, 0);
+    await seedPolicy(h, s, { maxTasks: 10 });
+    const key = crypto.randomUUID();
+    const body = submitBody(s.workerId);
+    const headers = () => ({ ...s.account.headers, ...keyHeaders(key) });
+    const first = await admission(h, s, headers(), body);
+    assert.equal(first.status, 202);
+    const firstReply = admissionReplySchema.parse(await first.json());
+    const replay = await admission(h, s, headers(), body);
+    // DESIRED: identical 202 with the same task. TODAY: 404 => RED failure.
+    assert.equal(replay.status, 202);
+    const replayReply = admissionReplySchema.parse(await replay.json());
+    assert.deepEqual(replayReply, firstReply);
+    assert.equal(await count(h, "hosted_tasks"), 1);
+    assert.equal(await count(h, "hosted_reservations"), 1);
+    assert.equal(await count(h, "hosted_outbox"), 1);
+    // DESIRED: same key with a different fingerprint conflicts and allocates
+    // nothing. TODAY: 404 => RED failure.
+    const conflict = await admission(h, s, headers(), submitBody(s.workerId));
+    assert.equal(conflict.status, 409);
+    assert.equal(await count(h, "hosted_tasks"), 1);
+    assert.equal(await count(h, "hosted_reservations"), 1);
+    assert.equal(await count(h, "hosted_outbox"), 1);
   } finally {
     await h.mf.dispose();
   }
 });
 
-test("RED: simultaneous same-org submissions cannot exceed the seeded ceiling once wired", async () => {
+test("one worker admits exactly one of six concurrent submissions; losers get quota 409", async () => {
   const h = await fixture();
   try {
     const s = await setup(h);
-    await seedPolicy(h, s);
+    await seedPolicy(h, s, { maxTasks: 10 });
     const attempts = await Promise.all(
       Array.from({ length: 6 }, () =>
-        h.request(
-          tasksUrl(s),
+        admission(
+          h,
+          s,
           { ...s.account.headers, ...keyHeaders() },
-          "POST",
           submitBody(s.workerId),
         ),
       ),
     );
-    const statuses = attempts.map((r) => r.status);
-    // RED: all six 404 today (unwired). Wired acceptance: at most the seeded
-    // ceiling (2 task slots) admits; the rest deny without partial rows.
-    assert.ok(
-      statuses.every((x) => x === 404),
-      JSON.stringify(statuses),
-    );
-    const rows = (await h.db
-      .prepare("SELECT count(*) n FROM hosted_tasks")
-      .first<{ n: number }>())!;
-    assert.equal(rows.n, 0);
+    // DESIRED: worker exclusivity admits EXACTLY one; the other five deny
+    // with real quota 409 and leave no partial writes. TODAY: six 404s.
+    const winners = attempts.filter((r) => r.status === 202);
+    const denied = attempts.filter((r) => r.status === 409);
+    assert.equal(winners.length, 1);
+    assert.equal(denied.length, 5);
+    for (const w of winners) admissionReplySchema.parse(await w.json());
+    assert.equal(await count(h, "hosted_tasks"), 1);
+    assert.equal(await count(h, "hosted_reservations"), 1);
+    assert.equal(await count(h, "hosted_outbox"), 1);
   } finally {
     await h.mf.dispose();
   }
 });
 
-test("RED: retrying the same idempotency key never allocates additional capacity", async () => {
+test("three workers against a two-task ceiling admit exactly two; losers get quota 409", async () => {
   const h = await fixture();
   try {
     const s = await setup(h);
-    await seedPolicy(h, s);
-    const key = crypto.randomUUID();
-    const body = submitBody(s.workerId);
-    const first = await h.request(
-      tasksUrl(s),
-      { ...s.account.headers, ...keyHeaders(key) },
-      "POST",
-      body,
+    await seedPolicy(h, s, { maxWorkers: 3, maxTasks: 2 });
+    const workers = [
+      s.workerId,
+      await extraWorker(h, s),
+      await extraWorker(h, s),
+    ];
+    const attempts = await Promise.all(
+      workers.flatMap((workerId) =>
+        Array.from({ length: 2 }, () =>
+          admission(
+            h,
+            s,
+            { ...s.account.headers, ...keyHeaders() },
+            submitBody(workerId),
+          ),
+        ),
+      ),
     );
-    const replay = await h.request(
-      tasksUrl(s),
-      { ...s.account.headers, ...keyHeaders(key) },
-      "POST",
-      body,
-    );
-    // RED: both 404 today. Wired acceptance: identical status/body, exactly
-    // one task row, one reservation row, one outbox row.
-    assert.equal(first.status, 404);
-    assert.equal(replay.status, 404);
-    for (const table of [
-      "hosted_tasks",
-      "hosted_reservations",
-      "hosted_outbox",
-    ]) {
-      const rows = (await h.db
-        .prepare(`SELECT count(*) n FROM ${table}`)
-        .first<{ n: number }>())!;
-      assert.equal(rows.n, 0, table);
+    // DESIRED: task-quota ceiling admits EXACTLY two across workers; the
+    // other four deny with real quota 409. TODAY: six 404s.
+    const winners = attempts.filter((r) => r.status === 202);
+    const denied = attempts.filter((r) => r.status === 409);
+    assert.equal(winners.length, 2);
+    assert.equal(denied.length, 4);
+    const taskIds = new Set<string>();
+    for (const w of winners) {
+      const reply = admissionReplySchema.parse(await w.json());
+      taskIds.add(reply.task.task_id);
     }
+    assert.equal(taskIds.size, 2);
+    assert.equal(await count(h, "hosted_tasks"), 2);
+    assert.equal(await count(h, "hosted_reservations"), 2);
+    assert.equal(await count(h, "hosted_outbox"), 2);
   } finally {
     await h.mf.dispose();
   }
 });
 
-test("RED: cross-org submission and cross-audience credentials are contained", async () => {
+test("absent, expired and revoked capability each deny admission with 403", async () => {
+  const h = await fixture();
+  try {
+    const s = await setup(h);
+    const now = Date.now();
+    async function attempt() {
+      const response = await admission(
+        h,
+        s,
+        { ...s.account.headers, ...keyHeaders() },
+        submitBody(s.workerId),
+      );
+      return {
+        status: response.status,
+        body: (await response.json()) as {
+          error?: { code?: unknown; message?: unknown };
+        },
+      };
+    }
+    // No policy seeded: DESIRED 403 denial. TODAY: 404.
+    {
+      const { status, body } = await attempt();
+      assert.equal(status, 403);
+      assert.equal(typeof body.error?.code, "string");
+    }
+    // Expired policy window: DESIRED 403. TODAY: 404.
+    await seedPolicy(h, s, {
+      version: 1,
+      validFrom: now - 3600000,
+      validUntil: now - 1000,
+    });
+    {
+      const { status, body } = await attempt();
+      assert.equal(status, 403);
+      assert.equal(typeof body.error?.code, "string");
+    }
+    // Revoked policy: DESIRED 403. TODAY: 404.
+    await seedPolicy(h, s, { version: 2, revokedAt: now - 500 });
+    {
+      const { status, body } = await attempt();
+      assert.equal(status, 403);
+      assert.equal(typeof body.error?.code, "string");
+    }
+    assert.equal(await count(h, "hosted_tasks"), 0);
+  } finally {
+    await h.mf.dispose();
+  }
+});
+
+test("malformed execution bodies are rejected with 400 and admit nothing", async () => {
+  const h = await fixture();
+  try {
+    const s = await setup(h);
+    await seedPolicy(h, s, { maxTasks: 10 });
+    const base = submitBody(s.workerId);
+    const hostile = [
+      { ...base, execution_class: "shell" },
+      { ...base, controlled_duration_ms: base.runtime_ms + 1 },
+      { ...base, runtime_ms: 3600001 },
+      { ...base, extra: 1 },
+      { ...base, worker_id: "not-a-uuid" },
+    ];
+    for (const body of hostile) {
+      const response = await admission(
+        h,
+        s,
+        { ...s.account.headers, ...keyHeaders() },
+        body,
+      );
+      // DESIRED: strict 400 for every malformed body. TODAY: 404.
+      assert.equal(response.status, 400, JSON.stringify(body));
+    }
+    assert.equal(await count(h, "hosted_tasks"), 0);
+  } finally {
+    await h.mf.dispose();
+  }
+});
+
+test("wrong audience or missing auth on admission is rejected with 401", async () => {
+  const h = await fixture();
+  try {
+    const s = await setup(h);
+    await seedPolicy(h, s, { maxTasks: 10 });
+    const device = await h.linked(s.account);
+    const cases: { name: string; headers: Record<string, string> }[] = [
+      { name: "no-auth", headers: { ...keyHeaders() } },
+      {
+        name: "worker-credential",
+        headers: {
+          authorization: `Bearer ${((await (await h.register(await h.enroll(s.account))).json()) as { credential: string }).credential}`,
+          ...keyHeaders(),
+        },
+      },
+      {
+        name: "cli-device-credential",
+        headers: {
+          authorization: `Bearer ${device.credential}`,
+          ...keyHeaders(),
+        },
+      },
+    ];
+    for (const c of cases) {
+      const response = await admission(h, s, c.headers, submitBody(s.workerId));
+      // DESIRED: 401 — worker and CLI device credentials are insufficient
+      // for execution admission. TODAY: 404.
+      assert.equal(response.status, 401, c.name);
+    }
+    assert.equal(await count(h, "hosted_tasks"), 0);
+  } finally {
+    await h.mf.dispose();
+  }
+});
+
+test("cross-org submission is contained with 404 and leaves no rows", async () => {
   const h = await fixture();
   try {
     const s = await setup(h);
     const other = await h.login(200);
-    await seedPolicy(h, s);
-    // Cross-tenant: other user's session against s's tenant tasks path.
-    const cross = await h.request(
-      `${ADMISSION}/${s.tenant}/tasks`,
+    await seedPolicy(h, s, { maxTasks: 10 });
+    // DESIRED: a foreign session against this tenant's tasks path is
+    // contained as 404 (existing membership convention) with zero rows.
+    // This invariant must hold both before and after the backend wires.
+    const cross = await admission(
+      h,
+      s,
       { ...other.headers, ...keyHeaders() },
-      "POST",
       submitBody(s.workerId),
     );
     assert.equal(cross.status, 404);
-    // CLI device credential against the supervisor-only claim route.
-    const cliAsSupervisor = await h.request(
-      CLAIM,
-      {
-        authorization: `Bearer ${s.device.credential}`,
-        ...keyHeaders(),
-      },
-      "POST",
-      {},
-    );
-    assert.equal(cliAsSupervisor.status, 404);
-    // Supervisor-ish bearer (unknown token) against admission.
-    const fake = await h.request(
-      tasksUrl(s),
-      {
-        authorization: `Bearer sfsuper_${"x".repeat(43)}`,
-        ...keyHeaders(),
-      },
-      "POST",
-      submitBody(s.workerId),
-    );
-    assert.equal(fake.status, 404);
+    assert.equal(await count(h, "hosted_tasks"), 0);
   } finally {
     await h.mf.dispose();
   }
 });
 
-test("RED: lease/fence replay on an unwired dispatch surface stays rejected", async () => {
+test("supervisor claim, renew and settle require a supervisor credential with 401", async () => {
   const h = await fixture();
   try {
     const s = await setup(h);
-    await seedPolicy(h, s);
-    const renew = await h.request(
-      "/v1/supervisor/tasks/11111111-1111-4111-8111-111111111111/renew",
+    await seedPolicy(h, s, { maxTasks: 10 });
+    const taskId = "11111111-1111-4111-8111-111111111111";
+    const claim = await h.request(
+      CLAIM,
       { ...s.account.headers, ...keyHeaders() },
       "POST",
-      { lease_id: crypto.randomUUID(), fence: 0 },
+      {},
     );
-    assert.equal(renew.status, 404);
-    const settle = await h.request(
-      "/v1/supervisor/tasks/11111111-1111-4111-8111-111111111111/settle",
-      { ...s.account.headers, ...keyHeaders() },
+    // DESIRED: browser sessions cannot claim; supervisor auth required.
+    // TODAY: 404 (unwired).
+    assert.equal(claim.status, 401);
+    const device = await h.linked(s.account);
+    const cliClaim = await h.request(
+      CLAIM,
+      { authorization: `Bearer ${device.credential}`, ...keyHeaders() },
       "POST",
-      {
-        lease_id: crypto.randomUUID(),
-        fence: 0,
-        outcome: "completed",
-        stop_confirmed: true,
-        consumed_runtime_ms: 10,
-      },
+      {},
     );
-    assert.equal(settle.status, 404);
+    // DESIRED: CLI device credentials cannot claim either. TODAY: 404.
+    assert.equal(cliClaim.status, 401);
+    for (const path of [
+      `/v1/supervisor/tasks/${taskId}/renew`,
+      `/v1/supervisor/tasks/${taskId}/settle`,
+    ]) {
+      const response = await h.request(
+        path,
+        { ...s.account.headers, ...keyHeaders() },
+        "POST",
+        path.endsWith("renew")
+          ? { lease_id: crypto.randomUUID(), fence: 0 }
+          : {
+              lease_id: crypto.randomUUID(),
+              fence: 0,
+              outcome: "completed",
+              stop_confirmed: true,
+              consumed_runtime_ms: 10,
+            },
+      );
+      // DESIRED: 401 without a supervisor credential. TODAY: 404.
+      assert.equal(response.status, 401, path);
+    }
   } finally {
     await h.mf.dispose();
   }
