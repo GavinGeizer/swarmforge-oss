@@ -1,0 +1,2175 @@
+bun test v1.4.2 (744846f84)
+
+tests/commands.test.ts:
+(pass) the argument parser is pure and reports usage errors before any work [2.73ms]
+(pass) help and version answer before settings, credentials or the server exist [423.12ms]
+(pass) the packaged version reports the source package version [0.02ms]
+(pass) an unknown command, flag or missing value fails before any read [466.74ms]
+321 | 
+322 | test("status reads client settings only and reports a real swarm", async () => {
+323 |   const fixture = fixtureRoot();
+324 |   const h = harness();
+325 |   h.store.create({ ...task, timeout_seconds: 60 });
+326 |   const server = Bun.serve({
+                           ^
+EPERM: operation not permitted, listen
+ syscall: "listen",
+   errno: -1,
+    code: "EPERM"
+
+      at <anonymous> (/tmp/swarmforge-phase2b2-watchdog/tests/commands.test.ts:326:22)
+(fail) status reads client settings only and reports a real swarm [3.21ms]
+(pass) config path reports the selected or default file and creates nothing [241.52ms]
+(pass) an explicit environment file keeps the database path a deployment already uses [110.32ms]
+(pass) config show reports redacted provenance and creates nothing [57.94ms]
+(pass) config show explains an incomplete server configuration safely [109.42ms]
+(pass) config validate checks every server setting without touching the system [57.59ms]
+(pass) a rejected configuration fails with a scrubbed diagnostic [150.12ms]
+(pass) serve --check-config validates the server intent and starts nothing [216.69ms]
+(pass) main resolves server settings and still refuses an in-memory database [101.17ms]
+908 | 
+909 | test("a remote error that echoes a resolved credential never prints it", async () => {
+910 |   const fixture = fixtureRoot();
+911 |   // Nothing credential-shaped is in the process environment, so only the loader's
+912 |   // own resolution context can remove the value the server echoed back.
+913 |   const server = denyingServer();
+                       ^
+EPERM: operation not permitted, listen
+ syscall: "listen",
+   errno: -1,
+    code: "EPERM"
+
+      at <anonymous> (/tmp/swarmforge-phase2b2-watchdog/tests/commands.test.ts:913:18)
+(fail) a remote error that echoes a resolved credential never prints it [0.75ms]
+984 | 
+985 | test("the printed endpoint carries no credential from any layer", async () => {
+986 |   const fixture = fixtureRoot();
+987 |   const h = harness();
+988 |   h.store.create({ ...task, timeout_seconds: 60 });
+989 |   const server = Bun.serve({
+                           ^
+EPERM: operation not permitted, listen
+ syscall: "listen",
+   errno: -1,
+    code: "EPERM"
+
+      at <anonymous> (/tmp/swarmforge-phase2b2-watchdog/tests/commands.test.ts:989:22)
+(fail) the printed endpoint carries no credential from any layer [1.51ms]
+
+tests/cloud-phase2b1.test.ts:
+(pass) cloud command parsing preserves GitHub login and rejects unsafe origins without echoing input [0.26ms]
+61 |       s.isSymbolicLink() ||
+62 |       !s.isDirectory() ||
+63 |       (s.uid !== 0 && s.uid !== uid) ||
+64 |       (writable && !stickyRootTemp)
+65 |     )
+66 |       throw privateCredentialStorageError();
+                                               ^
+error: Cloud credential storage must use a privately owned regular file (0600) in a private directory (0700), without symlinks.
+      at parentDirectory (/tmp/swarmforge-phase2b2-watchdog/src/private-credential-file.ts:66:43)
+      at savePrivateCredential (/tmp/swarmforge-phase2b2-watchdog/src/private-credential-file.ts:134:3)
+      at saveCloudCredential (/tmp/swarmforge-phase2b2-watchdog/src/cloud-credentials.ts:64:3)
+      at <anonymous> (/tmp/swarmforge-phase2b2-watchdog/tests/cloud-phase2b1.test.ts:99:5)
+(fail) production credential store round-trips privately and refuses corrupt data without exposing its values [1.19ms]
+61 |       s.isSymbolicLink() ||
+62 |       !s.isDirectory() ||
+63 |       (s.uid !== 0 && s.uid !== uid) ||
+64 |       (writable && !stickyRootTemp)
+65 |     )
+66 |       throw privateCredentialStorageError();
+                                               ^
+error: Cloud credential storage must use a privately owned regular file (0600) in a private directory (0700), without symlinks.
+      at parentDirectory (/tmp/swarmforge-phase2b2-watchdog/src/private-credential-file.ts:66:43)
+      at savePrivateCredential (/tmp/swarmforge-phase2b2-watchdog/src/private-credential-file.ts:134:3)
+      at saveCloudCredential (/tmp/swarmforge-phase2b2-watchdog/src/cloud-credentials.ts:64:3)
+      at <anonymous> (/tmp/swarmforge-phase2b2-watchdog/tests/cloud-phase2b1.test.ts:128:5)
+(fail) production store rejects symlinks, hard links, unsafe modes and oversized files [0.28ms]
+50 |     expires_at: c.expires_at,
+51 |     authorization_expires_at: c.authorization_expires_at,
+52 |   };
+53 | }
+54 | function api(handler: (request: Request) => Response | Promise<Response>) {
+55 |   const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: handler });
+                          ^
+EPERM: operation not permitted, listen
+ syscall: "listen",
+   errno: -1,
+    code: "EPERM"
+
+      at api (/tmp/swarmforge-phase2b2-watchdog/tests/cloud-phase2b1.test.ts:55:22)
+      at <anonymous> (/tmp/swarmforge-phase2b2-watchdog/tests/cloud-phase2b1.test.ts:172:18)
+(fail) real HTTP pairing maintains initiating proof and exchange key through pending polling without cookies [0.20ms]
+50 |     expires_at: c.expires_at,
+51 |     authorization_expires_at: c.authorization_expires_at,
+52 |   };
+53 | }
+54 | function api(handler: (request: Request) => Response | Promise<Response>) {
+55 |   const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: handler });
+                          ^
+EPERM: operation not permitted, listen
+ syscall: "listen",
+   errno: -1,
+    code: "EPERM"
+
+      at api (/tmp/swarmforge-phase2b2-watchdog/tests/cloud-phase2b1.test.ts:55:22)
+      at <anonymous> (/tmp/swarmforge-phase2b2-watchdog/tests/cloud-phase2b1.test.ts:223:14)
+(fail) real HTTP error bodies cannot leak credentials into client errors [0.15ms]
+50 |     expires_at: c.expires_at,
+51 |     authorization_expires_at: c.authorization_expires_at,
+52 |   };
+53 | }
+54 | function api(handler: (request: Request) => Response | Promise<Response>) {
+55 |   const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: handler });
+                          ^
+EPERM: operation not permitted, listen
+ syscall: "listen",
+   errno: -1,
+    code: "EPERM"
+
+      at api (/tmp/swarmforge-phase2b2-watchdog/tests/cloud-phase2b1.test.ts:55:22)
+      at <anonymous> (/tmp/swarmforge-phase2b2-watchdog/tests/cloud-phase2b1.test.ts:241:18)
+(fail) client rejects HTTP redirects without sending the credential to their target [0.10ms]
+50 |     expires_at: c.expires_at,
+51 |     authorization_expires_at: c.authorization_expires_at,
+52 |   };
+53 | }
+54 | function api(handler: (request: Request) => Response | Promise<Response>) {
+55 |   const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: handler });
+                          ^
+EPERM: operation not permitted, listen
+ syscall: "listen",
+   errno: -1,
+    code: "EPERM"
+
+      at api (/tmp/swarmforge-phase2b2-watchdog/tests/cloud-phase2b1.test.ts:55:22)
+      at <anonymous> (/tmp/swarmforge-phase2b2-watchdog/tests/cloud-phase2b1.test.ts:263:18)
+(fail) client rejects hostile verification URLs, extra fields, content types and oversized responses [0.08ms]
+50 |     expires_at: c.expires_at,
+51 |     authorization_expires_at: c.authorization_expires_at,
+52 |   };
+53 | }
+54 | function api(handler: (request: Request) => Response | Promise<Response>) {
+55 |   const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: handler });
+                          ^
+EPERM: operation not permitted, listen
+ syscall: "listen",
+   errno: -1,
+    code: "EPERM"
+
+      at api (/tmp/swarmforge-phase2b2-watchdog/tests/cloud-phase2b1.test.ts:55:22)
+      at <anonymous> (/tmp/swarmforge-phase2b2-watchdog/tests/cloud-phase2b1.test.ts:307:18)
+(fail) CLI status uses its own bearer, rejects identity swaps and outputs no credential [0.24ms]
+50 |     expires_at: c.expires_at,
+51 |     authorization_expires_at: c.authorization_expires_at,
+52 |   };
+53 | }
+54 | function api(handler: (request: Request) => Response | Promise<Response>) {
+55 |   const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: handler });
+                          ^
+EPERM: operation not permitted, listen
+ syscall: "listen",
+   errno: -1,
+    code: "EPERM"
+
+      at api (/tmp/swarmforge-phase2b2-watchdog/tests/cloud-phase2b1.test.ts:55:22)
+      at <anonymous> (/tmp/swarmforge-phase2b2-watchdog/tests/cloud-phase2b1.test.ts:345:18)
+(fail) CLI logout revokes remotely then deletes locally and reports unconfirmed revocation safely [0.20ms]
+50 |     expires_at: c.expires_at,
+51 |     authorization_expires_at: c.authorization_expires_at,
+52 |   };
+53 | }
+54 | function api(handler: (request: Request) => Response | Promise<Response>) {
+55 |   const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: handler });
+                          ^
+EPERM: operation not permitted, listen
+ syscall: "listen",
+   errno: -1,
+    code: "EPERM"
+
+      at api (/tmp/swarmforge-phase2b2-watchdog/tests/cloud-phase2b1.test.ts:55:22)
+      at <anonymous> (/tmp/swarmforge-phase2b2-watchdog/tests/cloud-phase2b1.test.ts:383:18)
+(fail) expired credentials and origin mismatch fail before contacting a service; signed-out logout is local [0.19ms]
+
+tests/artifact-download.test.ts:
+(pass) raw artifact download requires the bearer token and rejects cross-origin requests [47.70ms]
+(pass) authenticated download streams faithful raw bytes as a non-sniffable attachment [50.20ms]
+(pass) download filenames cannot break out of the content-disposition header [49.91ms]
+(pass) byte ranges are validated, reported and bounded [64.37ms]
+(pass) a range request larger than the download window is clamped instead of streamed whole [135.90ms]
+(pass) unknown or unpreserved artifacts are never served as bytes [2.34ms]
+(pass) preserved artifacts stay downloadable after the worker and its workspace are destroyed [47.05ms]
+(pass) a cancelled caller receives no artifact bytes [58.45ms]
+349 |   const h = await served();
+350 |   try {
+351 |     const content = "abcdefghij";
+352 |     h.write("clip.txt", content);
+353 |     const record = await preserve(h, "clip.txt");
+354 |     const server = Bun.serve({
+                             ^
+EPERM: operation not permitted, listen
+ syscall: "listen",
+   errno: -1,
+    code: "EPERM"
+
+      at <anonymous> (/tmp/swarmforge-phase2b2-watchdog/tests/artifact-download.test.ts:354:24)
+(fail) a range end past the artifact is clipped to the artifact, in the headers and on the wire [58.34ms]
+(pass) a suffix range larger than the artifact returns the whole artifact, not padding [48.28ms]
+(pass) a ranged download retains its storage identity after the database closes [55.43ms]
+
+tests/artifact-agent.test.ts:
+(pass) agents receive live plaintext or binary metadata without base64 payloads [248.78ms]
+
+tests/api.test.ts:
+(pass) log inspection does not execute guest commands for paused workers and retains destroyed-worker events [1.73ms]
+(pass) log inspection retains audit events during provider outages [1.05ms]
+(pass) MCP client can create, observe, message, query team/task and collect a structured result [47.40ms]
+(pass) artifact handles are bounded and path traversal and secret contents are blocked [170.88ms]
+(pass) artifact chunk screening includes the full long MCP bearer [2.49ms]
+(pass) artifact chunk screening includes the full multibyte provider key [1.24ms]
+(pass) artifact chunk screening includes the full URL-encoded model key [1.17ms]
+(pass) artifact chunk screening includes the full base64 provider key [1.29ms]
+(pass) metrics aggregate durable tokens and never label by worker/task identifiers [3.58ms]
+(pass) redaction scrubs known secrets, credential fields and URL passwords recursively [0.06ms]
+(pass) MCP diagnostics redact cloud machine credentials without loading a cloud account [3.11ms]
+(pass) artifact resource links can actually be read through an MCP client [97.43ms]
+(pass) artifact directory listing rejects symlink roots [1.43ms]
+
+tests/process-lock.test.ts:
+60 |   return {
+61 |     proc,
+62 |     report,
+63 |     release: async () => {
+64 |       proc.stdin.write("release\n");
+65 |       await proc.stdin.flush();
+                            ^
+EPERM: operation not permitted, write
+ syscall: "write",
+   errno: -1,
+    code: "EPERM"
+
+      at <anonymous> (/tmp/swarmforge-phase2b2-watchdog/tests/process-lock.test.ts:65:24)
+      at <anonymous> (/tmp/swarmforge-phase2b2-watchdog/tests/process-lock.test.ts:110:25)
+(fail) single owner process lock > simultaneous starts leave exactly one owner and a crash frees the lock [56.16ms]
+(pass) single owner process lock > a lock file left behind by a dead or foreign owner never wedges startup [4.91ms]
+60 |   return {
+61 |     proc,
+62 |     report,
+63 |     release: async () => {
+64 |       proc.stdin.write("release\n");
+65 |       await proc.stdin.flush();
+                            ^
+EPERM: operation not permitted, write
+ syscall: "write",
+   errno: -1,
+    code: "EPERM"
+
+      at <anonymous> (/tmp/swarmforge-phase2b2-watchdog/tests/process-lock.test.ts:65:24)
+      at <anonymous> (/tmp/swarmforge-phase2b2-watchdog/tests/process-lock.test.ts:149:19)
+(fail) single owner process lock > a released lock hands the database to the next process [46.89ms]
+
+tests/artifact-api.test.ts:
+(pass) preserve_artifact stores a workspace file and reports verifiable public metadata [53.85ms]
+(pass) read_artifact returns screened inline text, is capped at 32 KiB and never inlines a whole file [65.92ms]
+(pass) read_artifact reports binary artifacts as metadata plus a download handle, never as bytes [59.63ms]
+(pass) inline reads refuse artifact contents that carry configured credentials [62.28ms]
+(pass) list_artifacts paginates with bounded limits and filters by worker or task [140.27ms]
+(pass) artifact metadata never exposes storage internals and scrubs reported errors [56.00ms]
+(pass) preserve_artifact rejects unsafe paths, absolute paths and over-deep paths [58.49ms]
+(pass) preserve_artifact collects a whole worker directory when asked for one [160.01ms]
+(pass) preservation propagates caller cancellation instead of copying after the caller left [4.63ms]
+(pass) snapshot_worker returns a single archived artifact whose bytes are a real archive [48.64ms]
+(pass) a superseded recapture is history: listing shows the current copy and metrics keep both [107.35ms]
+(pass) retry_worker_finalization collects a cancelled worker and then refuses a second retry [469.61ms]
+(pass) a worker that produced none of the optional output still settles preserved [290.60ms]
+(pass) an unsettled collection keeps the worker, refuses destruction and exposes the failure [67.57ms]
+(pass) list_worker_files walks the workspace, paginates and never exposes symlinks [78.28ms]
+(pass) preserved artifacts stay listable and readable after the worker and its workspace are gone [49.34ms]
+(pass) a large directory capture returns a byte-budgeted page with an explicit total [5.37ms]
+(pass) a real directory of long file names is captured without exceeding the response budget [497.40ms]
+(pass) list_artifacts state filtering is a returned-page filter and does not change paging [3.71ms]
+(pass) terminal output with ANSI colour is screened into text, not refused as binary [57.02ms]
+(pass) invalid UTF-8 and NUL-heavy content stay binary metadata [58.57ms]
+(pass) smoke error reporting redacts known bare secrets [0.24ms]
+(pass) every reported field is scrubbed recursively, not only top-level strings [0.27ms]
+(pass) the freestyle probe snapshots a live WAL database consistently and never writes to it [33.79ms]
+
+tests/token-idle.test.ts:
+(pass) token idle budget defaults to 300 seconds, allows 0 and rejects negatives [0.68ms]
+(pass) claiming a zero-token dispatch starts the clock and expiry stops OpenCode [1.86ms]
+(pass) a recorded token increase restarts the clock [1.06ms]
+(pass) a regressed repeat snapshot cannot inflate or reset progress [1.01ms]
+(pass) a turn that completes is never idle stopped [1.27ms]
+(pass) a failed status poll is not a no-progress observation [1.61ms]
+(pass) pause suspends the clock and resume shifts it by the pause duration [1.06ms]
+(pass) a follow-up dispatch restarts the clock [6.55ms]
+(pass) a reopened database keeps the idle clock instead of restarting it [111.34ms]
+(pass) an active worker saved before the idle fields existed starts a fresh clock [1.53ms]
+(pass) Git push retries do not trigger the token idle stop [1.35ms]
+(pass) zero disables the idle stop [1.06ms]
+(pass) an idle stop with unpersisted work requires recovery and keeps the VM [1.02ms]
+
+tests/core.test.ts:
+(pass) configuration and credential boundary > rejects missing required configuration and invalid limits [0.56ms]
+(pass) configuration and credential boundary > requires a bearer token for any accepted non-loopback hostname [0.34ms]
+(pass) configuration and credential boundary > passes the opaque tree and model access but no host infrastructure secrets [0.08ms]
+(pass) configuration and credential boundary > none prefix skips clone and strips the marker from the guest tree [0.06ms]
+(pass) persistent domain > atomically creates ownership, deduplicates request keys and transitions [0.75ms]
+(pass) persistent domain > message usage is cumulative and idempotent with late token updates [0.37ms]
+(pass) persistent domain > result validation rejects malformed completion and excessive payloads [0.34ms]
+(pass) colorful console event rendering > renders plain text without color codes when color is off [0.15ms]
+(pass) colorful console event rendering > adds ANSI codes and picks red for failures [0.03ms]
+(pass) startup output is readable in a terminal and structured when piped [0.05ms]
+
+tests/finalization-nested.test.ts:
+(pass) nested declared output survives finalization and the destruction of the guest [311.72ms]
+(skip) the finalization survival regression runs only where the lifecycle package exists
+
+tests/cli-redaction.test.ts:
+13 |   h.coordinator.config.SWARMFORGE_API_TOKEN = token;
+14 |   const worker = h.coordinator.spawn(task);
+15 |   await runToRunning(h, worker.worker_id);
+16 |   const handler = createHttpHandler(h.coordinator);
+17 |   let denial: string | null = null;
+18 |   const server = Bun.serve({
+                          ^
+EPERM: operation not permitted, listen
+ syscall: "listen",
+   errno: -1,
+    code: "EPERM"
+
+      at fixture (/tmp/swarmforge-phase2b2-watchdog/tests/cli-redaction.test.ts:18:22)
+      at async <anonymous> (/tmp/swarmforge-phase2b2-watchdog/tests/cli-redaction.test.ts:67:21)
+(fail) dashboard chibi refreshes keep credentials out of every frame [1.57ms]
+13 |   h.coordinator.config.SWARMFORGE_API_TOKEN = token;
+14 |   const worker = h.coordinator.spawn(task);
+15 |   await runToRunning(h, worker.worker_id);
+16 |   const handler = createHttpHandler(h.coordinator);
+17 |   let denial: string | null = null;
+18 |   const server = Bun.serve({
+                          ^
+EPERM: operation not permitted, listen
+ syscall: "listen",
+   errno: -1,
+    code: "EPERM"
+
+      at fixture (/tmp/swarmforge-phase2b2-watchdog/tests/cli-redaction.test.ts:18:22)
+      at async <anonymous> (/tmp/swarmforge-phase2b2-watchdog/tests/cli-redaction.test.ts:67:21)
+(fail) dashboard technical refreshes keep credentials out of every frame [0.91ms]
+13 |   h.coordinator.config.SWARMFORGE_API_TOKEN = token;
+14 |   const worker = h.coordinator.spawn(task);
+15 |   await runToRunning(h, worker.worker_id);
+16 |   const handler = createHttpHandler(h.coordinator);
+17 |   let denial: string | null = null;
+18 |   const server = Bun.serve({
+                          ^
+EPERM: operation not permitted, listen
+ syscall: "listen",
+   errno: -1,
+    code: "EPERM"
+
+      at fixture (/tmp/swarmforge-phase2b2-watchdog/tests/cli-redaction.test.ts:18:22)
+      at async <anonymous> (/tmp/swarmforge-phase2b2-watchdog/tests/cli-redaction.test.ts:121:19)
+(fail) all client operations scrub echoed credentials using the resolved settings context [0.98ms]
+
+tests/dashboard-controls.test.ts:
+(pass) changing filters removes hidden cleanup selections and preview remains frozen [8.21ms]
+(pass) changed eligibility is skipped and duplicate confirmation/quit starts no additional request [25.90ms]
+(pass) server atomically rejects a worker activated after preview without recording destruction [1.33ms]
+(pass) interrupted requests are reported as failures and are never force-retried [5.58ms]
+(pass) quitting during the first cleanup request never starts the next selected worker [25.71ms]
+
+tests/hosted-supervisor.test.ts:
+ 98 |     const reader = a.stdout.getReader();
+ 99 |     let output = "";
+100 |     while (!output.includes("\n")) {
+101 |       const chunk = await reader.read();
+102 |       if (chunk.done)
+103 |         throw new Error("Process A exited before the live-child report.");
+                        ^
+error: Process A exited before the live-child report.
+      at <anonymous> (/tmp/swarmforge-phase2b2-watchdog/tests/hosted-supervisor.test.ts:103:19)
+(fail) actual process A child >=300ms then NEW process B proves OS stop with foreign clock and full reserved consumption (transport mock) [152.33ms]
+58 |   const [code, stdout, stderr] = await Promise.all([
+59 |     child.exited,
+60 |     new Response(child.stdout as ReadableStream).text(),
+61 |     new Response(child.stderr as ReadableStream).text(),
+62 |   ]);
+63 |   expect(stderr).toBe("");
+                      ^
+error: expect(received).toBe(expected)
+
+- ""
++ "109 |       stat.isSymbolicLink() ||
++ 110 |       (stat.uid !== 0 && stat.uid !== uid) ||
++ 111 |       (stat.mode & 0o022 && !rootTemp) ||
++ 112 |       (at === directory && (stat.uid !== uid || stat.mode & 0o077))
++ 113 |     )
++ 114 |       throw new Error(
++                       ^
++ error: Hosted state requires private directory (0700), without symlinks.
++       at ensurePrivateHostedPath (/tmp/swarmforge-phase2b2-watchdog/src/hosted-store.ts:114:17)
++       at new HostedStore (/tmp/swarmforge-phase2b2-watchdog/src/hosted-store.ts:140:30)
++       at /tmp/swarmforge-phase2b2-watchdog/tests/hosted-recovery-writer.ts:99:23
++ 
++ Bun v1.4.2 (Linux x64)
++ "
+
+- Expected  - 1
++ Received  + 14
+
+      at processReport (/tmp/swarmforge-phase2b2-watchdog/tests/hosted-supervisor.test.ts:63:18)
+      at async <anonymous> (/tmp/swarmforge-phase2b2-watchdog/tests/hosted-supervisor.test.ts:182:27)
+(fail) lost COMPLETED response + actual NEW process retries identical frozen request/key once (transport mock) [152.56ms]
+(pass) settlement 409 plus same-outcome terminal status cannot establish consumption receipt [5.47ms]
+(pass) actual measured runtime freezes a completed settlement before a lost reply and retries the identical receipt (transport mock) [365.05ms]
+(pass) recovery cannot settle an acknowledged launch with no captured PID as zero use [2.36ms]
+(pass) a durable mapping whose start right was never granted can settle zero use [1.53ms]
+(pass) OS permission failure never proves a live controlled process stopped [2.73ms]
+(pass) an unmatched live PID is unknown and must remain alive [2.08ms]
+(pass) stop escalation rechecks OS identity before SIGKILL when the captured identity changes [4028.49ms]
+492 |   });
+493 |   const h = harness();
+494 |   const supervisor = supervisorUnderTest(h, fixture.origin);
+495 |   try {
+496 |     const summary = await runSupervisorLoop(supervisor);
+497 |     expect(summary.completed).toEqual([TASK]);
+                                    ^
+error: expect(received).toEqual(expected)
+
+- [
+-   "ef53d198-eb56-4072-b363-d7da43105b19",
+- ]
++ []
+
+- Expected  - 3
++ Received  + 1
+
+      at <anonymous> (/tmp/swarmforge-phase2b2-watchdog/tests/hosted-supervisor.test.ts:497:31)
+(fail) actual 31s task outlives the initial 30s lease through timely renewal and completes in full (transport mock) [15006.99ms]
+(pass) a partition before renewal stops the full requested child early and settles cancelled (transport mock) [1005.89ms]
+(pass) a delayed renewal denial cannot reopen an already stopped and settled task [3527.79ms]
+(pass) server stop during the actual CLI supervisor loop settles cancelled, never completed (transport mock) [2005.60ms]
+(pass) concurrent distinct tasks journal their own actual child identities before launch returns [58.49ms]
+(pass) hosted credential schemas bind tenant and reject cross-audience reuse [1.06ms]
+61 |       s.isSymbolicLink() ||
+62 |       !s.isDirectory() ||
+63 |       (s.uid !== 0 && s.uid !== uid) ||
+64 |       (writable && !stickyRootTemp)
+65 |     )
+66 |       throw privateCredentialStorageError();
+                                               ^
+error: Cloud credential storage must use a privately owned regular file (0600) in a private directory (0700), without symlinks.
+      at parentDirectory (/tmp/swarmforge-phase2b2-watchdog/src/private-credential-file.ts:66:43)
+      at savePrivateCredential (/tmp/swarmforge-phase2b2-watchdog/src/private-credential-file.ts:134:3)
+      at saveHostedTaskCredential (/tmp/swarmforge-phase2b2-watchdog/src/hosted-credentials.ts:119:3)
+      at <anonymous> (/tmp/swarmforge-phase2b2-watchdog/tests/hosted-supervisor.test.ts:957:5)
+(fail) hosted credential storage round-trips privately via the approved shared helper [0.46ms]
+61 |       s.isSymbolicLink() ||
+62 |       !s.isDirectory() ||
+63 |       (s.uid !== 0 && s.uid !== uid) ||
+64 |       (writable && !stickyRootTemp)
+65 |     )
+66 |       throw privateCredentialStorageError();
+                 ^
+error: Cloud credential storage must use a privately owned regular file (0600) in a private directory (0700), without symlinks.
+      at parentDirectory (/tmp/swarmforge-phase2b2-watchdog/src/private-credential-file.ts:66:13)
+      at savePrivateCredential (/tmp/swarmforge-phase2b2-watchdog/src/private-credential-file.ts:134:3)
+      at rotate (/tmp/swarmforge-phase2b2-watchdog/src/hosted-client.ts:448:7)
+      at <anonymous> (/tmp/swarmforge-phase2b2-watchdog/tests/hosted-supervisor.test.ts:1010:20)
+(fail) supervisor rotation enforces a durable idempotency key on the supervised path [0.63ms]
+(pass) remaining authority subtracts full RTT and safety margin; rejects thin leases [0.02ms]
+(pass) SIMULATED transport: task client submits/reads/cancels with exact controlled payload [0.83ms]
+(pass) SIMULATED transport: repeated admission key preserves request_id across client instances and still conflicts on changed work [0.37ms]
+(pass) SIMULATED transport: task client stops on cross-tenant and malformed responses [0.27ms]
+(pass) SIMULATED transport: supervisor identity requires the exact production credential and subject fields [0.58ms]
+(pass) SIMULATED transport: supervisor claim/ack/renew/status/settle round-trips strict fields [0.47ms]
+(pass) SIMULATED transport: supervisor surfaces 401/409 without widening credentials [0.11ms]
+(pass) durable mapping precedes execution: same retries reuse, fence changes hold [1.04ms]
+(pass) controlled runtime executes a real inert subprocess and verifies stop [902.76ms]
+(pass) RED-proven false stop: fresh provider without the pid record must NOT resolve [453.76ms]
+(pass) D3 stale identity never signals an unrelated live victim (no unsafe reuse experiment) [305.72ms]
+109 |       stat.isSymbolicLink() ||
+110 |       (stat.uid !== 0 && stat.uid !== uid) ||
+111 |       (stat.mode & 0o022 && !rootTemp) ||
+112 |       (at === directory && (stat.uid !== uid || stat.mode & 0o077))
+113 |     )
+114 |       throw new Error(
+                      ^
+error: Hosted state requires private directory (0700), without symlinks.
+      at ensurePrivateHostedPath (/tmp/swarmforge-phase2b2-watchdog/src/hosted-store.ts:114:17)
+      at new HostedStore (/tmp/swarmforge-phase2b2-watchdog/src/hosted-store.ts:140:30)
+      at <anonymous> (/tmp/swarmforge-phase2b2-watchdog/tests/hosted-supervisor.test.ts:1523:19)
+(fail) legacy origin unit: reopening a journal cannot authorize a foreign-clock measurement [1.80ms]
+(pass) journal fail-closed: injected store failure stops runtime, never unjournaled [3.48ms]
+(pass) a blocking durable start-right grant consumes lease authority before staging and refuses start [1702.51ms]
+(pass) D4 slow staging: staging that consumes authority refuses start [4.05ms]
+1709 |     const child = Bun.spawn([process.execPath, writer, dbPath, TASK], {
+1710 |       env: { PATH: "/usr/bin:/bin", TZ: "UTC" },
+1711 |       stdio: ["ignore", "pipe", "pipe"],
+1712 |     });
+1713 |     const code = await child.exited;
+1714 |     expect(code).toBe(0);
+                        ^
+error: expect(received).toBe(expected)
+
+Expected: 0
+Received: 1
+
+      at <anonymous> (/tmp/swarmforge-phase2b2-watchdog/tests/hosted-supervisor.test.ts:1714:18)
+(fail) D1 new-PROCESS recovery: on-disk state survives a real process boundary [40.94ms]
+(pass) reconcile retries durable stop + same-key settlement (not held-forever) [4.31ms]
+(pass) compiled binary + empty-cwd: real binary self-spawn runs without repo files [408.81ms]
+(pass) compiled launcher + hook from empty cwd: actual provider self-spawn via Bun.isStandaloneExecutable [552.31ms]
+(pass) controlled stopWorkerRuntime verifies exit; network/label failures are not proof [2.56ms]
+(pass) controlled provider refuses arbitrary exec and filesystem access [1.10ms]
+(pass) claim -> mapping -> ack -> real start; duplicate delivery reuses mapping [4.12ms]
+(pass) B duplicate-task repro: duplicate ACK AFTER child exit + mapping stopped must NOT spawn again [1205.59ms]
+109 |       stat.isSymbolicLink() ||
+110 |       (stat.uid !== 0 && stat.uid !== uid) ||
+111 |       (stat.mode & 0o022 && !rootTemp) ||
+112 |       (at === directory && (stat.uid !== uid || stat.mode & 0o077))
+113 |     )
+114 |       throw new Error(
+                      ^
+error: Hosted state requires private directory (0700), without symlinks.
+      at ensurePrivateHostedPath (/tmp/swarmforge-phase2b2-watchdog/src/hosted-store.ts:114:17)
+      at new HostedStore (/tmp/swarmforge-phase2b2-watchdog/src/hosted-store.ts:140:30)
+      at mkHarness (/tmp/swarmforge-phase2b2-watchdog/tests/hosted-supervisor.test.ts:2023:20)
+      at <anonymous> (/tmp/swarmforge-phase2b2-watchdog/tests/hosted-supervisor.test.ts:2027:14)
+(fail) concurrent duplicate ACKs on the SAME file from two supervisor instances: only one wins pre-launch [1.64ms]
+109 |       stat.isSymbolicLink() ||
+110 |       (stat.uid !== 0 && stat.uid !== uid) ||
+111 |       (stat.mode & 0o022 && !rootTemp) ||
+112 |       (at === directory && (stat.uid !== uid || stat.mode & 0o077))
+113 |     )
+114 |       throw new Error(
+                      ^
+error: Hosted state requires private directory (0700), without symlinks.
+      at ensurePrivateHostedPath (/tmp/swarmforge-phase2b2-watchdog/src/hosted-store.ts:114:17)
+      at new HostedStore (/tmp/swarmforge-phase2b2-watchdog/src/hosted-store.ts:140:30)
+      at <anonymous> (/tmp/swarmforge-phase2b2-watchdog/tests/hosted-supervisor.test.ts:2070:18)
+(fail) new-process recovery after exit does NOT reuse the start right [1.15ms]
+(pass) crash before/after mapping: restart holds ambiguity, never blindly re-execs [1.29ms]
+(pass) cancellation race and uncertain stop: settle requires confirmed exit [3.39ms]
+(pass) stale fence and revoked supervisor credential forbid execution and renewal [1.28ms]
+(pass) forbidden payload rejected; no secret in runtime env, logs or artifacts [1.02ms]
+(pass) parent crash: stdin EOF stops the real child independently (fail closed) [302.29ms]
+(pass) partition watchdog: expired lease without renewal stops locally and holds settlement [3.70ms]
+(pass) clock offsets and delayed responses cannot extend authority [0.04ms]
+(pass) held capacity: uncertain execution is quarantined, never released or reused [1.45ms]
+2395 |     await h.provider.startControlled(tracked, 5000, () => {});
+2396 |     try {
+2397 |       const record = h.provider.recordFor(vm.id)!;
+2398 |       expect(identityMatches(record)).toBe(true);
+2399 |       const environment = readFileSync(`/proc/${record.pid}/environ`, "utf8");
+2400 |       expect(environment.split("\0").filter(Boolean).sort()).toEqual([
+                                                                    ^
+error: expect(received).toEqual(expected)
+
+  [
+    "PATH=/usr/bin:/bin",
++   "SWARMFORGE_HOSTED_ABSOLUTE_BOOT_MS=485491739",
+    "SWARMFORGE_HOSTED_DURATION=5000",
++   "SWARMFORGE_HOSTED_LEASE_BOOT_MS=485491739",
+    "TZ=UTC",
+  ]
+
+- Expected  - 0
++ Received  + 2
+
+      at <anonymous> (/tmp/swarmforge-phase2b2-watchdog/tests/hosted-supervisor.test.ts:2400:62)
+(fail) runtime env and logs carry no bearer, provider, repo or model credentials [1.99ms]
+(pass) hosted CLI parses supervisor/submit/status/cancel and rejects raw secrets [0.59ms]
+(pass) production handler: hosted submit/status/cancel via real TaskClient [1.29ms]
+61 |       s.isSymbolicLink() ||
+62 |       !s.isDirectory() ||
+63 |       (s.uid !== 0 && s.uid !== uid) ||
+64 |       (writable && !stickyRootTemp)
+65 |     )
+66 |       throw privateCredentialStorageError();
+                 ^
+error: Cloud credential storage must use a privately owned regular file (0600) in a private directory (0700), without symlinks.
+      at parentDirectory (/tmp/swarmforge-phase2b2-watchdog/src/private-credential-file.ts:66:13)
+      at savePrivateCredential (/tmp/swarmforge-phase2b2-watchdog/src/private-credential-file.ts:134:3)
+      at saveHostedSupervisorCredential (/tmp/swarmforge-phase2b2-watchdog/src/hosted-credentials.ts:128:3)
+      at <anonymous> (/tmp/swarmforge-phase2b2-watchdog/tests/hosted-supervisor.test.ts:2550:5)
+(fail) RED factory restart: statePath persists the durable mapping across factory instances [1.06ms]
+61 |       s.isSymbolicLink() ||
+62 |       !s.isDirectory() ||
+63 |       (s.uid !== 0 && s.uid !== uid) ||
+64 |       (writable && !stickyRootTemp)
+65 |     )
+66 |       throw privateCredentialStorageError();
+                 ^
+error: Cloud credential storage must use a privately owned regular file (0600) in a private directory (0700), without symlinks.
+      at parentDirectory (/tmp/swarmforge-phase2b2-watchdog/src/private-credential-file.ts:66:13)
+      at savePrivateCredential (/tmp/swarmforge-phase2b2-watchdog/src/private-credential-file.ts:134:3)
+      at saveHostedSupervisorCredential (/tmp/swarmforge-phase2b2-watchdog/src/hosted-credentials.ts:128:3)
+      at <anonymous> (/tmp/swarmforge-phase2b2-watchdog/tests/hosted-supervisor.test.ts:2610:5)
+(fail) production handler: supervisor loop claims, runs, stops and settles [1.39ms]
+(pass) accounting: actual run >300ms settles consumption >= actual minimum, no double release [354.86ms]
+(pass) RTT: delayed ACK response is measured in full (monotonic, after await) [1205.60ms]
+(pass) staging race: injected stopping intent between staging and start blocks start [4.11ms]
+(pass) child enforces its validated lease while the actual supervisor event loop stalls [2203.74ms]
+(pass) a delayed renewal write callback cannot publish authority after local stop (IPC callback transport mock) [2854.59ms]
+
+tests/artifact-cli.test.ts:
+(pass) artifact commands parse explicit output and pagination and reject invalid input [0.37ms]
+61 |   new Uint8Array([0, 255, 128, 13, 10, 42]),
+62 |   new Uint8Array(),
+63 | ])
+64 |   test(`download verifies exact binary bytes (${bytes.length}) and refuses overwrites`, async () => {
+65 |     const dir = await mkdtemp(join(tmpdir(), "sf-download-"));
+66 |     const server = Bun.serve({
+                            ^
+EPERM: operation not permitted, listen
+ syscall: "listen",
+   errno: -1,
+    code: "EPERM"
+
+      at <anonymous> (/tmp/swarmforge-phase2b2-watchdog/tests/artifact-cli.test.ts:66:24)
+(fail) download verifies exact binary bytes (6) and refuses overwrites [0.57ms]
+61 |   new Uint8Array([0, 255, 128, 13, 10, 42]),
+62 |   new Uint8Array(),
+63 | ])
+64 |   test(`download verifies exact binary bytes (${bytes.length}) and refuses overwrites`, async () => {
+65 |     const dir = await mkdtemp(join(tmpdir(), "sf-download-"));
+66 |     const server = Bun.serve({
+                            ^
+EPERM: operation not permitted, listen
+ syscall: "listen",
+   errno: -1,
+    code: "EPERM"
+
+      at <anonymous> (/tmp/swarmforge-phase2b2-watchdog/tests/artifact-cli.test.ts:66:24)
+(fail) download verifies exact binary bytes (0) and refuses overwrites [0.29ms]
+104 |   });
+105 | 
+106 | test("corrupt, oversized, truncated and redirected downloads never publish or leave partial files", async () => {
+107 |   const dir = await mkdtemp(join(tmpdir(), "sf-download-errors-"));
+108 |   let response: () => Response = () => new Response("wrong");
+109 |   const server = Bun.serve({
+                           ^
+EPERM: operation not permitted, listen
+ syscall: "listen",
+   errno: -1,
+    code: "EPERM"
+
+      at <anonymous> (/tmp/swarmforge-phase2b2-watchdog/tests/artifact-cli.test.ts:109:22)
+(fail) corrupt, oversized, truncated and redirected downloads never publish or leave partial files [0.42ms]
+145 |   const dir = await mkdtemp(join(tmpdir(), "sf-download-abort-"));
+146 |   let ready!: () => void;
+147 |   const started = new Promise<void>((resolve) => {
+148 |     ready = resolve;
+149 |   });
+150 |   const server = Bun.serve({
+                           ^
+EPERM: operation not permitted, listen
+ syscall: "listen",
+   errno: -1,
+    code: "EPERM"
+
+      at <anonymous> (/tmp/swarmforge-phase2b2-watchdog/tests/artifact-cli.test.ts:150:22)
+(fail) cancelled transfer removes its temporary file without publishing [0.35ms]
+199 |     "result.bin",
+200 |   );
+201 |   await h.provider.destroyWorker(w.vm_id!);
+202 |   const token = "artifact-cli-token-with-enough-characters";
+203 |   h.config.SWARMFORGE_API_TOKEN = token;
+204 |   const server = Bun.serve({
+                           ^
+EPERM: operation not permitted, listen
+ syscall: "listen",
+   errno: -1,
+    code: "EPERM"
+
+      at <anonymous> (/tmp/swarmforge-phase2b2-watchdog/tests/artifact-cli.test.ts:204:22)
+(fail) authenticated artifact CLI and client retrieve preserved files independently of the guest [41.08ms]
+262 |   const bytes = Buffer.from([255, 0, 128, 10]);
+263 |   await writeFile(join(h.workspace.root, "deliverable.bin"), bytes);
+264 |   await h.coordinator.artifacts.preserve(w.worker_id, "deliverable.bin");
+265 |   const dir = await mkdtemp(join(tmpdir(), "sf-artifact-ui-"));
+266 |   const destination = join(dir, "saved.bin");
+267 |   const server = Bun.serve({
+                           ^
+EPERM: operation not permitted, listen
+ syscall: "listen",
+   errno: -1,
+    code: "EPERM"
+
+      at <anonymous> (/tmp/swarmforge-phase2b2-watchdog/tests/artifact-cli.test.ts:267:22)
+(fail) dashboard artifact browser saves a verified file to an explicitly edited path [50.81ms]
+
+tests/restart.test.ts:
+(pass) a reopened SQLite database reconnects the same VM/session and retains results and tokens [227.25ms]
+
+tests/cli.test.ts:
+12 |       ...task,
+13 |       task_id: `task-${index}`,
+14 |       request_id: `request-${index}`,
+15 |       timeout_seconds: 60,
+16 |     });
+17 |   const server = Bun.serve({
+                          ^
+EPERM: operation not permitted, listen
+ syscall: "listen",
+   errno: -1,
+    code: "EPERM"
+
+      at <anonymous> (/tmp/swarmforge-phase2b2-watchdog/tests/cli.test.ts:17:22)
+(fail) overview client reads every worker page through authenticated MCP [5.29ms]
+41 | test("status command prints JSON or a plain snapshot when piped", async () => {
+42 |   const h = harness();
+43 |   h.coordinator.config.SWARMFORGE_API_TOKEN =
+44 |     "a-test-token-with-enough-characters";
+45 |   h.store.create({ ...task, timeout_seconds: 60 });
+46 |   const server = Bun.serve({
+                          ^
+EPERM: operation not permitted, listen
+ syscall: "listen",
+   errno: -1,
+    code: "EPERM"
+
+      at <anonymous> (/tmp/swarmforge-phase2b2-watchdog/tests/cli.test.ts:46:22)
+(fail) status command prints JSON or a plain snapshot when piped [0.77ms]
+
+tests/wait.test.ts:
+(pass) a wait returns the next lifecycle transition with ownership, VM and event identity [1.22ms]
+(pass) a state filter ignores intermediate transitions and reports the matching one [0.70ms]
+(pass) task and team filters ignore other lifecycles and leave their events replayable [0.88ms]
+(pass) a cursor replays the first matching event after it in event order [0.97ms]
+(pass) an expired wait reports no change and the cursor it consumed [51.00ms]
+(pass) concurrent waiters wake independently without touching the provider [31.85ms]
+(pass) a parked wait holds no worker lock and still sees a control transition [1.00ms]
+(pass) an aborted wait releases its listener and reports the abort [0.87ms]
+(pass) cursors survive a restart on a reopened database [91.16ms]
+(pass) the MCP wait tool is read-only, bounded and returns durable transitions [11.08ms]
+(pass) the HTTP transport wakes a parked wait and releases it when the request aborts [12.11ms]
+
+tests/runtime-security.test.ts:
+(pass) event logger screens terminal payloads and file records before exposure [1.75ms]
+
+tests/worker-runtime.test.ts:
+(pass) cancellation delegates verified runtime stop to an injected provider [1.24ms]
+(pass) an uncertain runtime stop pauses the VM without a legacy service fallback [1.09ms]
+(pass) Freestyle proves runtime stop only after a successful command [1.03ms]
+
+tests/metrics-security.test.ts:
+
+# Unhandled error between tests
+-------------------------------
+55 |   } finally {
+56 |     h.store.close();
+57 |   }
+58 | });
+59 | 
+60 | const nonLoopback = Object.values(networkInterfaces())
+                                       ^
+error: A system error occurred: getifaddrs returned an error
+ syscall: "getifaddrs",
+   errno: 1,
+    code: "ERR_SYSTEM_ERROR"
+
+      at /tmp/swarmforge-phase2b2-watchdog/tests/metrics-security.test.ts:60:35
+-------------------------------
+
+
+tests/cloud-worker-client.test.ts:
+61 |       s.isSymbolicLink() ||
+62 |       !s.isDirectory() ||
+63 |       (s.uid !== 0 && s.uid !== uid) ||
+64 |       (writable && !stickyRootTemp)
+65 |     )
+66 |       throw privateCredentialStorageError();
+                                               ^
+error: Cloud credential storage must use a privately owned regular file (0600) in a private directory (0700), without symlinks.
+      at parentDirectory (/tmp/swarmforge-phase2b2-watchdog/src/private-credential-file.ts:66:43)
+      at savePrivateCredential (/tmp/swarmforge-phase2b2-watchdog/src/private-credential-file.ts:134:3)
+      at <anonymous> (/tmp/swarmforge-phase2b2-watchdog/tests/cloud-worker-client.test.ts:71:5)
+(fail) shared private credential helper round-trips and protects POSIX files [0.43ms]
+61 |       s.isSymbolicLink() ||
+62 |       !s.isDirectory() ||
+63 |       (s.uid !== 0 && s.uid !== uid) ||
+64 |       (writable && !stickyRootTemp)
+65 |     )
+66 |       throw privateCredentialStorageError();
+                                               ^
+error: Cloud credential storage must use a privately owned regular file (0600) in a private directory (0700), without symlinks.
+      at parentDirectory (/tmp/swarmforge-phase2b2-watchdog/src/private-credential-file.ts:66:43)
+      at savePrivateCredential (/tmp/swarmforge-phase2b2-watchdog/src/private-credential-file.ts:134:3)
+      at <anonymous> (/tmp/swarmforge-phase2b2-watchdog/tests/cloud-worker-client.test.ts:94:5)
+(fail) shared private credential helper refuses corrupt, unsafe, oversized or symlink files [0.28ms]
+(pass) shared private credential helper refuses weak Windows storage without fallback [0.21ms]
+61 |       s.isSymbolicLink() ||
+62 |       !s.isDirectory() ||
+63 |       (s.uid !== 0 && s.uid !== uid) ||
+64 |       (writable && !stickyRootTemp)
+65 |     )
+66 |       throw privateCredentialStorageError();
+                                               ^
+error: Cloud credential storage must use a privately owned regular file (0600) in a private directory (0700), without symlinks.
+      at parentDirectory (/tmp/swarmforge-phase2b2-watchdog/src/private-credential-file.ts:66:43)
+      at savePrivateCredential (/tmp/swarmforge-phase2b2-watchdog/src/private-credential-file.ts:134:3)
+      at saveCloudWorkerCredential (/tmp/swarmforge-phase2b2-watchdog/src/cloud-worker-credentials.ts:50:3)
+      at <anonymous> (/tmp/swarmforge-phase2b2-watchdog/tests/cloud-worker-client.test.ts:172:5)
+(fail) worker credential store persists privately in a separate file from CLI credentials [0.65ms]
+53 |   const { version: _v, server_url: _u, ...reply } = c;
+54 |   return reply;
+55 | }
+56 | 
+57 | function api(handler: (request: Request) => Response | Promise<Response>) {
+58 |   const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: handler });
+                          ^
+EPERM: operation not permitted, listen
+ syscall: "listen",
+   errno: -1,
+    code: "EPERM"
+
+      at api (/tmp/swarmforge-phase2b2-watchdog/tests/cloud-worker-client.test.ts:58:22)
+      at <anonymous> (/tmp/swarmforge-phase2b2-watchdog/tests/cloud-worker-client.test.ts:205:18)
+(fail) worker client enrolls with an in-memory enrollment secret on the exact register endpoint [0.18ms]
+53 |   const { version: _v, server_url: _u, ...reply } = c;
+54 |   return reply;
+55 | }
+56 | 
+57 | function api(handler: (request: Request) => Response | Promise<Response>) {
+58 |   const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: handler });
+                          ^
+EPERM: operation not permitted, listen
+ syscall: "listen",
+   errno: -1,
+    code: "EPERM"
+
+      at api (/tmp/swarmforge-phase2b2-watchdog/tests/cloud-worker-client.test.ts:58:22)
+      at <anonymous> (/tmp/swarmforge-phase2b2-watchdog/tests/cloud-worker-client.test.ts:240:18)
+(fail) worker client verifies stored identity and rejects same-tenant mismatches locally [0.20ms]
+53 |   const { version: _v, server_url: _u, ...reply } = c;
+54 |   return reply;
+55 | }
+56 | 
+57 | function api(handler: (request: Request) => Response | Promise<Response>) {
+58 |   const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: handler });
+                          ^
+EPERM: operation not permitted, listen
+ syscall: "listen",
+   errno: -1,
+    code: "EPERM"
+
+      at api (/tmp/swarmforge-phase2b2-watchdog/tests/cloud-worker-client.test.ts:58:22)
+      at <anonymous> (/tmp/swarmforge-phase2b2-watchdog/tests/cloud-worker-client.test.ts:279:18)
+(fail) worker rotation survives a lost reply by retrying the durable idempotency key [0.17ms]
+53 |   const { version: _v, server_url: _u, ...reply } = c;
+54 |   return reply;
+55 | }
+56 | 
+57 | function api(handler: (request: Request) => Response | Promise<Response>) {
+58 |   const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: handler });
+                          ^
+EPERM: operation not permitted, listen
+ syscall: "listen",
+   errno: -1,
+    code: "EPERM"
+
+      at api (/tmp/swarmforge-phase2b2-watchdog/tests/cloud-worker-client.test.ts:58:22)
+      at <anonymous> (/tmp/swarmforge-phase2b2-watchdog/tests/cloud-worker-client.test.ts:307:18)
+(fail) worker client rejects wrong audience, hostile responses, leaked secrets and CLI credentials [0.14ms]
+53 |   const { version: _v, server_url: _u, ...reply } = c;
+54 |   return reply;
+55 | }
+56 | 
+57 | function api(handler: (request: Request) => Response | Promise<Response>) {
+58 |   const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: handler });
+                          ^
+EPERM: operation not permitted, listen
+ syscall: "listen",
+   errno: -1,
+    code: "EPERM"
+
+      at api (/tmp/swarmforge-phase2b2-watchdog/tests/cloud-worker-client.test.ts:58:22)
+      at <anonymous> (/tmp/swarmforge-phase2b2-watchdog/tests/cloud-worker-client.test.ts:368:18)
+(fail) worker client follows redirects never, respects 429 and stops on expired or revoked credentials [0.16ms]
+
+tests/packaging.test.ts:
+(pass) compiled CLI > reports the version and commit the build defined, and the source falls back [83.58ms]
+(pass) compiled CLI > runs with no Bun and no checkout node_modules on PATH [216.12ms]
+(pass) compiled CLI > ignores a foreign .env and bunfig.toml that a source run cannot survive [43.62ms]
+(pass) compiled CLI > reads a stable config path and an explicit env file [49.92ms]
+310 |       task_id: "task",
+311 |       role: "coder",
+312 |       prompt: "Implement a feature",
+313 |       timeout_seconds: 60,
+314 |     });
+315 |     const server = Bun.serve({
+                             ^
+EPERM: operation not permitted, listen
+ syscall: "listen",
+   errno: -1,
+    code: "EPERM"
+
+      at <anonymous> (/tmp/swarmforge-phase2b2-watchdog/tests/packaging.test.ts:315:24)
+(fail) compiled CLI > status reports the endpoint it was given, not the one in the foreign .env [1.37ms]
+(pass) compiled CLI > refuses a status endpoint without reporting a credential [48.87ms]
+362 |       } catch {}
+363 |     }
+364 |   });
+365 | 
+366 |   async function port(): Promise<number> {
+367 |     const probe = Bun.serve({
+                            ^
+EPERM: operation not permitted, listen
+ syscall: "listen",
+   errno: -1,
+    code: "EPERM"
+
+      at port (/tmp/swarmforge-phase2b2-watchdog/tests/packaging.test.ts:367:23)
+      at <anonymous> (/tmp/swarmforge-phase2b2-watchdog/tests/packaging.test.ts:445:26)
+(fail) compiled serve lifecycle > serves, holds the database lock, restarts and survives a signal [0.44ms]
+362 |       } catch {}
+363 |     }
+364 |   });
+365 | 
+366 |   async function port(): Promise<number> {
+367 |     const probe = Bun.serve({
+                            ^
+EPERM: operation not permitted, listen
+ syscall: "listen",
+   errno: -1,
+    code: "EPERM"
+
+      at port (/tmp/swarmforge-phase2b2-watchdog/tests/packaging.test.ts:367:23)
+      at <anonymous> (/tmp/swarmforge-phase2b2-watchdog/tests/packaging.test.ts:481:26)
+(fail) compiled serve lifecycle > compiled capture survives safe destruction and the CLI serves exact authenticated bytes after restart [568.85ms]
+362 |       } catch {}
+363 |     }
+364 |   });
+365 | 
+366 |   async function port(): Promise<number> {
+367 |     const probe = Bun.serve({
+                            ^
+EPERM: operation not permitted, listen
+ syscall: "listen",
+   errno: -1,
+    code: "EPERM"
+
+      at port (/tmp/swarmforge-phase2b2-watchdog/tests/packaging.test.ts:367:23)
+      at <anonymous> (/tmp/swarmforge-phase2b2-watchdog/tests/packaging.test.ts:551:26)
+(fail) compiled serve lifecycle > rolls a failed startup back so the lock is not left behind [0.22ms]
+362 |       } catch {}
+363 |     }
+364 |   });
+365 | 
+366 |   async function port(): Promise<number> {
+367 |     const probe = Bun.serve({
+                            ^
+EPERM: operation not permitted, listen
+ syscall: "listen",
+   errno: -1,
+    code: "EPERM"
+
+      at port (/tmp/swarmforge-phase2b2-watchdog/tests/packaging.test.ts:367:23)
+      at <anonymous> (/tmp/swarmforge-phase2b2-watchdog/tests/packaging.test.ts:574:26)
+(fail) compiled serve lifecycle > exits 70 on the shutdown deadline with the database still readable [0.15ms]
+362 |       } catch {}
+363 |     }
+364 |   });
+365 | 
+366 |   async function port(): Promise<number> {
+367 |     const probe = Bun.serve({
+                            ^
+EPERM: operation not permitted, listen
+ syscall: "listen",
+   errno: -1,
+    code: "EPERM"
+
+      at port (/tmp/swarmforge-phase2b2-watchdog/tests/packaging.test.ts:367:23)
+      at <anonymous> (/tmp/swarmforge-phase2b2-watchdog/tests/packaging.test.ts:605:48)
+(fail) compiled serve lifecycle > refuses an in-memory database before it creates anything [0.11ms]
+(pass) release archive > packages a verified executable with metadata and checksums [298.12ms]
+(pass) release archive > extracts with mode 0755 and reports its build metadata [726.03ms]
+(pass) release archive > only cuts a release when the tag matches the packaged version [0.20ms]
+(pass) archive verification > accepts the archive packaging produced [1142.74ms]
+(pass) archive verification > rejects a truncated archive [240.14ms]
+(pass) archive verification > rejects an archive whose payload was edited [3553.87ms]
+(pass) archive verification > rejects an archive whose metadata was edited to match [3428.00ms]
+(pass) archive verification > rejects an archive whose executable lost its mode [3208.76ms]
+(pass) archive verification > rejects an archive built from another commit [903.43ms]
+(pass) archive verification > package:verify passes for the built archive and fails for a tampered one [1053.49ms]
+(pass) release assets > release preparation accepts the workflow's relative download directory [1206.23ms]
+(pass) release assets > accepts the assets the build job uploaded for a matching tag [1151.32ms]
+(pass) release assets > refuses assets whose tag does not match the version [179.77ms]
+(pass) release assets > refuses a release directory that is missing the archive [148.95ms]
+(pass) release assets > refuses assets whose archive is not the verified one [211.04ms]
+(pass) packaging declarations > package scripts, engine floor and the pinned toolchain [0.08ms]
+(pass) packaging declarations > start, dev and status disable ambient .env and bunfig [0.10ms]
+(pass) packaging declarations > the documented `bun run start -- --env-file .env` reads that file [131.30ms]
+(pass) packaging declarations > a release tag is never evaluated by a shell [13.52ms]
+(pass) packaging declarations > the workflow grants write access only to the draft job [0.58ms]
+(pass) packaging declarations > the suite compiles the CLI once and packages that binary [3907.71ms]
+(pass) packaging declarations > dist output is ignored and the lockfile keeps its format [0.62ms]
+(pass) packaging declarations > the release workflow pins Bun 1.4.2, verifies, and only drafts [0.22ms]
+(pass) packaging declarations > the README install flow works in a plain shell [0.94ms]
+(pass) packaging declarations > the documented install block installs a working executable [802.22ms]
+(pass) packaging declarations > the documented install block refuses an archive with a bad checksum [3899.54ms]
+
+tests/http.test.ts:
+27 |           },
+28 |         }),
+29 |       )
+30 |     ).status,
+31 |   ).toBe(403);
+32 |   const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: handler });
+                          ^
+EPERM: operation not permitted, listen
+ syscall: "listen",
+   errno: -1,
+    code: "EPERM"
+
+      at <anonymous> (/tmp/swarmforge-phase2b2-watchdog/tests/http.test.ts:32:22)
+(fail) HTTP transport authenticates leads, rejects hostile origins and serves real MCP calls [1.73ms]
+(pass) a public allowed hostname behind a loopback bind requires the bearer token [4.65ms]
+
+tests/hosted-child-lease.test.ts:
+(pass) real child expires while its parent's event loop is blocked [981.88ms]
+67 | test("timely renewals preserve the full 31 second task", async () => {
+68 |   const { child, exited, end } = launch(31000, undefined, 2000);
+69 |   const start = performance.now();
+70 |   const renew = setInterval(() => child.stdin.write(frame(2000, end)), 500);
+71 |   try {
+72 |     expect(await exited).toBe(0);
+                              ^
+error: expect(received).toBe(expected)
+
+Expected: 0
+Received: 3
+
+      at <anonymous> (/tmp/swarmforge-phase2b2-watchdog/tests/hosted-child-lease.test.ts:72:26)
+(fail) timely renewals preserve the full 31 second task [504.32ms]
+80 | for (const input of ["garbage\n", "1 2\n", "x".repeat(257)]) {
+81 |   test(`malformed renewal IPC fails closed: ${input.slice(0, 12)}`, async () => {
+82 |     const { child, exited } = launch();
+83 |     try {
+84 |       child.stdin.write(input);
+85 |       expect(await exited).toBe(4);
+                                ^
+error: expect(received).toBe(expected)
+
+Expected: 4
+Received: 3
+
+      at <anonymous> (/tmp/swarmforge-phase2b2-watchdog/tests/hosted-child-lease.test.ts:85:28)
+(fail) malformed renewal IPC fails closed: garbage
+ [9.92ms]
+80 | for (const input of ["garbage\n", "1 2\n", "x".repeat(257)]) {
+81 |   test(`malformed renewal IPC fails closed: ${input.slice(0, 12)}`, async () => {
+82 |     const { child, exited } = launch();
+83 |     try {
+84 |       child.stdin.write(input);
+85 |       expect(await exited).toBe(4);
+                                ^
+error: expect(received).toBe(expected)
+
+Expected: 4
+Received: 3
+
+      at <anonymous> (/tmp/swarmforge-phase2b2-watchdog/tests/hosted-child-lease.test.ts:85:28)
+(fail) malformed renewal IPC fails closed: 1 2
+ [9.50ms]
+80 | for (const input of ["garbage\n", "1 2\n", "x".repeat(257)]) {
+81 |   test(`malformed renewal IPC fails closed: ${input.slice(0, 12)}`, async () => {
+82 |     const { child, exited } = launch();
+83 |     try {
+84 |       child.stdin.write(input);
+85 |       expect(await exited).toBe(4);
+                                ^
+error: expect(received).toBe(expected)
+
+Expected: 4
+Received: 3
+
+      at <anonymous> (/tmp/swarmforge-phase2b2-watchdog/tests/hosted-child-lease.test.ts:85:28)
+(fail) malformed renewal IPC fails closed: xxxxxxxxxxxx [9.73ms]
+(pass) buffered initial authority expires before delayed runtime startup [710.68ms]
+(pass) late renewal never reopens an expired child [601.23ms]
+(pass) missing initial authority refuses work at startup [12.01ms]
+(pass) parent EOF stops the leased real child [102.30ms]
+142 |   );
+143 |   const { child, exited, end } = launch(3000, path, 350);
+144 |   try {
+145 |     await Bun.sleep(450);
+146 |     child.stdin.write(frame(2000, end));
+147 |     expect(await exited).toBe(4);
+                               ^
+error: expect(received).toBe(expected)
+
+Expected: 4
+Received: 3
+
+      at <anonymous> (/tmp/swarmforge-phase2b2-watchdog/tests/hosted-child-lease.test.ts:147:26)
+(fail) buffered renewal cannot reopen a lease when child callbacks were delayed [807.48ms]
+(pass) invalid initial numeric authority refuses work: garbage [10.58ms]
+(pass) invalid initial numeric authority refuses work: 1 [10.24ms]
+(pass) invalid initial numeric authority refuses work: -1 [10.11ms]
+(pass) a real child completes its full duration under valid initial authority [311.40ms]
+
+tests/finalization.test.ts:
+(pass) completion preserves the default collection under the settled run id [66.56ms]
+(pass) declared findings survive a malformed result with no model assistance [11.39ms]
+(pass) a configured failure snapshots the workspace and an ordinary completion does not [37.39ms]
+(pass) an OpenCode outage keeps the task running until its deadline and then finalizes [11.18ms]
+(pass) a token-idle quiesce finalizes the retained workspace [13.35ms]
+(pass) a workspace result salvages a turn whose OpenCode session is gone [10.19ms]
+(pass) the result file is read through the capture, never a provider stat/read pair [9.38ms]
+(pass) a corrupted or oversized result file is refused instead of completed [3.81ms]
+(pass) a failed control operation is never answered with a completion [1.42ms]
+(pass) cancellation stops production promptly and never waits on preservation [13.51ms]
+(pass) an interrupted boot records a preservation failure instead of hanging [1.69ms]
+(pass) a vanished VM records the lost workspace and leaves destruction unblocked [1.61ms]
+(pass) normal destruction refuses an unpreserved workspace and succeeds once it settles [18.50ms]
+(pass) a legacy worker row still preserves its defaults under its own run and destroys [16.11ms]
+(pass) force destruction abandons a live collection before deleting the VM [2.72ms]
+(pass) a restart retries an interrupted collection and never marks it preserved early [268.19ms]
+(pass) exhausted retries retain the VM and a deliberate retry recovers it [18.86ms]
+(pass) a provider without artifact transport fails preservation clearly [31.41ms]
+(pass) a partially collected run keeps what it captured and a retry completes it [48.40ms]
+(pass) a follow-up queued during collection is delivered only after preservation settles [441.41ms]
+(pass) each run keeps its own artifacts and run id while events retain both outcomes [34.45ms]
+(pass) required declarations fail preservation while optional ones are skipped [20.65ms]
+(pass) declared artifact paths are validated before a worker exists [2.02ms]
+(pass) a control requested while a step holds the worker lock is applied without another tick [6.49ms]
+(pass) a forced destruction supersedes a stuck control intent [1.31ms]
+(pass) finalization is visible on the public worker view [9.51ms]
+(pass) declarations classify from the capture's own error codes [15.47ms]
+(pass) a missing optional declaration is skipped under the published codes [8.23ms]
+(pass) an unsafe path refusal fails preservation instead of being skipped [9.69ms]
+(pass) a lost VM keeps the run it lost in its preservation record [1.25ms]
+(pass) a duplicate ordinary destroy cannot downgrade an in-flight forced destruction [11.42ms]
+(pass) a forced destruction never rewrites a preserved record [15.65ms]
+(pass) the canonical result mirror is written before preservation can start [14.42ms]
+(pass) a result file that names another run is never attributed to this one [16.16ms]
+(pass) the real guest helper preserves defaults once and never fails on optional boot metadata [538.30ms]
+(pass) the real guest helper fails a required absence without naming it a transport error [57.83ms]
+(pass) a persisted preservation error is redacted before it is truncated [6.16ms]
+(pass) retry backoff stays a safe integer within a bounded horizon [0.10ms]
+(pass) two workers with the same relative path each collect their own listing [41.24ms]
+(pass) the finalization gate hands a reserved slot on and drops an aborted waiter [0.35ms]
+(pass) more finalizations than slots, one aborted, and work afterwards never wedges [357.34ms]
+(pass) concurrent finalizations stay inside the configured bound [234.21ms]
+(pass) artifact and finalization configuration defaults and bounds match the plan [1.75ms]
+
+tests/github-device-flow-regression.test.ts:
+(pass) github-oauth regression > successful flow writes credential file [1002.52ms]
+(pass) github-oauth regression > uses correct device flow scope [1002.78ms]
+(pass) github-oauth regression > denied authorization throws [1000.95ms]
+(pass) github-oauth regression > missing repo scope throws [1000.99ms]
+(pass) github-oauth regression > missing push permission throws [1000.88ms]
+(pass) github-oauth regression > invalid device code throws [0.53ms]
+(pass) github-oauth regression > credential requires private permissions [0.46ms]
+(pass) github-oauth regression > credential requires correct repository [0.27ms]
+(pass) github-oauth regression > handles authorization_pending during polling [2003.68ms]
+
+tests/proof-runner.test.ts:
+(pass) HIGH: a preserved report backup is immutable and runs stay separate > the backup keeps the earlier report's bytes after a later run writes [0.45ms]
+(pass) HIGH: a preserved report backup is immutable and runs stay separate > two runs leave two intact run reports side by side [0.24ms]
+(pass) HIGH: a preserved report backup is immutable and runs stay separate > preserved backups are private files and preserveExisting reports absence [0.12ms]
+(pass) HIGH: a preserved report backup is immutable and runs stay separate > two runs in the same millisecond still get distinct backups [0.14ms]
+(pass) HIGH: a preserved report backup is immutable and runs stay separate > a colliding backup name is refused rather than overwritten [0.13ms]
+(pass) HIGH: a hash is digested exactly once > digesting twice throws, which is the defect being regression-tested [0.10ms]
+(pass) HIGH: a hash is digested exactly once > digestStream returns one usable digest for a multi-chunk stream [0.28ms]
+(pass) HIGH: a hash is digested exactly once > digestStream matches a single-shot digest over the same bytes [0.26ms]
+(pass) MEDIUM: the private database never inherits the live one > private paths are derived from the evidence directory, not the environment [0.16ms]
+(pass) MEDIUM: the private database never inherits the live one > a partial loadConfig env fails, so the host environment must be spread in [0.62ms]
+(pass) MEDIUM: the private database never inherits the live one > forcing the private path overrides a host that pre-sets a live one [0.26ms]
+(pass) MEDIUM: the private database never inherits the live one > two runs never share a private database file [0.10ms]
+(pass) MEDIUM: the private database never inherits the live one > the evidence directory and its database are private [0.10ms]
+(pass) MEDIUM: duplicated artifacts fail the scale probe > a file that is both declared and swept is found as a duplicate [0.18ms]
+(pass) MEDIUM: duplicated artifacts fail the scale probe > distinct paths, workers and runs are not duplicates [0.09ms]
+(pass) MEDIUM: duplicated artifacts fail the scale probe > the shape the review reported is detected: 12 paths / 24 records [0.11ms]
+(pass) Git durability provenance is truthful, never fabricated > a verified handoff yields the identity and the real published branch [97.72ms]
+(pass) Git durability provenance is truthful, never fabricated > an unverified handoff is reported unverified, never upgraded [116.69ms]
+(pass) Git durability provenance is truthful, never fabricated > no result at all is reported as no verified handoff [49.52ms]
+(pass) Git durability provenance is truthful, never fabricated > a VM mismatch refuses instead of adopting a different guest [51.54ms]
+(pass) Git durability provenance is truthful, never fabricated > an unknown worker refuses rather than inventing a record [102.44ms]
+(pass) Git durability provenance is truthful, never fabricated > a branch the real result does not report refuses the run [123.21ms]
+(pass) Git durability provenance is truthful, never fabricated > a missing snapshot is refused [0.30ms]
+(pass) HIGH: the result comes from the newest dispatch only > an older verified result is NOT reported for a newest dispatch with no result [90.78ms]
+(pass) HIGH: the result comes from the newest dispatch only > that state is refused by the owner gate, naming the failing precondition [46.46ms]
+(pass) HIGH: the result comes from the newest dispatch only > the newest dispatch is the row that decides, whichever way it goes [187.11ms]
+(pass) HIGH: the owner gate is a precondition, not a destroy extra > a fully verified, finished, on-target record opens the gate [0.29ms]
+(pass) HIGH: the owner gate is a precondition, not a destroy extra > each precondition is reported by name [0.17ms]
+(pass) HIGH: the owner gate is a precondition, not a destroy extra > a refusal names the fact and keeps the guest [0.18ms]
+(pass) HIGH: the owner gate is a precondition, not a destroy extra > a fresh provider status is required and must be the fixed VM [0.17ms]
+(pass) HIGH: the owner gate is a precondition, not a destroy extra > --execute without a provenance snapshot is refused before anything runs [0.51ms]
+(pass) HIGH: destruction runs on a private copy of the owner's real record > the copy is a private, exclusive, byte-identical copy of the snapshot [0.33ms]
+(pass) HIGH: destruction runs on a private copy of the owner's real record > a missing snapshot is refused instead of yielding an empty copy [0.13ms]
+(pass) HIGH: destruction runs on a private copy of the owner's real record > a copy identical to the approved provenance passes [0.20ms]
+(pass) HIGH: destruction runs on a private copy of the owner's real record > a stale or doctored copy is refused field by field [0.27ms]
+(pass) HIGH: destruction runs on a private copy of the owner's real record > destruction never asks the coordinator to force, and never mints a result [0.38ms]
+(pass) LOW: bounded streaming, private per-run evidence and honest IO > a stored artifact is hashed by draining one bounded stream [6.29ms]
+{"event":"a","at":1791589328464,"n":1}
+{"event":"b","at":1791589328464,"n":2}
+{"event":"c","at":1791589328465}
+(pass) LOW: bounded streaming, private per-run evidence and honest IO > evidence is per run, and an unwritable evidence file is reported [0.54ms]
+(pass) LOW: bounded streaming, private per-run evidence and honest IO > the default evidence directory is private and outside the repository [0.21ms]
+(pass) LOW: bounded streaming, private per-run evidence and honest IO > a missing artifact store location is refused, not invented [0.12ms]
+(pass) LOW: bounded streaming, private per-run evidence and honest IO > a checkout without the data plane is refused, not half-run [0.17ms]
+(pass) MEDIUM: the scale probe names its digest metric for what it counts > equal content under different workers is expected, not a duplicate [0.10ms]
+(pass) MEDIUM: the scale probe names its digest metric for what it counts > the probe reports the digest count as a per-record observation, unasserted [0.25ms]
+(pass) MEDIUM: the scale probe names its digest metric for what it counts > the probe refuses by name when the combined disposable is absent [0.21ms]
+
+tests/opencode-pagination.test.ts:
+(pass) a session with more than 100 messages reports the newest window and never paginates [3.81ms]
+(pass) a busy server stays observable with a long history instead of freezing the snapshot [1.16ms]
+(pass) a busy turn with an unfinished newest message is still reported as active [0.76ms]
+(pass) the completed reply of the current dispatch is found in a truncated window [0.75ms]
+(pass) a server that rejects the full window is retried once at a smaller supported bound [0.87ms]
+(pass) a server that rejects every window degrades to the status instead of retrying forever [0.56ms]
+(pass) a fault that is not a rejected query stays a retryable failure [1.07ms]
+(pass) a status this call cannot read is never guessed [5.12ms]
+(pass) a follow-up dispatch carries the current run identity in its user text [1.76ms]
+(pass) the dispatched identity never discloses a credential [0.64ms]
+(pass) a result file carrying an earlier run id cannot complete the current dispatch [1.73ms]
+
+tests/overview.test.ts:
+(pass) overview groups live workers and sorts recent terminal workers by activity [0.06ms]
+(pass) plain overview shows connection, counts, tasks and token totals [0.38ms]
+(pass) worker inspection shows the result and lifecycle events with valid actions [0.25ms]
+(pass) worker text cannot inject terminal control sequences [0.06ms]
+(pass) focused worker detail shows the live response excerpt as one partial fresh line [0.07ms]
+(pass) completed focus shows the durable result summary and no stale excerpt [0.03ms]
+(pass) narrow focused view keeps the newest words of a long excerpt [0.03ms]
+(pass) selection reveals workers beyond the first overview page [0.07ms]
+(pass) interactive overview inspects workers and confirms destruction [0.88ms]
+(pass) focused dashboard refreshes its live excerpt without fetching logs again [90.38ms]
+
+tests/git-handoff.test.ts:
+(pass) branch names are unique, valid and tied to the worker [0.04ms]
+(pass) GitHub App requests a repository-scoped Contents token with a signed JWT [23.67ms]
+(pass) push mode requires a cloned tree and complete credentials [0.63ms]
+(pass) coordinator verifies push before completing and returns canonical branch metadata [2.33ms]
+(pass) automatic handoff refuses normal VM destruction until a branch is verified [1.00ms]
+(pass) the handoff gate judges the current run, not an earlier verified one [1.64ms]
+(pass) worker instructions require a commit on its assigned branch while SwarmForge handles the push [0.63ms]
+(pass) SSH handoff keeps the key out of Git commands and removes it after push failure [1.18ms]
+(pass) worker checkout gets a task branch and local Git author identity [0.96ms]
+(pass) push command publishes a real commit to a branch and verifies its remote SHA [51.60ms]
+(pass) Git handoff refuses uncommitted changes without publishing a branch [29.58ms]
+(pass) Git handoff rejects a failed status check rather than reporting unreadable work as persisted [19.46ms]
+
+tests/lifecycle.test.ts:
+(pass) creation retries retain idempotency when the queue is full [1.06ms]
+(pass) a request_id created before artifact declarations still matches its retry [0.63ms]
+(pass) creation idempotency survives the artifact declaration defaults [0.72ms]
+(pass) spawn returns queued before provisioning and preserves session for follow-ups [14.41ms]
+(pass) limits both provisioning and retained VM capacity, and resumes queue after destroy [1.97ms]
+(pass) running messages queue durably instead of resetting active context [8.93ms]
+(pass) malformed OpenCode result falls back to current run file and duplicate completion is harmless [1.74ms]
+(pass) missing, malformed and stale fallback cannot declare successful completion [3.63ms]
+(pass) pause preserves deadline budget and resume retains session; cancellation retains VM [1.20ms]
+(pass) safe destroy protects dirty work; explicit force destroys; failures retain VM identity [1.25ms]
+(pass) timeout terminates monitoring and marks dirty VM recovery_required [0.99ms]
+(pass) provider creation failures retry within provisioning deadline, then fail [0.83ms]
+(pass) restart reconnects existing VM and session without resubmitting active task [1.45ms]
+(pass) restart during provisioning adopts VM found by metadata; unknown orphans are retained visibly [0.85ms]
+(pass) VM disappearance is failed, not silently re-provisioned [0.84ms]
+(pass) OpenCode crash after file completion still recovers structured output [1.14ms]
+(pass) persisting a completion atomically makes queued follow-ups runnable after restart [1.68ms]
+(pass) restart in ready with sending intent inspects accepted messages instead of replaying task [1.29ms]
+(pass) failed abort on timeout quiesces the service so retained workers stop generating [1.15ms]
+(pass) follow-up queued while completed worker is paused becomes runnable on resume [31.78ms]
+(pass) paused queued workers do not bypass VM limits when resumed [0.84ms]
+(pass) reconciliation does not overwrite a destroy requested during its VM query [1.20ms]
+(pass) lost VMs free capacity while preserving their IDs for diagnosis [1.36ms]
+(pass) reconciliation discovers a late-created VM even if destroy previously saw no VM [0.68ms]
+(pass) deadline failure settles when the VM vanished between abort and stop [1.27ms]
+(pass) cancel settles when the VM vanished while execution was being stopped [0.97ms]
+(pass) cancel settles when a paused worker's VM was deleted out of band [1.59ms]
+(pass) an ambiguous resume failure keeps the VM and the pending cancel intent [1.18ms]
+(pass) destroy completes in one call when the VM vanishes during quiesce [1.03ms]
+(pass) an ambiguous live VM that cannot be stopped is never treated as quiesced [1.07ms]
+(pass) a message sent while a failure is in flight is rejected instead of acknowledged and dropped [1.12ms]
+(pass) a message is rejected while a cancel intent is recorded but its step has not started [1.37ms]
+(pass) a message is rejected after a cancel attempt failed with its intent still pending [1.17ms]
+(pass) a pending destroy intent also refuses messages while its teardown is not applied [1.29ms]
+(pass) a message acknowledged before a later cancel is ordered before that cancel [0.93ms]
+(pass) a message is accepted again once the failed lifecycle operation has settled [1.01ms]
+
+tests/safety.test.ts:
+(pass) real git validation protects modified, untracked and locally committed source while allowing remote-persisted work [111.55ms]
+(pass) destroy quiesces the OpenCode service and its subprocesses before inspecting git [2.05ms]
+
+tests/artifact-integration.test.ts:
+21 |   });
+22 |   await h.provider.createWorker(worker);
+23 |   h.store.beginFinalization(worker.worker_id, null);
+24 |   await h.coordinator.finalize(worker.worker_id);
+25 |   expect(h.store.get(worker.worker_id).finalization?.state).toBe("failed");
+26 |   const server = Bun.serve({
+                          ^
+EPERM: operation not permitted, listen
+ syscall: "listen",
+   errno: -1,
+    code: "EPERM"
+
+      at <anonymous> (/tmp/swarmforge-phase2b2-watchdog/tests/artifact-integration.test.ts:26:22)
+(fail) dashboard exposes durable artifacts and retries exhausted preservation through MCP [30.51ms]
+(pass) shutdown aborts and drains admitted manual preservation before closing the store [2.62ms]
+
+tests/adapters.test.ts:
+(pass) OpenCode reads the newest bounded window and sends no unsupported paging [1.03ms]
+(pass) Freestyle creates persistent uniquely discoverable VMs without management secrets in guest config [1.50ms]
+(pass) Freestyle routes workers through the configured custom domain suffix [1.11ms]
+(pass) Freestyle clones the configured tree into workspace/repo unless none is set [1.38ms]
+(pass) OpenCode async prompt requests JSON text and keeps the stable message id [0.80ms]
+(pass) OpenCode reads JSON results from completed assistant text [0.55ms]
+(pass) OpenCode reads typed structured results and token usage without stdout scraping [1.10ms]
+
+tests/dashboard-query.test.ts:
+(pass) SQL pages filter literal searches and order without loading history into JS [7.65ms]
+(pass) credential and summary caches recover after rollback [0.90ms]
+(pass) ten thousand historical workers remain a 50-record dashboard query [240.20ms]
+(pass) nested rollback never reuses credential or aggregate state inside the outer transaction [1.19ms]
+
+tests/serve.test.ts:
+(pass) importing the serve modules acquires no resources and installs no signal handlers [67.74ms]
+29 | // Closing an ephemeral probe lets the OS hand the same port to the next probe.
+30 | // Keep this file's fixtures distinct so server and metrics cannot collide.
+31 | const issuedPorts = new Set<number>();
+32 | function freePort(): number {
+33 |   for (let attempt = 0; attempt < 100; attempt++) {
+34 |     const probe = Bun.serve({
+                           ^
+EPERM: operation not permitted, listen
+ syscall: "listen",
+   errno: -1,
+    code: "EPERM"
+
+      at freePort (/tmp/swarmforge-phase2b2-watchdog/tests/serve.test.ts:34:23)
+      at <anonymous> (/tmp/swarmforge-phase2b2-watchdog/tests/serve.test.ts:254:16)
+(fail) an occupied API port releases the metrics listener and the lock and never provisions [0.55ms]
+29 | // Closing an ephemeral probe lets the OS hand the same port to the next probe.
+30 | // Keep this file's fixtures distinct so server and metrics cannot collide.
+31 | const issuedPorts = new Set<number>();
+32 | function freePort(): number {
+33 |   for (let attempt = 0; attempt < 100; attempt++) {
+34 |     const probe = Bun.serve({
+                           ^
+EPERM: operation not permitted, listen
+ syscall: "listen",
+   errno: -1,
+    code: "EPERM"
+
+      at freePort (/tmp/swarmforge-phase2b2-watchdog/tests/serve.test.ts:34:23)
+      at <anonymous> (/tmp/swarmforge-phase2b2-watchdog/tests/serve.test.ts:286:16)
+(fail) an occupied metrics port releases the API listener and the lock [0.26ms]
+29 | // Closing an ephemeral probe lets the OS hand the same port to the next probe.
+30 | // Keep this file's fixtures distinct so server and metrics cannot collide.
+31 | const issuedPorts = new Set<number>();
+32 | function freePort(): number {
+33 |   for (let attempt = 0; attempt < 100; attempt++) {
+34 |     const probe = Bun.serve({
+                           ^
+EPERM: operation not permitted, listen
+ syscall: "listen",
+   errno: -1,
+    code: "EPERM"
+
+      at freePort (/tmp/swarmforge-phase2b2-watchdog/tests/serve.test.ts:34:23)
+      at <anonymous> (/tmp/swarmforge-phase2b2-watchdog/tests/serve.test.ts:314:16)
+(fail) a database owned by another instance rolls back every acquired resource [0.21ms]
+29 | // Closing an ephemeral probe lets the OS hand the same port to the next probe.
+30 | // Keep this file's fixtures distinct so server and metrics cannot collide.
+31 | const issuedPorts = new Set<number>();
+32 | function freePort(): number {
+33 |   for (let attempt = 0; attempt < 100; attempt++) {
+34 |     const probe = Bun.serve({
+                           ^
+EPERM: operation not permitted, listen
+ syscall: "listen",
+   errno: -1,
+    code: "EPERM"
+
+      at freePort (/tmp/swarmforge-phase2b2-watchdog/tests/serve.test.ts:34:23)
+      at <anonymous> (/tmp/swarmforge-phase2b2-watchdog/tests/serve.test.ts:342:16)
+(fail) a failed recovery releases the lock, the database and both ports [0.18ms]
+29 | // Closing an ephemeral probe lets the OS hand the same port to the next probe.
+30 | // Keep this file's fixtures distinct so server and metrics cannot collide.
+31 | const issuedPorts = new Set<number>();
+32 | function freePort(): number {
+33 |   for (let attempt = 0; attempt < 100; attempt++) {
+34 |     const probe = Bun.serve({
+                           ^
+EPERM: operation not permitted, listen
+ syscall: "listen",
+   errno: -1,
+    code: "EPERM"
+
+      at freePort (/tmp/swarmforge-phase2b2-watchdog/tests/serve.test.ts:34:23)
+      at <anonymous> (/tmp/swarmforge-phase2b2-watchdog/tests/serve.test.ts:365:16)
+(fail) a startup aborted before any resource is acquired opens nothing [0.19ms]
+29 | // Closing an ephemeral probe lets the OS hand the same port to the next probe.
+30 | // Keep this file's fixtures distinct so server and metrics cannot collide.
+31 | const issuedPorts = new Set<number>();
+32 | function freePort(): number {
+33 |   for (let attempt = 0; attempt < 100; attempt++) {
+34 |     const probe = Bun.serve({
+                           ^
+EPERM: operation not permitted, listen
+ syscall: "listen",
+   errno: -1,
+    code: "EPERM"
+
+      at freePort (/tmp/swarmforge-phase2b2-watchdog/tests/serve.test.ts:34:23)
+      at <anonymous> (/tmp/swarmforge-phase2b2-watchdog/tests/serve.test.ts:391:16)
+(fail) an abort during recovery keeps the database open until the in-flight writer finishes [0.28ms]
+29 | // Closing an ephemeral probe lets the OS hand the same port to the next probe.
+30 | // Keep this file's fixtures distinct so server and metrics cannot collide.
+31 | const issuedPorts = new Set<number>();
+32 | function freePort(): number {
+33 |   for (let attempt = 0; attempt < 100; attempt++) {
+34 |     const probe = Bun.serve({
+                           ^
+EPERM: operation not permitted, listen
+ syscall: "listen",
+   errno: -1,
+    code: "EPERM"
+
+      at freePort (/tmp/swarmforge-phase2b2-watchdog/tests/serve.test.ts:34:23)
+      at <anonymous> (/tmp/swarmforge-phase2b2-watchdog/tests/serve.test.ts:443:16)
+(fail) listeners are reserved before provisioning, refuse mutations until ready, and an abort then frees both ports [0.26ms]
+(pass) the startup gate refuses mutations while starting and delegates only once open [0.24ms]
+29 | // Closing an ephemeral probe lets the OS hand the same port to the next probe.
+30 | // Keep this file's fixtures distinct so server and metrics cannot collide.
+31 | const issuedPorts = new Set<number>();
+32 | function freePort(): number {
+33 |   for (let attempt = 0; attempt < 100; attempt++) {
+34 |     const probe = Bun.serve({
+                           ^
+EPERM: operation not permitted, listen
+ syscall: "listen",
+   errno: -1,
+    code: "EPERM"
+
+      at freePort (/tmp/swarmforge-phase2b2-watchdog/tests/serve.test.ts:34:23)
+      at <anonymous> (/tmp/swarmforge-phase2b2-watchdog/tests/serve.test.ts:537:16)
+(fail) a normal stop flushes events, releases both listeners and the lock and closes the database [0.29ms]
+29 | // Closing an ephemeral probe lets the OS hand the same port to the next probe.
+30 | // Keep this file's fixtures distinct so server and metrics cannot collide.
+31 | const issuedPorts = new Set<number>();
+32 | function freePort(): number {
+33 |   for (let attempt = 0; attempt < 100; attempt++) {
+34 |     const probe = Bun.serve({
+                           ^
+EPERM: operation not permitted, listen
+ syscall: "listen",
+   errno: -1,
+    code: "EPERM"
+
+      at freePort (/tmp/swarmforge-phase2b2-watchdog/tests/serve.test.ts:34:23)
+      at <anonymous> (/tmp/swarmforge-phase2b2-watchdog/tests/serve.test.ts:577:16)
+(fail) repeated stop calls share one idempotent shutdown [0.20ms]
+29 | // Closing an ephemeral probe lets the OS hand the same port to the next probe.
+30 | // Keep this file's fixtures distinct so server and metrics cannot collide.
+31 | const issuedPorts = new Set<number>();
+32 | function freePort(): number {
+33 |   for (let attempt = 0; attempt < 100; attempt++) {
+34 |     const probe = Bun.serve({
+                           ^
+EPERM: operation not permitted, listen
+ syscall: "listen",
+   errno: -1,
+    code: "EPERM"
+
+      at freePort (/tmp/swarmforge-phase2b2-watchdog/tests/serve.test.ts:34:23)
+      at <anonymous> (/tmp/swarmforge-phase2b2-watchdog/tests/serve.test.ts:601:16)
+(fail) a blocked worker operation finishes its durable write before the database closes [0.22ms]
+29 | // Closing an ephemeral probe lets the OS hand the same port to the next probe.
+30 | // Keep this file's fixtures distinct so server and metrics cannot collide.
+31 | const issuedPorts = new Set<number>();
+32 | function freePort(): number {
+33 |   for (let attempt = 0; attempt < 100; attempt++) {
+34 |     const probe = Bun.serve({
+                           ^
+EPERM: operation not permitted, listen
+ syscall: "listen",
+   errno: -1,
+    code: "EPERM"
+
+      at freePort (/tmp/swarmforge-phase2b2-watchdog/tests/serve.test.ts:34:23)
+      at <anonymous> (/tmp/swarmforge-phase2b2-watchdog/tests/serve.test.ts:654:16)
+(fail) shutdown is not held open by an in-flight state-change wait [0.20ms]
+29 | // Closing an ephemeral probe lets the OS hand the same port to the next probe.
+30 | // Keep this file's fixtures distinct so server and metrics cannot collide.
+31 | const issuedPorts = new Set<number>();
+32 | function freePort(): number {
+33 |   for (let attempt = 0; attempt < 100; attempt++) {
+34 |     const probe = Bun.serve({
+                           ^
+EPERM: operation not permitted, listen
+ syscall: "listen",
+   errno: -1,
+    code: "EPERM"
+
+      at freePort (/tmp/swarmforge-phase2b2-watchdog/tests/serve.test.ts:34:23)
+      at <anonymous> (/tmp/swarmforge-phase2b2-watchdog/tests/serve.test.ts:693:16)
+(fail) the serve command reports a startup failure as a nonzero exit code [0.18ms]
+29 | // Closing an ephemeral probe lets the OS hand the same port to the next probe.
+30 | // Keep this file's fixtures distinct so server and metrics cannot collide.
+31 | const issuedPorts = new Set<number>();
+32 | function freePort(): number {
+33 |   for (let attempt = 0; attempt < 100; attempt++) {
+34 |     const probe = Bun.serve({
+                           ^
+EPERM: operation not permitted, listen
+ syscall: "listen",
+   errno: -1,
+    code: "EPERM"
+
+      at freePort (/tmp/swarmforge-phase2b2-watchdog/tests/serve.test.ts:34:23)
+      at <anonymous> (/tmp/swarmforge-phase2b2-watchdog/tests/serve.test.ts:722:16)
+(fail) command failure output never carries resolved credentials or URL secrets [0.26ms]
+29 | // Closing an ephemeral probe lets the OS hand the same port to the next probe.
+30 | // Keep this file's fixtures distinct so server and metrics cannot collide.
+31 | const issuedPorts = new Set<number>();
+32 | function freePort(): number {
+33 |   for (let attempt = 0; attempt < 100; attempt++) {
+34 |     const probe = Bun.serve({
+                           ^
+error: EPERM: operation not permitted, listen
+      at freePort (/tmp/swarmforge-phase2b2-watchdog/tests/serve.test.ts:34:23)
+      at <anonymous> (/tmp/swarmforge-phase2b2-watchdog/tests/serve.test.ts:791:5)
+(fail) the command redactor scrubs JSON-escaped credentials and secrets in URLs [0.06ms]
+29 | // Closing an ephemeral probe lets the OS hand the same port to the next probe.
+30 | // Keep this file's fixtures distinct so server and metrics cannot collide.
+31 | const issuedPorts = new Set<number>();
+32 | function freePort(): number {
+33 |   for (let attempt = 0; attempt < 100; attempt++) {
+34 |     const probe = Bun.serve({
+                           ^
+EPERM: operation not permitted, listen
+ syscall: "listen",
+   errno: -1,
+    code: "EPERM"
+
+      at freePort (/tmp/swarmforge-phase2b2-watchdog/tests/serve.test.ts:34:23)
+      at <anonymous> (/tmp/swarmforge-phase2b2-watchdog/tests/serve.test.ts:825:55)
+(fail) the serve command refuses a shutdown deadline that is not a positive integer [0.28ms]
+29 | // Closing an ephemeral probe lets the OS hand the same port to the next probe.
+30 | // Keep this file's fixtures distinct so server and metrics cannot collide.
+31 | const issuedPorts = new Set<number>();
+32 | function freePort(): number {
+33 |   for (let attempt = 0; attempt < 100; attempt++) {
+34 |     const probe = Bun.serve({
+                           ^
+EPERM: operation not permitted, listen
+ syscall: "listen",
+   errno: -1,
+    code: "EPERM"
+
+      at freePort (/tmp/swarmforge-phase2b2-watchdog/tests/serve.test.ts:34:23)
+      at <anonymous> (/tmp/swarmforge-phase2b2-watchdog/tests/serve.test.ts:846:16)
+(fail) the serve command exits cleanly once when SIGTERM and SIGINT both arrive [0.19ms]
+29 | // Closing an ephemeral probe lets the OS hand the same port to the next probe.
+30 | // Keep this file's fixtures distinct so server and metrics cannot collide.
+31 | const issuedPorts = new Set<number>();
+32 | function freePort(): number {
+33 |   for (let attempt = 0; attempt < 100; attempt++) {
+34 |     const probe = Bun.serve({
+                           ^
+EPERM: operation not permitted, listen
+ syscall: "listen",
+   errno: -1,
+    code: "EPERM"
+
+      at freePort (/tmp/swarmforge-phase2b2-watchdog/tests/serve.test.ts:34:23)
+      at <anonymous> (/tmp/swarmforge-phase2b2-watchdog/tests/serve.test.ts:875:16)
+(fail) a signal during a slow startup cancels it and exits zero once the in-flight recovery drains [0.17ms]
+29 | // Closing an ephemeral probe lets the OS hand the same port to the next probe.
+30 | // Keep this file's fixtures distinct so server and metrics cannot collide.
+31 | const issuedPorts = new Set<number>();
+32 | function freePort(): number {
+33 |   for (let attempt = 0; attempt < 100; attempt++) {
+34 |     const probe = Bun.serve({
+                           ^
+EPERM: operation not permitted, listen
+ syscall: "listen",
+   errno: -1,
+    code: "EPERM"
+
+      at freePort (/tmp/swarmforge-phase2b2-watchdog/tests/serve.test.ts:34:23)
+      at <anonymous> (/tmp/swarmforge-phase2b2-watchdog/tests/serve.test.ts:903:16)
+(fail) the serve command hard-exits nonzero at the shutdown deadline with durable state retained [0.19ms]
+
+tests/inspect.test.ts:
+(pass) plain diagnostics cannot reconstruct a credential after stripping control characters [0.90ms]
+(pass) removes credential material from every layer of a client result [1.76ms]
+(pass) strips a credential embedded in a URL and any control character [0.39ms]
+(pass) leaves text without credential material untouched [0.33ms]
+(pass) reports a server result the same way as its own values [2.01ms]
+(pass) reads the result instead of changing it [0.45ms]
+
+tests/excerpt.test.ts:
+(pass) the live excerpt reuses the polled snapshot without extra provider calls [0.92ms]
+(pass) excerpts collapse to one safe bounded line with secrets redacted [0.22ms]
+(pass) excerpt cleanup cannot reconstruct credentials split by invisible characters [0.13ms]
+(pass) focused worker excerpts do not expose normalized model keys or guest passwords [1.31ms]
+(pass) an active turn publishes a bounded excerpt only on the focused worker view [2.22ms]
+(pass) an empty newer assistant reply clears the previous live excerpt [1.13ms]
+(pass) the excerpt is dropped on completion, failure and a new dispatch [25.85ms]
+(pass) cancellation and destruction clear the ephemeral excerpt [1.48ms]
+(pass) MCP returns the excerpt for one worker and never lists it [3.75ms]
+
+tests/artifact-metrics.test.ts:
+(pass) artifact metrics are derived from persisted records with bounded labels [146.87ms]
+(pass) unbounded artifact kinds collapse into a bounded label instead of creating cardinality [118.84ms]
+(pass) cumulative artifact counters follow the durable event log, not the record table [2.59ms]
+(pass) a superseded recapture leaves the cumulative totals alone and shrinks the stored gauge [1.90ms]
+(pass) an artifact still being captured is in flight, never a failure [1.82ms]
+(pass) capture kinds are the published names and anything else collapses into other [2.34ms]
+(pass) an incomplete duration scan is reported instead of silently truncating the histogram [33.69ms]
+(pass) artifact metrics stay well formed without any artifact history [2.90ms]
+(pass) finalization stage and durable events follow a real collection cycle [772.78ms]
+(pass) finalization attempts and failures come from durable events, not from the live record [3.03ms]
+
+tests/artifact-transport.test.ts:
+(pass) the production helper lists a bounded, sorted directory page [48.62ms]
+(pass) listings are bounded by entry count and refused past the depth limit [73.11ms]
+(pass) captured bytes are raw and identical, with a hash the caller can verify [128.66ms]
+(pass) a large file streams through without truncation or whole-file buffering [331.03ms]
+(pass) a bounded window of a large file is captured without the whole file [65.52ms]
+(pass) traversal, absolute, encoded and control-character paths are refused [10.64ms]
+(pass) a symlinked component or leaf never resolves to a file outside the root [163.21ms]
+(pass) directories, fifos, sockets and missing paths are refused for capture [75.09ms]
+(pass) swapping a component for a symlink mid-capture never leaks outside bytes [2381.70ms]
+(pass) a source whose metadata changes during capture fails closed [179.63ms]
+(pass) capture refuses anything larger than the bound and leaves no staged bytes [37.69ms]
+(pass) cleanup removes the private staging directory and is idempotent [67.38ms]
+(pass) staging must be private: a group-readable staging directory is refused [36.78ms]
+(pass) an aborted transfer fails and removes its staging directory [2.97ms]
+(pass) a snapshot is a readable tar.gz of regular files only [62.13ms]
+(pass) snapshots stay inside their source, entry and byte bounds [161.71ms]
+(pass) a snapshot of a single file and of the whole root both work [136.57ms]
+(pass) diagnostics stage journal and git output as bounded private files [287.84ms]
+(pass) no artifact or diagnostic byte ever appears in the helper response [212.20ms]
+(pass) diagnostics include a bounded git diff of staged and unstaged work [121.33ms]
+(pass) a missing or symlinked git directory is reported, never followed [227.51ms]
+(pass) each diagnostic gets its own staging directory [115.85ms]
+(pass) a staged file removed before it is read fails, as a guest would [61.07ms]
+(pass) installing the helper never loosens the guest's own directory [57.66ms]
+(pass) a refusal carries a code, so an absence is never a permission failure [139.95ms]
+(pass) an unsafe path is refused as unsafe, not as a missing source [63.13ms]
+(pass) the whole filesystem root is refused as an artifact root [10.89ms]
+(pass) a root whose ancestor is a symlink is refused rather than followed [59.27ms]
+(pass) a bounded diagnostic is kept, verified and labelled incomplete [117.03ms]
+(pass) a workspace with no repository records that as not applicable [142.53ms]
+(pass) guest exec budgets never exceed what the guest API accepts [11.13ms]
+(pass) gitdiag-probe: a gitdir pointer file cannot pull a repository into the capture [180.59ms]
+(pass) gitdiag-probe2: a hostile core.worktree cannot expose filenames outside the root [128.69ms]
+(pass) gitdiag-probe3: an alternates file cannot pull outside object content into the capture [143.94ms]
+(pass) a verifiable repository is still described, and its reasons are kept private [133.41ms]
+(pass) a repository whose metadata is a symlink is not described [121.59ms]
+(pass) an alternates entry that stays inside the root is still allowed [139.87ms]
+(pass) gitdiag-probe4: a commondir outside the root disables the git capture [125.83ms]
+(pass) gitdiag-probe5: a symlink anywhere inside the metadata disables the capture [129.50ms]
+(pass) gitdiag-probe6: an alternates chain that leaves the root through a second store is refused [129.37ms]
+(pass) gitdiag-probe7: metadata replaced after a capture is refused, not followed [254.82ms]
+(pass) the metadata walk releases its descriptors under a low descriptor limit [92.77ms]
+(pass) a descriptor the helper cannot get is reported incomplete, never skipped [62.02ms]
+
+tests/onboarding.test.ts:
+(pass) init writes private literal credentials and registers them for any directory [9.83ms]
+(pass) init refuses an existing env before asking for any secrets [0.72ms]
+(pass) init preserves global configuration and prints explicit env-file commands [3.66ms]
+(pass) init retries an invalid required URL before writing configuration [7.10ms]
+(pass) local installation replaces the executable and sets executable permissions [1.40ms]
+(pass) a failed installation preserves the previous executable [0.81ms]
+(pass) a source download can build without Git metadata [227.41ms]
+(pass) init and doctor join the existing command parser without changing serve [0.28ms]
+(pass) init refuses a dangling env symlink and preserves its target [1.24ms]
+(pass) cancelled prompts leave no environment file or global configuration [1.01ms]
+(pass) printed Bash PATH commands work with spaces and literal quotes [1.70ms]
+(pass) doctor and serve config checks read registered init settings without contacting providers [208.35ms]
+
+tests/worker-files.test.ts:
+(pass) a bounded handle describes a live file without reading it [59.10ms]
+(pass) a bounded read returns the requested window and nothing else [181.03ms]
+(pass) a secret anywhere near the requested window blocks the read [334.08ms]
+(pass) paths and paths that contain credentials are refused [2.64ms]
+(pass) directories, special files and symlinks are never offered [100.46ms]
+(pass) listing pages deterministically inside one directory [55.93ms]
+(pass) a provider without the transport refuses rather than falling back [2.71ms]
+(pass) a destroyed worker has no live files and no handle [1.83ms]
+(pass) log inspection is unchanged and still needs no guest command [1.90ms]
+(pass) live reads screen long, encoded and per-worker secrets in byte terms [301.37ms]
+(pass) live reads refuse an unverified staging transfer and clean up [557.03ms]
+(pass) live reads reject a range they cannot serve and never buffer an object whole [112.88ms]
+(pass) a live listing keeps paging past entries a caller cannot use [90.27ms]
+
+tests/settings.test.ts:
+(pass) configuration discovery > uses an absolute XDG config home and reports the file it read [1.74ms]
+(pass) configuration discovery > ignores a relative XDG config home and falls back to the home default [1.01ms]
+(pass) configuration discovery > ignores a relative XDG data home when defaulting the database [0.42ms]
+(pass) configuration discovery > defaults the database under an absolute XDG data home [0.38ms]
+(pass) configuration discovery > never searches the working directory or its parents [0.75ms]
+(pass) configuration discovery > an explicit config path replaces discovery and anchors at the cwd [0.95ms]
+(pass) configuration discovery > SWARMFORGE_CONFIG selects a file only without an explicit path [1.05ms]
+(pass) configuration discovery > a missing default config is allowed but a selected one fails [0.67ms]
+(pass) configuration discovery > reports a machine-readable settings error [3.21ms]
+(pass) path anchoring > anchors paths declared in the config file at its own directory [1.54ms]
+(pass) path anchoring > expands a leading tilde to the home directory without a shell [0.62ms]
+(pass) path anchoring > leaves the in-memory selector and guest paths exactly as written [0.76ms]
+(pass) path anchoring > anchors a legacy relative database path from an env file at the cwd [1.05ms]
+(pass) path anchoring > anchors a legacy relative database path from the environment at the cwd [0.42ms]
+(pass) path anchoring > never relocates an explicitly configured database to the XDG default [0.37ms]
+(pass) path anchoring > anchors a declared env_file at the config directory [0.84ms]
+(pass) strict schema > rejects an unknown key [0.68ms]
+(pass) strict schema > rejects an unknown table and any other schema version [1.14ms]
+(pass) strict schema > reports a TOML syntax error without echoing file values [0.49ms]
+(pass) strict schema > a client-only file cannot satisfy server requirements [0.65ms]
+(pass) layer precedence > the config env_file overrides the config file [0.84ms]
+(pass) layer precedence > explicit env files are applied in order after the config env_file [0.86ms]
+(pass) layer precedence > the environment wins over env files and overrides win over both [1.35ms]
+(pass) layer precedence > comma-separated lists are replaced, not merged [0.70ms]
+(pass) layer precedence > an empty value is unset and leaves the lower layer intact [0.69ms]
+(pass) layer precedence > ignores unrelated environment keys and keeps the OpenCode aliases [0.46ms]
+(pass) env file parsing > supports quoting and interpolation without evaluating commands [0.75ms]
+(pass) env file parsing > interpolates from the environment when the file does not define it [0.52ms]
+(pass) env file parsing > rejects a malformed line instead of ignoring it [1.01ms]
+(pass) env file parsing > fails when a selected env file is absent [0.37ms]
+(pass) redaction > reports values and sources without secrets [1.64ms]
+(pass) redaction > redacts a secret reused in an unrelated setting [1.06ms]
+(pass) redaction > redacts credential material embedded in another endpoint [1.08ms]
+(pass) redaction > never leaks a secret through a validation error [0.83ms]
+(pass) credential redaction regressions > removes short credentials from unrelated values [4.41ms]
+(pass) credential redaction regressions > removes short credentials from a client endpoint [1.51ms]
+(pass) credential redaction regressions > removes short credentials from a validation error [2.42ms]
+(pass) credential redaction regressions > removes encoded and base64 copies of a credential [1.76ms]
+(pass) credential redaction regressions > removes a superseded credential from a later error [0.89ms]
+(pass) credential redaction regressions > removes an overridden credential from a later error [0.58ms]
+(pass) credential redaction regressions > removes a credential repeated in a source label [1.05ms]
+(pass) credential redaction regressions > strips control characters from diagnostics [0.45ms]
+(pass) credential redaction regressions > strips control characters from rendered settings [1.18ms]
+(pass) credential redaction regressions > scrubs a credential repeated in a selected config path [1.11ms]
+(pass) credential redaction regressions > scrubs a client alias credential from a selected config path [0.34ms]
+(pass) credential redaction regressions > scrubs a credential repeated in a rejected config file name [0.72ms]
+(pass) credential redaction regressions > scrubs a credential repeated in a rejected environment file name [0.44ms]
+(pass) credential redaction regressions > reports values and sources for exactly the same keys [1.04ms]
+(pass) client settings > resolves a client endpoint and bearer token without provider settings [0.65ms]
+(pass) client settings > reads the endpoint and bearer token from the environment [0.27ms]
+(pass) client settings > defaults to the loopback endpoint without a token [0.28ms]
+(pass) client settings > applies overrides above the config file [0.37ms]
+(pass) client settings > rejects an endpoint that is not http or https [0.56ms]
+(pass) read-only diagnostics > creates no directories, databases or locks [1.06ms]
+(pass) read-only diagnostics > a rejected configuration leaves the filesystem unchanged [0.64ms]
+(pass) diagnostics share credential context across client and server settings [1.57ms]
+(pass) artifact settings resolve from explicit TOML and env files with process precedence [1.09ms]
+
+tests/session-status.test.ts:
+(pass) a session absent from /session/status is the normal idle shape [2.55ms]
+(pass) stale message history never promotes an absent session to busy [0.56ms]
+(pass) a reported status this version does not recognize is never idle [1.48ms]
+(pass) recognized session statuses pass through unchanged [1.60ms]
+(pass) a finished turn completes while /session/status omits the session [3.85ms]
+(pass) an interrupted message still completes from its result file [2.40ms]
+(pass) stale history from an earlier dispatch cannot block a finished follow-up [33.50ms]
+(pass) an unrecognized busy status does not complete a mid-turn result file [2.59ms]
+(pass) a reported busy turn is not completed by its result file [1.76ms]
+(pass) a lost session is not mistaken for a finished turn and still resolves [3.59ms]
+(pass) a status the adapter could not interpret is not a settled turn [1.85ms]
+(pass) an idle turn with an interrupted message still completes [1.49ms]
+
+tests/dashboard-protocol.test.ts:
+13 | 
+14 | test("dashboard revisions include newly discovered repository credential redaction", async () => {
+15 |   const directory = mkdtempSync(join(tmpdir(), "swarmforge-dashboard-auth-"));
+16 |   const h = harness();
+17 |   const worker = h.store.create({ ...task, timeout_seconds: 60 });
+18 |   const server = Bun.serve({
+                          ^
+EPERM: operation not permitted, listen
+ syscall: "listen",
+   errno: -1,
+    code: "EPERM"
+
+      at <anonymous> (/tmp/swarmforge-phase2b2-watchdog/tests/dashboard-protocol.test.ts:18:22)
+(fail) dashboard revisions include newly discovered repository credential redaction [0.94ms]
+63 |   for (let i = 0; i < 120; i++)
+64 |     h.store.create({ ...task, task_id: `task-${i}`, timeout_seconds: 60 });
+65 |   h.store.all = () => {
+66 |     throw new Error("Unbounded read");
+67 |   };
+68 |   const server = Bun.serve({
+                          ^
+EPERM: operation not permitted, listen
+ syscall: "listen",
+   errno: -1,
+    code: "EPERM"
+
+      at <anonymous> (/tmp/swarmforge-phase2b2-watchdog/tests/dashboard-protocol.test.ts:68:22)
+(fail) dashboard transfers bounded pages, detects unchanged data, applies deltas and resynchronizes query changes [3.22ms]
+118 | 
+119 | test("older servers cannot silently execute settled cleanup", async () => {
+120 |   const h = harness();
+121 |   const handler = createHttpHandler(h.coordinator);
+122 |   let destructionRequests = 0;
+123 |   const server = Bun.serve({
+                           ^
+EPERM: operation not permitted, listen
+ syscall: "listen",
+   errno: -1,
+    code: "EPERM"
+
+      at <anonymous> (/tmp/swarmforge-phase2b2-watchdog/tests/dashboard-protocol.test.ts:123:22)
+(fail) older servers cannot silently execute settled cleanup [0.72ms]
+169 | 
+170 | test("a coordinator replacement at the same endpoint forces a complete revision resync", async () => {
+171 |   const h = harness();
+172 |   h.store.create({ ...task, timeout_seconds: 60 });
+173 |   let coordinator = h.coordinator;
+174 |   const server = Bun.serve({
+                           ^
+EPERM: operation not permitted, listen
+ syscall: "listen",
+   errno: -1,
+    code: "EPERM"
+
+      at <anonymous> (/tmp/swarmforge-phase2b2-watchdog/tests/dashboard-protocol.test.ts:174:22)
+(fail) a coordinator replacement at the same endpoint forces a complete revision resync [0.82ms]
+229 |         started_at: null,
+230 |         completed_at: 1,
+231 |       },
+232 |     });
+233 |   }
+234 |   const server = Bun.serve({
+                           ^
+EPERM: operation not permitted, listen
+ syscall: "listen",
+   errno: -1,
+    code: "EPERM"
+
+      at <anonymous> (/tmp/swarmforge-phase2b2-watchdog/tests/dashboard-protocol.test.ts:234:22)
+(fail) bounded dashboard navigation and filters clear page selections before a cleanup preview [6.45ms]
+
+tests/artifact-store.test.ts:
+(pass) a stored artifact is private, complete and byte-faithful [31.31ms]
+(pass) a partially written transfer is never visible and never left behind [60.18ms]
+(pass) a corrupt or truncated transfer is refused and leaves no object [1.28ms]
+(pass) an aborted transfer removes its temporary file [7.21ms]
+(pass) re-storing identical content is idempotent and never duplicates [12.88ms]
+(pass) a symlinked directory can never redirect a write outside the root [0.70ms]
+(pass) a relative storage root is refused [0.31ms]
+(pass) stale temporary files are swept, and real objects are never touched [6.56ms]
+(pass) storage keys cannot escape the root [0.42ms]
+(pass) the metadata repository is atomic, idempotent and queryable [1.62ms]
+(pass) listing pages deterministically and filters by worker and task [1.71ms]
+(pass) records survive reopening the database and unknown ids fail [202.56ms]
+(pass) a storage implementation only needs the shared interface [0.63ms]
+(pass) a transfer that overruns its declared size is stopped while it runs [0.69ms]
+(pass) an abort while the source is blocked wakes the write promptly [0.56ms]
+(pass) a download is a real web stream that can be read and cancelled [14.34ms]
+(pass) an aborted download stops reading the pinned descriptor [9.56ms]
+(pass) an object is durable before its record can claim it [7.04ms]
+(pass) a planted symlink where the incoming directory belongs is refused [1.14ms]
+(pass) a special file in the incoming directory is refused [8.80ms]
+(pass) a directory that cannot be made durable fails the put instead of hiding it [11.30ms]
+
+tests/smoke.test.ts:
+(skip) optional real Freestyle/OpenCode/model smoke flow
+
+tests/artifacts.test.ts:
+(pass) a preserved artifact is stored, durable, verifiable and byte-faithful [90.63ms]
+(pass) binary and large artifacts survive the round trip untouched [289.03ms]
+(pass) preserving the same source twice is idempotent, and a retry re-attempts [200.74ms]
+(pass) an oversized or missing source fails closed with a durable record [140.13ms]
+(pass) a corrupt transfer is refused and leaves no stored bytes [62.37ms]
+(pass) an aborted preservation stores nothing and cleans its staging [5.90ms]
+(pass) a snapshot of the workspace is stored as one bounded archive [82.11ms]
+(pass) diagnostics are captured as separate bounded artifacts [123.46ms]
+(pass) collecting a directory stores each regular file and skips the rest [250.24ms]
+(pass) listWorkerFiles pages live guest files without leaking entries [70.83ms]
+(pass) listing metadata pages, filters and reports unknown ids [141.92ms]
+(pass) safe reads screen credentials across boundaries and stay bounded [653.99ms]
+(pass) a provider without artifact transport fails clearly [4.97ms]
+(pass) a destroyed or vanished guest has nothing left to preserve [55.09ms]
+(pass) a preserved artifact outlives the guest it came from [77.29ms]
+(pass) concurrent preservation is bounded and every transfer still lands [224.82ms]
+(pass) a queued transfer that aborts does not strand the queue [159.46ms]
+(pass) the configured limit holds under a burst that includes aborted waiters [287.08ms]
+(pass) screening covers long, encoded and per-worker secrets in byte terms [373.81ms]
+(pass) a truncated listing or snapshot fails instead of reporting completeness [627.27ms]
+(pass) a secret too wide to screen in bounded memory is refused, not under-screened [86.88ms]
+(pass) a failed diagnostic releases every capture it opened [141.86ms]
+(pass) a failed recapture keeps the previous verified copy readable [173.62ms]
+(pass) a failed recapture keeps the copy readable after the guest is destroyed [116.92ms]
+(pass) a successful recapture supersedes the old record and retains its bytes [144.95ms]
+(pass) durable events count attempts, successes and failures without contents [91.91ms]
+(pass) a diagnostic that hit a bound is preserved and labelled incomplete [166.51ms]
+(pass) a full diagnostic with no bound is not labelled incomplete [179.85ms]
+(pass) collecting a directory follows the listing to its end [1238.65ms]
+(pass) a listing that stops advancing is refused as incomplete [2.67ms]
+(pass) a live listing is not cut short by entries a caller cannot use [148.77ms]
+(pass) a refused live read surfaces the refusal class to the caller [163.36ms]
+(pass) a recorded error is screened before it is bounded [5.73ms]
+(pass) a hundred real captures stay inside the entry, listing and event bounds [6975.13ms]
+(pass) a collected directory keeps its nested outputs, bounded and explicitly failed when cut [341.52ms]
+(pass) a directory past the entry bound fails explicitly instead of collecting part of it [71.41ms]
+(pass) a nested output survives the guest being destroyed [138.21ms]
+(pass) a path that is both declared and inside a default directory is one artifact [173.43ms]
+(pass) a secret that crosses any cut is never persisted, in transport or storage errors [81.87ms]
+(pass) two recaptures of one source settle without a constraint error or a lost copy [137.75ms]
+(pass) an attempt interrupted by a restart leaves the previous copy current and readable [70.69ms]
+(pass) an injected storage backend is used instead of a local directory [62.84ms]
+(pass) recaptures with no run id supersede, settle and keep their bytes [180.70ms]
+(pass) two concurrent recaptures with no run id both settle with one current copy [148.80ms]
+(pass) a failed recapture with no run id leaves the previous copy current [281.56ms]
+(pass) a restart after a no-run-id recapture finds the current copy intact [201.10ms]
+
+tests/hosted-cli.test.ts:
+(pass) explicit hosted parser is pure and refuses secrets, unsafe workload flags and invalid bounds [0.76ms]
+157 |   expect(help.stdout).toContain("hosted supervisor");
+158 |   const child = await invoke(path, [], cwd, {
+159 |     SWARMFORGE_HOSTED_CHILD: "1",
+160 |     SWARMFORGE_HOSTED_DURATION: "350",
+161 |   });
+162 |   expect(child.code).toBe(0);
+                           ^
+error: expect(received).toBe(expected)
+
+Expected: 0
+Received: 4
+
+      at <anonymous> (/tmp/swarmforge-phase2b2-watchdog/tests/hosted-cli.test.ts:162:22)
+(fail) unmodified real compiled CLI works from foreign cwd and enters only the bounded controlled child hook [424.48ms]
+61 |       s.isSymbolicLink() ||
+62 |       !s.isDirectory() ||
+63 |       (s.uid !== 0 && s.uid !== uid) ||
+64 |       (writable && !stickyRootTemp)
+65 |     )
+66 |       throw privateCredentialStorageError();
+                 ^
+error: Cloud credential storage must use a privately owned regular file (0600) in a private directory (0700), without symlinks.
+      at parentDirectory (/tmp/swarmforge-phase2b2-watchdog/src/private-credential-file.ts:66:13)
+      at savePrivateCredential (/tmp/swarmforge-phase2b2-watchdog/src/private-credential-file.ts:134:3)
+      at saveHostedSupervisorCredential (/tmp/swarmforge-phase2b2-watchdog/src/hosted-credentials.ts:128:3)
+      at credentials (/tmp/swarmforge-phase2b2-watchdog/tests/hosted-cli.test.ts:53:3)
+      at <anonymous> (/tmp/swarmforge-phase2b2-watchdog/tests/hosted-cli.test.ts:178:3)
+(fail) compiled actual CLI supervisor + production provider + child from empty cwd (instrumented build, fetch transport mock) [1.68ms]
+322 | // explicit verification gap; this remains executable unchanged in normal CI.
+323 | test("unmodified compiled actual hosted supervisor runs through HTTP fixture from empty cwd", async () => {
+324 |   const assignment = task();
+325 |   let settleBody: { outcome: string; consumed_runtime_ms: number } | null =
+326 |     null;
+327 |   const server = Bun.serve({
+                           ^
+EPERM: operation not permitted, listen
+ syscall: "listen",
+   errno: -1,
+    code: "EPERM"
+
+      at <anonymous> (/tmp/swarmforge-phase2b2-watchdog/tests/hosted-cli.test.ts:327:22)
+(fail) unmodified compiled actual hosted supervisor runs through HTTP fixture from empty cwd [0.59ms]
+
+apps/cloud/test/hosted-global.test.ts:
+(pass) default Worker exposes private hosted policy and keeps execution audiences separate [23.19ms]
+(pass) readiness requires the additive hosted migration while identity maintenance remains compatible [17.77ms]
+(pass) default routing admits once, dispatches with stable fencing, settles once and releases capacity [70.13ms]
+(pass) hosted routes retain origin, query and CSRF checks before authority mutation [13.63ms]
+
+apps/cloud/test/hosted-entitlements-safety.test.ts:
+(pass) controlled allowance boundary validation > rejects periodStart=-Infinity before preparing a mutation [0.18ms]
+(pass) controlled allowance boundary validation > rejects periodEnd=Infinity before preparing a mutation [0.04ms]
+(pass) controlled allowance boundary validation > rejects periodStart=100.5 before preparing a mutation
+(pass) controlled allowance boundary validation > rejects periodEnd=9007199254740992 before preparing a mutation
+(pass) controlled allowance boundary validation > rejects measuredStart=-Infinity before preparing a mutation [0.01ms]
+(pass) controlled allowance boundary validation > rejects measuredEnd=Infinity before preparing a mutation
+(pass) controlled allowance boundary validation > rejects measuredStart=100.5 before preparing a mutation
+(pass) controlled allowance boundary validation > rejects now=NaN before preparing a mutation
+(pass) controlled allowance boundary validation > accepts exact safe integer boundaries [0.15ms]
+(pass) same-millisecond policy allowance collision retries with coherent real clock dates and preserves history [10.55ms]
+(pass) exhausted policy allowance collision retries roll back revocation allowance policy and audit together [11.67ms]
+(pass) legacy allowance alias refuses fractional unsafe or expired period boundaries [9.32ms]
+(pass) legacy allowance alias checks period expiry at SQL execution rather than only the supplied clock [7.46ms]
+(pass) explicit reserve helper rejects expired or future allowance periods at SQL execution time [7.16ms]
+
+apps/cloud/test/hosted-bun.test.ts:
+(pass) controlled task crosses real Worker/Bun code, completes its child, and settles the reserved meter once [423.55ms]
+(pass) cloud cancellation stops the actual child, retains capacity until stop proof, and exposes no ambient credentials [13537.68ms]
+(pass) task client retries preserve logical admission across client calls and reject changed work [17.60ms]
+
+apps/cloud/test/hosted-supervisor-authority.test.ts:
+(pass) supervisor registration cannot elect authority after browser expiry while waiting for its batch [42.81ms]
+(pass) supervisor rotation cannot advance epoch after the authenticated credential expires before election [45.03ms]
+(pass) different supervisor issuer cannot rotate or validate execution after the worker enroller loses admin [13.97ms]
+(pass) registration elected before browser expiry completes all dependent writes and returns its fresh result [7.25ms]
+(pass) expired browser cannot revoke through a delayed election or mutate credentials and assignments [43.88ms]
+
+apps/cloud/test/hosted-admission-regressions.test.ts:
+(pass) current policy zero allowance cannot borrow a positive historical allowance [8.54ms]
+(pass) admission reserves only the pinned current policy allowance [8.47ms]
+(pass) reused cancellation key for another task changes no state or meter [12.97ms]
+(pass) authority revocation between cancellation authentication and batch changes nothing [9.35ms]
+(pass) cancellation ledger mismatch cannot terminalize or release capacity [10.88ms]
+(pass) legacy allowance alias cannot mutate unsupported meters [5.22ms]
+(pass) full-meter admission replay is identical 202 without a second reservation [10.08ms]
+(pass) any missing required capability denies admission with 403 [7.84ms]
+(pass) SQL int64 meter arithmetic reaches the canonical boundary exactly and refuses overflow [11.54ms]
+(pass) policy expiry while an admission waits to batch cannot elect a task [53.32ms]
+(pass) same-org multi-user and multi-CLI races share caps while another org admits independently [40.45ms]
+(pass) failed dependent SQL rolls back task reservation outbox audit operation and meter together [8.33ms]
+(pass) a ledger CAS miss on admission elects no task or dependent writes [10.16ms]
+(pass) admission denies a registered worker after its enroller loses admin authority [7.14ms]
+(pass) admission rechecks the worker enroller admin chain at batch election [8.61ms]
+(pass) cancellation elected before authority expires completes and reports its committed result [9.19ms]
+(pass) unavailable policy source denies new work with 503 and no admission effects [6.71ms]
+(pass) failed cancellation dependent SQL reports unavailable and rolls back elected effects [10.27ms]
+(pass) execution grant issuance cannot elect after browser or installation expiry while waiting to batch [136.65ms]
+(pass) execution grant issuance replay rechecks browser expiry at SQL time despite a stale Worker clock [32.21ms]
+(pass) fresh grant election returns its committed reply after browser expiry within the batch [8.74ms]
+(pass) execution grant election refuses a proposed credential already expired on the SQL clock [7.60ms]
+(pass) same-key grant issuance race replays one fresh winner and refuses a revoked winner without phantom audit [8.50ms]
+
+apps/cloud/test/hosted-status-regressions.test.ts:
+(pass) status combined task pagination enumerates disjoint UUID ranges without skips [26.58ms]
+(pass) status fails closed on unavailable policy or operational source tables [9.09ms]
+(pass) supervisor authority checks current epoch and admin authorizer; observations use real task audits [9.16ms]
+(pass) status denies execution when a different worker enroller loses authority while preserving supervisor cleanup [11.46ms]
+
+apps/cloud/test/hosted-dispatch.test.ts:
+(pass) dispatch SQL: batch-entry ledger race leaves every settlement row unchanged [12.77ms]
+(pass) dispatch SQL: renewal keeps fence, bounds deadline and same-key replay never extends twice [14.13ms]
+(pass) dispatch SQL: reused claim key after terminal task cannot claim a new task [11.53ms]
+(pass) dispatch SQL: conflicting ACK and renewal keys on another resource have zero effects [15.08ms]
+(pass) dispatch SQL: forced concurrent different settlements elect exactly one payload [11.71ms]
+(pass) dispatch SQL: session revocation at batch election denies ACK without any effects and status says stop [13.17ms]
+(pass) dispatch SQL: newest policy loss at election denies renewal and cleanup remains usable [12.94ms]
+(pass) dispatch SQL: queued expiry releases meter; assigned expiry retains capacity and combined cron stays bounded [13.42ms]
+(pass) dispatch SQL: revoked old assignment requires audited operator recovery with current lease [18.15ms]
+(pass) dispatch SQL: a delayed batch cannot renew an execution lease that expires during the request [51.64ms]
+(pass) dispatch SQL: claim replay requires the original recorded lease and fence [11.58ms]
+(pass) dispatch SQL: credential rebind at election cannot mutate a previous supervisor assignment [11.94ms]
+(pass) dispatch SQL: reply clocks come from the database after mutation despite Worker clock skew [44.37ms]
+dispatch cleanup budget: 33 combined statements, 47 maximum bindings
+(pass) dispatch SQL: full mixed cleanup leaves excess work and metered holds intact within combined D1 limits [34.89ms]
+(pass) dispatch SQL: queued cleanup ledger CAS miss persists no task, reservation, outbox, operation or audit effects [9.09ms]
+(pass) dispatch SQL: same-key competing claims replay one pinned assignment and leave the other task queued [12.16ms]
+(pass) dispatch SQL: CLI task survives issuer logout but rejects installation epoch, user and authorization-window changes [50.73ms]
+(pass) dispatch SQL: newest capability policy replacement at each execution election has zero persistent effects [98.09ms]
+(pass) dispatch SQL: supervisor cannot advance an assignment attached to another worker [21.84ms]
+(pass) dispatch SQL: a delayed ACK or renewal loses a reused key to a later task without persistent effects [27.06ms]
+dispatch response budgets: {"claim":{"statements":13,"maxArgs":65},"claim_replay":{"statements":5,"maxArgs":51},"empty_claim":{"statements":7,"maxArgs":35},"ack":{"statements":12,"maxArgs":68},"ack_replay":{"statements":5,"maxArgs":51},"renew":{"statements":12,"maxArgs":69},"renew_replay":{"statements":5,"maxArgs":51},"status":{"statements":4,"maxArgs":51},"stop_status":{"statements":4,"maxArgs":1},"settle":{"statements":13,"maxArgs":62},"settle_replay":{"statements":3,"maxArgs":4}}
+(pass) dispatch SQL: every response path including SQL clock fallback fits D1 statement and parameter limits [15.68ms]
+(pass) dispatch SQL: operator recovery requires current privileged browser, CSRF, strict proof, key, tenant and assignment [17.61ms]
+(pass) dispatch SQL: valid cleanup settles held work after worker, commercial and task-authorizer loss without new execution [16.77ms]
+(pass) dispatch SQL: expired supervisor credentials deny status and cleanup with zero persistent effects [10.93ms]
+dispatch operator recovery budget: 14 statements, 61 maximum bindings
+(pass) dispatch SQL: independently verified operator recovery fits D1 limits and settles only the revoked assignment [13.34ms]
+(pass) dispatch SQL: worker original enroller loss denies every execution election even under a different valid supervisor admin [42.50ms]
+(pass) dispatch SQL: election refuses a proposed lease whose captured timestamp is already expired on the SQL clock [20.01ms]
+(pass) dispatch SQL: reservation runtime or worker drift denies settlement without hiding inconsistent reserved capacity [27.88ms]
+
+apps/cloud/test/hosted-migration.test.ts:
+(pass) clean database accepts all migrations with foreign keys enforced and no execution grants [2.23ms]
+(pass) Phase 2B.1 database upgrade preserves linked CLI and enrolled worker authority [10.49ms]
+
+apps/cloud/test/local-d1.test.ts:
+(pass) SQLite adapter preserves zero-change success inside an atomic batch [0.25ms]
+
+2 tests skipped:
+(skip) the finalization survival regression runs only where the lifecycle package exists
+(skip) optional real Freestyle/OpenCode/model smoke flow
+
+
+86 tests failed:
+(fail) status reads client settings only and reports a real swarm [3.21ms]
+(fail) a remote error that echoes a resolved credential never prints it [0.75ms]
+(fail) the printed endpoint carries no credential from any layer [1.51ms]
+(fail) production credential store round-trips privately and refuses corrupt data without exposing its values [1.19ms]
+(fail) production store rejects symlinks, hard links, unsafe modes and oversized files [0.28ms]
+(fail) real HTTP pairing maintains initiating proof and exchange key through pending polling without cookies [0.20ms]
+(fail) real HTTP error bodies cannot leak credentials into client errors [0.15ms]
+(fail) client rejects HTTP redirects without sending the credential to their target [0.10ms]
+(fail) client rejects hostile verification URLs, extra fields, content types and oversized responses [0.08ms]
+(fail) CLI status uses its own bearer, rejects identity swaps and outputs no credential [0.24ms]
+(fail) CLI logout revokes remotely then deletes locally and reports unconfirmed revocation safely [0.20ms]
+(fail) expired credentials and origin mismatch fail before contacting a service; signed-out logout is local [0.19ms]
+(fail) a range end past the artifact is clipped to the artifact, in the headers and on the wire [58.34ms]
+(fail) single owner process lock > simultaneous starts leave exactly one owner and a crash frees the lock [56.16ms]
+(fail) single owner process lock > a released lock hands the database to the next process [46.89ms]
+(fail) dashboard chibi refreshes keep credentials out of every frame [1.57ms]
+(fail) dashboard technical refreshes keep credentials out of every frame [0.91ms]
+(fail) all client operations scrub echoed credentials using the resolved settings context [0.98ms]
+(fail) actual process A child >=300ms then NEW process B proves OS stop with foreign clock and full reserved consumption (transport mock) [152.33ms]
+(fail) lost COMPLETED response + actual NEW process retries identical frozen request/key once (transport mock) [152.56ms]
+(fail) actual 31s task outlives the initial 30s lease through timely renewal and completes in full (transport mock) [15006.99ms]
+(fail) hosted credential storage round-trips privately via the approved shared helper [0.46ms]
+(fail) supervisor rotation enforces a durable idempotency key on the supervised path [0.63ms]
+(fail) legacy origin unit: reopening a journal cannot authorize a foreign-clock measurement [1.80ms]
+(fail) D1 new-PROCESS recovery: on-disk state survives a real process boundary [40.94ms]
+(fail) concurrent duplicate ACKs on the SAME file from two supervisor instances: only one wins pre-launch [1.64ms]
+(fail) new-process recovery after exit does NOT reuse the start right [1.15ms]
+(fail) runtime env and logs carry no bearer, provider, repo or model credentials [1.99ms]
+(fail) RED factory restart: statePath persists the durable mapping across factory instances [1.06ms]
+(fail) production handler: supervisor loop claims, runs, stops and settles [1.39ms]
+(fail) download verifies exact binary bytes (6) and refuses overwrites [0.57ms]
+(fail) download verifies exact binary bytes (0) and refuses overwrites [0.29ms]
+(fail) corrupt, oversized, truncated and redirected downloads never publish or leave partial files [0.42ms]
+(fail) cancelled transfer removes its temporary file without publishing [0.35ms]
+(fail) authenticated artifact CLI and client retrieve preserved files independently of the guest [41.08ms]
+(fail) dashboard artifact browser saves a verified file to an explicitly edited path [50.81ms]
+(fail) overview client reads every worker page through authenticated MCP [5.29ms]
+(fail) status command prints JSON or a plain snapshot when piped [0.77ms]
+(fail) shared private credential helper round-trips and protects POSIX files [0.43ms]
+(fail) shared private credential helper refuses corrupt, unsafe, oversized or symlink files [0.28ms]
+(fail) worker credential store persists privately in a separate file from CLI credentials [0.65ms]
+(fail) worker client enrolls with an in-memory enrollment secret on the exact register endpoint [0.18ms]
+(fail) worker client verifies stored identity and rejects same-tenant mismatches locally [0.20ms]
+(fail) worker rotation survives a lost reply by retrying the durable idempotency key [0.17ms]
+(fail) worker client rejects wrong audience, hostile responses, leaked secrets and CLI credentials [0.14ms]
+(fail) worker client follows redirects never, respects 429 and stops on expired or revoked credentials [0.16ms]
+(fail) compiled CLI > status reports the endpoint it was given, not the one in the foreign .env [1.37ms]
+(fail) compiled serve lifecycle > serves, holds the database lock, restarts and survives a signal [0.44ms]
+(fail) compiled serve lifecycle > compiled capture survives safe destruction and the CLI serves exact authenticated bytes after restart [568.85ms]
+(fail) compiled serve lifecycle > rolls a failed startup back so the lock is not left behind [0.22ms]
+(fail) compiled serve lifecycle > exits 70 on the shutdown deadline with the database still readable [0.15ms]
+(fail) compiled serve lifecycle > refuses an in-memory database before it creates anything [0.11ms]
+(fail) HTTP transport authenticates leads, rejects hostile origins and serves real MCP calls [1.73ms]
+(fail) timely renewals preserve the full 31 second task [504.32ms]
+(fail) malformed renewal IPC fails closed: garbage
+ [9.92ms]
+(fail) malformed renewal IPC fails closed: 1 2
+ [9.50ms]
+(fail) malformed renewal IPC fails closed: xxxxxxxxxxxx [9.73ms]
+(fail) buffered renewal cannot reopen a lease when child callbacks were delayed [807.48ms]
+(fail) dashboard exposes durable artifacts and retries exhausted preservation through MCP [30.51ms]
+(fail) an occupied API port releases the metrics listener and the lock and never provisions [0.55ms]
+(fail) an occupied metrics port releases the API listener and the lock [0.26ms]
+(fail) a database owned by another instance rolls back every acquired resource [0.21ms]
+(fail) a failed recovery releases the lock, the database and both ports [0.18ms]
+(fail) a startup aborted before any resource is acquired opens nothing [0.19ms]
+(fail) an abort during recovery keeps the database open until the in-flight writer finishes [0.28ms]
+(fail) listeners are reserved before provisioning, refuse mutations until ready, and an abort then frees both ports [0.26ms]
+(fail) a normal stop flushes events, releases both listeners and the lock and closes the database [0.29ms]
+(fail) repeated stop calls share one idempotent shutdown [0.20ms]
+(fail) a blocked worker operation finishes its durable write before the database closes [0.22ms]
+(fail) shutdown is not held open by an in-flight state-change wait [0.20ms]
+(fail) the serve command reports a startup failure as a nonzero exit code [0.18ms]
+(fail) command failure output never carries resolved credentials or URL secrets [0.26ms]
+(fail) the command redactor scrubs JSON-escaped credentials and secrets in URLs [0.06ms]
+(fail) the serve command refuses a shutdown deadline that is not a positive integer [0.28ms]
+(fail) the serve command exits cleanly once when SIGTERM and SIGINT both arrive [0.19ms]
+(fail) a signal during a slow startup cancels it and exits zero once the in-flight recovery drains [0.17ms]
+(fail) the serve command hard-exits nonzero at the shutdown deadline with durable state retained [0.19ms]
+(fail) dashboard revisions include newly discovered repository credential redaction [0.94ms]
+(fail) dashboard transfers bounded pages, detects unchanged data, applies deltas and resynchronizes query changes [3.22ms]
+(fail) older servers cannot silently execute settled cleanup [0.72ms]
+(fail) a coordinator replacement at the same endpoint forces a complete revision resync [0.82ms]
+(fail) bounded dashboard navigation and filters clear page selections before a cleanup preview [6.45ms]
+(fail) unmodified real compiled CLI works from foreign cwd and enters only the bounded controlled child hook [424.48ms]
+(fail) compiled actual CLI supervisor + production provider + child from empty cwd (instrumented build, fetch transport mock) [1.68ms]
+(fail) unmodified compiled actual hosted supervisor runs through HTTP fixture from empty cwd [0.59ms]
+
+ 693 pass
+ 2 skip
+ 86 fail
+ 1 error
+ 3970 expect() calls
+Ran 781 tests across 58 files. [147.72s]

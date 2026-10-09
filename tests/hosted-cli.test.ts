@@ -158,6 +158,16 @@ test("unmodified real compiled CLI works from foreign cwd and enters only the bo
   const child = await invoke(path, [], cwd, {
     SWARMFORGE_HOSTED_CHILD: "1",
     SWARMFORGE_HOSTED_DURATION: "350",
+    SWARMFORGE_HOSTED_LEASE_BOOT_MS: String(
+      Math.round(
+        Number(readFileSync("/proc/uptime", "utf8").split(" ")[0]) * 1000,
+      ) + 2000,
+    ),
+    SWARMFORGE_HOSTED_ABSOLUTE_BOOT_MS: String(
+      Math.round(
+        Number(readFileSync("/proc/uptime", "utf8").split(" ")[0]) * 1000,
+      ) + 2000,
+    ),
   });
   expect(child.code).toBe(0);
   expect(child.stderr).toBe("");
