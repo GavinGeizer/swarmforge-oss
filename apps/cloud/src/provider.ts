@@ -16,6 +16,9 @@ export interface IdentityProvider {
     env: ProviderCredentials,
   ): Promise<VerifiedIdentity>;
 }
+type ProviderFetch = (
+  ...args: Parameters<typeof fetch>
+) => ReturnType<typeof fetch>;
 const identitySchema = z.object({
   id: z.number().int().positive().safe(),
   login: z
@@ -53,8 +56,8 @@ async function boundedJson(response: Response) {
   return JSON.parse(new TextDecoder().decode(bytes)) as unknown;
 }
 export class GitHubIdentityProvider implements IdentityProvider {
-  private readonly request: typeof fetch;
-  constructor(request: typeof fetch = (input, init) => fetch(input, init)) {
+  private readonly request: ProviderFetch;
+  constructor(request: ProviderFetch = (input, init) => fetch(input, init)) {
     this.request = request;
   }
   async verify(
