@@ -40,15 +40,28 @@ export interface HostedPrincipal {
   authorization_expires_at: number;
 }
 
-const hostedLiveGrant = `g.revoked_at IS NULL AND g.expires_at>? AND i.status='active' AND i.organization_id=g.organization_id AND g.epoch=i.epoch AND g.authorization_expires_at>? AND EXISTS(SELECT 1 FROM users u JOIN memberships m USING(user_id) JOIN organizations o USING(organization_id) WHERE u.user_id=g.user_id AND m.organization_id=g.organization_id AND u.status='active' AND m.status='active' AND o.status='active')`;
+// Live-grant predicate: unrevoked, unexpired, installation active in the same
+// org, epoch match, CURRENT installation authorization window (not a stale
+// copy: g.authorization_expires_at must equal the installation's live value),
+// and the grant's user is the installation's CURRENT user with active
+// membership in the active org. CLI rotation (epoch), reassignment (user),
+// revocation (status), or authorization-window change all invalidate grants.
+const hostedLiveGrant = `g.revoked_at IS NULL AND g.expires_at>? AND i.status='active' AND i.organization_id=g.organization_id AND g.epoch=i.epoch AND g.user_id=i.user_id AND g.authorization_expires_at=i.authorization_expires_at AND g.authorization_expires_at>? AND EXISTS(SELECT 1 FROM users u JOIN memberships m USING(user_id) JOIN organizations o USING(organization_id) WHERE u.user_id=g.user_id AND m.organization_id=g.organization_id AND u.status='active' AND m.status='active' AND o.status='active')`;
 
 // Downstream single-batch admission/claim CAS must recheck the underlying
 // grant + CLI installation epoch/user/membership/org at mutation time. This
 // guard composes into conditional DML; it is never a preflight-only check.
 export function hostedPrincipalGuard(p: HostedPrincipal, now = Date.now()) {
   return {
-    sql: `EXISTS(SELECT 1 FROM hosted_execution_grants g JOIN cli_installations i USING(installation_id) WHERE g.grant_id=? AND g.organization_id=? AND ${hostedLiveGrant})`,
-    args: [p.grant_id, p.organization_id, now, now],
+    sql: `EXISTS(SELECT 1 FROM hosted_execution_grants g JOIN cli_installations i USING(installation_id) WHERE g.grant_id=? AND g.organization_id=? AND g.user_id=? AND g.installation_id=? AND ${hostedLiveGrant})`,
+    args: [
+      p.grant_id,
+      p.organization_id,
+      p.user_id,
+      p.installation_id,
+      now,
+      now,
+    ],
   };
 }
 
@@ -171,9 +184,16 @@ async function authorize(ctx: Context, tenant: string, installation: string) {
   );
   const guard = browserGuard(ctx, tenant, false);
   const cipher = await seal(ctx.env.AUTH_SECRET, JSON.stringify(issued.reply));
+  // Same-window predicates: browser session, installation epoch/user/status,
+  // and installation authorization window are all rechecked inside the batch
+  // (TOCTOU between the pre-read and the insert closes here). The
+  // UNIQUE(installation_id, session_id, idempotency_key) loser inserts zero
+  // rows; the final SELECT then returns the winner's ciphertext for clean
+  // replay — but a replay that no longer passes hostedAuth (revoked/rotated)
+  // is rejected, never resurrected.
   const result = await ctx.env.DB.batch([
     ctx.env.DB.prepare(
-      `INSERT INTO hosted_execution_grants SELECT ?,?,?,?,?,?,?,?,?,?,?,?,?,?,NULL WHERE ${guard.sql} AND EXISTS(SELECT 1 FROM cli_installations WHERE installation_id=? AND organization_id=? AND user_id=? AND status='active' AND epoch=?)`,
+      `INSERT INTO hosted_execution_grants SELECT ?,?,?,?,?,?,?,?,?,?,?,?,?,?,NULL WHERE ${guard.sql} AND EXISTS(SELECT 1 FROM cli_installations WHERE installation_id=? AND organization_id=? AND user_id=? AND status='active' AND epoch=? AND authorization_expires_at=?)`,
     ).bind(
       issued.reply.grant_id,
       issued.hash,
@@ -194,6 +214,7 @@ async function authorize(ctx: Context, tenant: string, installation: string) {
       tenant,
       s.user_id,
       target.epoch,
+      target.authorization_expires_at,
     ),
     auditStatement(
       ctx,
