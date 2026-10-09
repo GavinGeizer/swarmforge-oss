@@ -1774,6 +1774,16 @@ test("compiled binary + empty-cwd: real binary self-spawn runs without repo file
         PATH: "/usr/bin:/bin",
         TZ: "UTC",
         SWARMFORGE_HOSTED_DURATION: "300",
+        SWARMFORGE_HOSTED_LEASE_BOOT_MS: String(
+          Math.round(
+            Number(readFileSync("/proc/uptime", "utf8").split(" ")[0]) * 1000,
+          ) + 2000,
+        ),
+        SWARMFORGE_HOSTED_ABSOLUTE_BOOT_MS: String(
+          Math.round(
+            Number(readFileSync("/proc/uptime", "utf8").split(" ")[0]) * 1000,
+          ) + 2000,
+        ),
       },
       cwd: empty,
       stdin: "pipe",
@@ -2793,3 +2803,88 @@ test("staging race: injected stopping intent between staging and start blocks st
     h.hostedStore.close();
   }
 }, 30000);
+
+test("child enforces its validated lease while the actual supervisor event loop stalls", async () => {
+  const assignment = taskBody({
+    controlled_duration_ms: 6000,
+    lease_expires_at: Date.now() + 1500,
+  });
+  const fixture = api(async () =>
+    json({
+      task: { ...assignment, state: "running" },
+      directive: "continue",
+      server_time: Date.now(),
+    }),
+  );
+  const h = harness();
+  const supervisor = supervisorUnderTest(h, fixture.origin);
+  try {
+    const run = await supervisor.ackAndStart(assignment as HostedTask);
+    const mapping = h.hostedStore.get(TASK)!;
+    expect(
+      (await h.provider.getWorker(`controlled-${mapping.local_worker_id}`))
+        ?.state,
+    ).toBe("running");
+    const until = performance.now() + 2200;
+    while (performance.now() < until) {}
+    let stopped = false;
+    try {
+      stopped =
+        readFileSync(`/proc/${mapping.child_pid}/stat`, "utf8")
+          .split(") ")[1]
+          ?.startsWith("Z ") ?? false;
+    } catch {
+      stopped = true;
+    }
+    expect(stopped).toBe(true);
+    expect(await run.completion).toBe("cancelled");
+    expect(h.hostedStore.get(TASK)?.child_pid).toBe(mapping.child_pid);
+    const proof = await supervisor.stopAndConfirm(TASK, "child lease expiry");
+    expect(proof.stop_confirmed).toBe(true);
+  } finally {
+    await supervisor.close();
+    await h.coordinator.stop();
+    h.store.close();
+    fixture.close();
+  }
+}, 15000);
+
+test("a delayed renewal write callback cannot publish authority after local stop (IPC callback transport mock)", async () => {
+  class DelayedWriteProvider extends ControlledProcessProvider {
+    override async renewControlled(): Promise<void> {
+      await Bun.sleep(2100);
+    }
+  }
+  const assignment = taskBody({
+    controlled_duration_ms: 4000,
+    lease_expires_at: Date.now() + 1500,
+  });
+  const fixture = api(async (request) =>
+    json({
+      task: {
+        ...assignment,
+        state: "running",
+        lease_expires_at: request.url.endsWith("/renew")
+          ? Date.now() + 30000
+          : assignment.lease_expires_at,
+      },
+      directive: "continue",
+      server_time: Date.now(),
+    }),
+  );
+  const h = harness(new DelayedWriteProvider());
+  const supervisor = supervisorUnderTest(h, fixture.origin);
+  try {
+    const run = await supervisor.ackAndStart(assignment as HostedTask);
+    await expect(supervisor.renewOnce(TASK)).rejects.toThrow(
+      /after local stop|authority expiry/i,
+    );
+    expect(await run.completion).toBe("cancelled");
+    expect(h.hostedStore.get(TASK)?.stop_confirmed).toBe(true);
+  } finally {
+    await supervisor.close();
+    await h.coordinator.stop();
+    h.store.close();
+    fixture.close();
+  }
+}, 15000);

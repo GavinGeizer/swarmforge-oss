@@ -1,0 +1,89 @@
+bun test v1.4.2 (744846f84)
+
+tests/hosted-child-lease.test.ts:
+(pass) real child expires while its parent's event loop is blocked [988.24ms]
+67 | test("timely renewals preserve the full 31 second task", async () => {
+68 |   const { child, exited, end } = launch(31000, undefined, 2000);
+69 |   const start = performance.now();
+70 |   const renew = setInterval(() => child.stdin.write(frame(2000, end)), 500);
+71 |   try {
+72 |     expect(await exited).toBe(0);
+                              ^
+error: expect(received).toBe(expected)
+
+Expected: 0
+Received: 3
+
+      at <anonymous> (/tmp/swarmforge-phase2b2-watchdog/tests/hosted-child-lease.test.ts:72:26)
+(fail) timely renewals preserve the full 31 second task [503.93ms]
+80 | for (const input of ["garbage\n", "1 2\n", "x".repeat(257)]) {
+81 |   test(`malformed renewal IPC fails closed: ${input.slice(0, 12)}`, async () => {
+82 |     const { child, exited } = launch();
+83 |     try {
+84 |       child.stdin.write(input);
+85 |       expect(await exited).toBe(4);
+                                ^
+error: expect(received).toBe(expected)
+
+Expected: 4
+Received: 3
+
+      at <anonymous> (/tmp/swarmforge-phase2b2-watchdog/tests/hosted-child-lease.test.ts:85:28)
+(fail) malformed renewal IPC fails closed: garbage
+ [10.98ms]
+80 | for (const input of ["garbage\n", "1 2\n", "x".repeat(257)]) {
+81 |   test(`malformed renewal IPC fails closed: ${input.slice(0, 12)}`, async () => {
+82 |     const { child, exited } = launch();
+83 |     try {
+84 |       child.stdin.write(input);
+85 |       expect(await exited).toBe(4);
+                                ^
+error: expect(received).toBe(expected)
+
+Expected: 4
+Received: 3
+
+      at <anonymous> (/tmp/swarmforge-phase2b2-watchdog/tests/hosted-child-lease.test.ts:85:28)
+(fail) malformed renewal IPC fails closed: 1 2
+ [9.92ms]
+80 | for (const input of ["garbage\n", "1 2\n", "x".repeat(257)]) {
+81 |   test(`malformed renewal IPC fails closed: ${input.slice(0, 12)}`, async () => {
+82 |     const { child, exited } = launch();
+83 |     try {
+84 |       child.stdin.write(input);
+85 |       expect(await exited).toBe(4);
+                                ^
+error: expect(received).toBe(expected)
+
+Expected: 4
+Received: 3
+
+      at <anonymous> (/tmp/swarmforge-phase2b2-watchdog/tests/hosted-child-lease.test.ts:85:28)
+(fail) malformed renewal IPC fails closed: xxxxxxxxxxxx [10.00ms]
+(pass) buffered initial authority expires before delayed runtime startup [711.23ms]
+(pass) late renewal never reopens an expired child [600.98ms]
+(pass) missing initial authority refuses work at startup [9.55ms]
+(pass) parent EOF stops the leased real child [102.11ms]
+142 |   );
+143 |   const { child, exited, end } = launch(3000, path, 350);
+144 |   try {
+145 |     await Bun.sleep(450);
+146 |     child.stdin.write(frame(2000, end));
+147 |     expect(await exited).toBe(4);
+                               ^
+error: expect(received).toBe(expected)
+
+Expected: 4
+Received: 3
+
+      at <anonymous> (/tmp/swarmforge-phase2b2-watchdog/tests/hosted-child-lease.test.ts:147:26)
+(fail) buffered renewal cannot reopen a lease when child callbacks were delayed [806.43ms]
+(pass) invalid initial numeric authority refuses work: garbage [9.52ms]
+(pass) invalid initial numeric authority refuses work: 1 [8.87ms]
+(pass) invalid initial numeric authority refuses work: -1 [8.93ms]
+(pass) a real child completes its full duration under valid initial authority [310.02ms]
+
+ 9 pass
+ 5 fail
+ 17 expect() calls
+Ran 14 tests across 1 file. [4.10s]

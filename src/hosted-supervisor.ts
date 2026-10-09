@@ -397,10 +397,17 @@ export class HostedSupervisor {
           finish?.(
             code === 0 && performance.now() - spawnStartedMonoMs >= duration
               ? "completed"
-              : "failed",
+              : code === 4
+                ? "cancelled"
+                : "failed",
           );
         },
         journalStart,
+        spawnStartedMonoMs + startBudgetMs,
+        Math.min(
+          absoluteDeadlineMonoMs,
+          spawnStartedMonoMs + reply.task.runtime_ms,
+        ),
       );
       const vmNow = store.get(local.worker_id).vm_id;
       const rec = vmNow ? this.options.provider.recordFor(vmNow) : null;
@@ -557,10 +564,25 @@ export class HostedSupervisor {
       { lease_id: mapping.lease_id, fence: mapping.fence },
       "running",
     );
-    running.leaseDeadlineMonoMs = Math.min(
+    const renewedDeadlineMonoMs = Math.min(
       performance.now() + remaining,
       running.absoluteDeadlineMonoMs,
     );
+    await this.options.provider.renewControlled(
+      this.options.store.get(mapping.local_worker_id),
+      renewedDeadlineMonoMs,
+    );
+    const latest = this.options.hostedStore.get(taskId);
+    if (
+      this.runs.get(taskId) !== running ||
+      latest?.state !== "running" ||
+      latest.stop_confirmed ||
+      performance.now() >= running.leaseDeadlineMonoMs
+    )
+      throw new Error(
+        "Renewal write completed after local stop or authority expiry; refusing to reopen.",
+      );
+    running.leaseDeadlineMonoMs = renewedDeadlineMonoMs;
     this.armLeaseWatchdog(taskId, running.leaseDeadlineMonoMs);
     this.scheduleRenew(taskId, running.leaseDeadlineMonoMs - performance.now());
     return reply;

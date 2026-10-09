@@ -1,0 +1,11 @@
+bun test v1.4.2 (744846f84)
+
+tests/hosted-supervisor.test.ts:
+(pass) child enforces its validated lease while the actual supervisor event loop stalls [2221.34ms]
+(pass) a delayed renewal write callback cannot publish authority after local stop (IPC callback transport mock) [2854.12ms]
+
+ 2 pass
+ 58 filtered out
+ 0 fail
+ 8 expect() calls
+Ran 2 tests across 1 file. [8.38s]

@@ -1,0 +1,23 @@
+bun test v1.4.2 (744846f84)
+
+tests/hosted-supervisor.test.ts:
+2874 |   );
+2875 |   const h = harness(new DelayedWriteProvider());
+2876 |   const supervisor = supervisorUnderTest(h, fixture.origin);
+2877 |   try {
+2878 |     const run = await supervisor.ackAndStart(assignment as HostedTask);
+2879 |     await expect(supervisor.renewOnce(TASK)).rejects.toThrow(
+                                                            ^
+error: expect(received).rejects.toThrow(expected)
+
+Expected promise that rejects
+Received promise that resolved: Promise { <resolved> }
+
+      at <anonymous> (/tmp/swarmforge-phase2b2-watchdog/tests/hosted-supervisor.test.ts:2879:54)
+(fail) a delayed renewal write callback cannot publish authority after local stop (IPC callback transport mock) [2859.99ms]
+
+ 0 pass
+ 59 filtered out
+ 1 fail
+ 1 expect() calls
+Ran 1 test across 1 file. [2.90s]

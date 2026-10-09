@@ -9,7 +9,13 @@ import type {
   Worker,
   WorkerProvider,
 } from "./domain";
-import { HOSTED_CHILD_DURATION_ENV, HOSTED_CHILD_ENV } from "./hosted-child";
+import {
+  HOSTED_CHILD_ABSOLUTE_ENV,
+  HOSTED_CHILD_DURATION_ENV,
+  HOSTED_CHILD_ENV,
+  HOSTED_CHILD_LEASE_ENV,
+  hostedBootTimeMs,
+} from "./hosted-child";
 
 export interface ControlledProcessRecord {
   pid: number;
@@ -126,6 +132,10 @@ export function identityMatches(record: ControlledProcessRecord): boolean {
 export class ControlledProcessProvider implements WorkerProvider {
   private children = new Map<string, ChildProcess>();
   private records = new Map<string, ControlledProcessRecord>();
+  private childAuthority = new Map<
+    string,
+    { lease: number; absolute: number }
+  >();
   readonly spawnedCommands: string[] = [];
   private vmId(w: Worker): string {
     if (!w.vm_id) throw new Error("Controlled worker has no runtime handle.");
@@ -184,6 +194,7 @@ export class ControlledProcessProvider implements WorkerProvider {
     this.records.set(vmId, record);
   }
   forget(vmId: string): void {
+    this.childAuthority.delete(vmId);
     this.records.delete(vmId);
     this.children.delete(vmId);
   }
@@ -196,6 +207,8 @@ export class ControlledProcessProvider implements WorkerProvider {
     durationMs: number,
     onExit: (code: number | null) => void,
     journalSpawn?: (record: ControlledProcessRecord) => void,
+    leaseDeadlineMonoMs = performance.now() + durationMs + 1000,
+    absoluteDeadlineMonoMs = performance.now() + durationMs + 1000,
   ): Promise<void> {
     if (!Number.isSafeInteger(durationMs) || durationMs <= 0)
       throw new Error("Controlled duration is invalid.");
@@ -212,6 +225,20 @@ export class ControlledProcessProvider implements WorkerProvider {
     // execution. No ambient entry marker can select the launch path.
     const compiled = Bun.isStandaloneExecutable;
     const startedAtMonoMs = performance.now();
+    const boot = hostedBootTimeMs();
+    const absolute =
+      boot + Math.floor(absoluteDeadlineMonoMs - performance.now()) - 20;
+    const lease = Math.min(
+      absolute,
+      boot + Math.floor(leaseDeadlineMonoMs - performance.now()) - 20,
+    );
+    if (
+      !Number.isSafeInteger(lease) ||
+      !Number.isSafeInteger(absolute) ||
+      lease <= boot ||
+      absolute - boot > 3_600_000
+    )
+      throw new Error("Controlled launch authority is expired or invalid.");
     const child = compiled
       ? spawn(process.execPath, [], {
           env: {
@@ -219,6 +246,8 @@ export class ControlledProcessProvider implements WorkerProvider {
             TZ: "UTC",
             [HOSTED_CHILD_ENV]: "1",
             [HOSTED_CHILD_DURATION_ENV]: String(durationMs),
+            [HOSTED_CHILD_LEASE_ENV]: String(lease),
+            [HOSTED_CHILD_ABSOLUTE_ENV]: String(absolute),
           },
           stdio: ["pipe", "pipe", "pipe"],
         })
@@ -234,6 +263,8 @@ export class ControlledProcessProvider implements WorkerProvider {
               PATH: "/usr/bin:/bin",
               TZ: "UTC",
               [HOSTED_CHILD_DURATION_ENV]: String(durationMs),
+              [HOSTED_CHILD_LEASE_ENV]: String(lease),
+              [HOSTED_CHILD_ABSOLUTE_ENV]: String(absolute),
             },
             stdio: ["pipe", "pipe", "pipe"],
           },
@@ -242,7 +273,8 @@ export class ControlledProcessProvider implements WorkerProvider {
     // supervisor (and its stdio) is actually gone. Keep flowing so no
     // buffered pause wedges the pipe.
     child.stdin?.on("error", () => {});
-    child.stdin?.write("");
+
+    this.childAuthority.set(id, { lease, absolute });
     child.stdout?.on("data", () => {});
     child.stderr?.on("data", () => {});
     child.stdout?.resume();
@@ -297,13 +329,47 @@ export class ControlledProcessProvider implements WorkerProvider {
       throw error;
     }
     child.on("exit", (code) => {
+      this.childAuthority.delete(id);
       this.children.delete(id);
       onExit(code);
     });
     child.on("error", () => {
+      this.childAuthority.delete(id);
       this.children.delete(id);
       onExit(null);
     });
+  }
+  /** Called only after the supervisor validates a server renewal. */
+  async renewControlled(w: Worker, deadlineMonoMs: number): Promise<void> {
+    const id = this.vmId(w);
+    const child = this.children.get(id);
+    const authority = this.childAuthority.get(id);
+    const boot = hostedBootTimeMs();
+    if (
+      !child?.stdin?.writable ||
+      child.exitCode !== null ||
+      !authority ||
+      authority.lease <= boot + 10
+    )
+      throw new Error("Controlled renewal arrived after expiry or disconnect.");
+    const lease = Math.min(
+      authority.absolute,
+      boot + Math.floor(deadlineMonoMs - performance.now()) - 20,
+    );
+    if (lease <= boot + 10)
+      throw new Error("Controlled renewal has no authority.");
+    await new Promise<void>((resolve, reject) => {
+      child.stdin!.write(`${lease} ${authority.absolute}\n`, (error) => {
+        if (error) {
+          child.stdin?.destroy();
+          reject(error);
+        } else resolve();
+      });
+    });
+    // A stalled write callback cannot turn a late write into local authority.
+    if (authority.lease <= hostedBootTimeMs() + 10)
+      throw new Error("Controlled renewal write completed after expiry.");
+    authority.lease = lease;
   }
   /**
    * Verified OS-level stop for a locally tracked child: SIGTERM, escalate to

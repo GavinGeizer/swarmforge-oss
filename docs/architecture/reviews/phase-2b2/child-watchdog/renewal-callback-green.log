@@ -1,0 +1,10 @@
+bun test v1.4.2 (744846f84)
+
+tests/hosted-supervisor.test.ts:
+(pass) a delayed renewal write callback cannot publish authority after local stop (IPC callback transport mock) [2861.25ms]
+
+ 1 pass
+ 59 filtered out
+ 0 fail
+ 3 expect() calls
+Ran 1 test across 1 file. [2.90s]
