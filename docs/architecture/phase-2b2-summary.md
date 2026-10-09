@@ -164,8 +164,10 @@ independently obtained OS stop evidence and audit; a network failure is not such
 
 See [resource worksheet](phase-2b2-resource-observations.md). Actual prepared-statement
 and binding counts are measured locally; scanned rows, indexed writes and edge CPU
-require D1/edge instrumentation. One-shot CLI claim mode does not run an unbounded
-poll service. Recovery/cleanup work is bounded. No remote preview load or edge CPU
+require D1/edge instrumentation. A reproducible ten-task local protocol sample measured 13–14 SQL statements per
+task request, 50 task requests, and 69,632 additional allocated SQLite bytes. Simulated
+supervisor reports in that sample are not runtime validation. One-shot CLI claim mode
+does not run an unbounded poll service. Recovery/cleanup work is bounded. No remote preview load or edge CPU
 measurement has been performed, and local test time is not edge CPU time.
 
 ## 15. Verification
@@ -178,7 +180,7 @@ Fresh lead verification on the integrated working candidate:
   cancellation with retained capacity until stop, ambient secret exclusion, duplicate
   admission and changed-work conflict. Uses SQLite cloud storage, injected in-process
   fetch and in-memory journals; it is not live D1, TCP or durable-file recovery validation.
-- Root TypeScript/Biome: passed, 132 files. Cloud TypeScript/Biome: passed, 68 files
+- Root TypeScript/Biome: passed, 132 files. Cloud TypeScript/Biome: passed, 69 files
   after additive migration tests. Both packages type-check their own platform globals.
 - Root executable build, archive packaging and archive verification: passed on Linux.
 - Full cloud command: failed, two file-level passes and 19 file-level failures; no

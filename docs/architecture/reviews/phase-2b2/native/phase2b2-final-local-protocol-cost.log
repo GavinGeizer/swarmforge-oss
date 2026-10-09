@@ -1,0 +1,58 @@
+{
+  "methodology": "SQLite production-handler sample, simulated supervisor; not D1 rows or edge CPU",
+  "logical_tasks": 10,
+  "baseline_page_count": {
+    "page_count": 121
+  },
+  "task_http_requests": 50,
+  "operations": [
+    {
+      "operation": "admission",
+      "samples": 10,
+      "min_statements": 14,
+      "max_statements": 14,
+      "total_local_elapsed_ms": 26.24779200000001
+    },
+    {
+      "operation": "claim",
+      "samples": 10,
+      "min_statements": 14,
+      "max_statements": 14,
+      "total_local_elapsed_ms": 20.383308999999983
+    },
+    {
+      "operation": "ack",
+      "samples": 10,
+      "min_statements": 13,
+      "max_statements": 13,
+      "total_local_elapsed_ms": 9.391475999999983
+    },
+    {
+      "operation": "renew",
+      "samples": 10,
+      "min_statements": 13,
+      "max_statements": 13,
+      "total_local_elapsed_ms": 8.296683000000044
+    },
+    {
+      "operation": "settle",
+      "samples": 10,
+      "min_statements": 14,
+      "max_statements": 14,
+      "total_local_elapsed_ms": 8.261297000000013
+    },
+    {
+      "operation": "scheduled_cleanup",
+      "samples": 1,
+      "min_statements": 13,
+      "max_statements": 13,
+      "total_local_elapsed_ms": 0.87662499999999
+    }
+  ],
+  "database_page_count": {
+    "page_count": 138
+  },
+  "database_page_size": {
+    "page_size": 4096
+  }
+}

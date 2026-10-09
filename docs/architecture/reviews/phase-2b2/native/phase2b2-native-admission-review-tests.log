@@ -1,0 +1,46 @@
+bun test v1.4.2 (744846f84)
+
+apps/cloud/test/hosted-entitlements-safety.test.ts:
+(pass) controlled allowance boundary validation > rejects periodStart=-Infinity before preparing a mutation [0.21ms]
+(pass) controlled allowance boundary validation > rejects periodEnd=Infinity before preparing a mutation
+(pass) controlled allowance boundary validation > rejects periodStart=100.5 before preparing a mutation
+(pass) controlled allowance boundary validation > rejects periodEnd=9007199254740992 before preparing a mutation
+(pass) controlled allowance boundary validation > rejects measuredStart=-Infinity before preparing a mutation [0.02ms]
+(pass) controlled allowance boundary validation > rejects measuredEnd=Infinity before preparing a mutation
+(pass) controlled allowance boundary validation > rejects measuredStart=100.5 before preparing a mutation
+(pass) controlled allowance boundary validation > rejects now=NaN before preparing a mutation
+(pass) controlled allowance boundary validation > accepts exact safe integer boundaries [0.06ms]
+(pass) same-millisecond policy allowance collision retries with coherent real clock dates and preserves history [14.71ms]
+(pass) exhausted policy allowance collision retries roll back revocation allowance policy and audit together [8.74ms]
+(pass) legacy allowance alias refuses fractional unsafe or expired period boundaries [4.69ms]
+(pass) legacy allowance alias checks period expiry at SQL execution rather than only the supplied clock [4.23ms]
+
+apps/cloud/test/hosted-admission-regressions.test.ts:
+(pass) current policy zero allowance cannot borrow a positive historical allowance [17.02ms]
+(pass) admission reserves only the pinned current policy allowance [10.29ms]
+(pass) reused cancellation key for another task changes no state or meter [13.04ms]
+(pass) authority revocation between cancellation authentication and batch changes nothing [11.42ms]
+(pass) cancellation ledger mismatch cannot terminalize or release capacity [10.66ms]
+(pass) legacy allowance alias cannot mutate unsupported meters [4.61ms]
+(pass) full-meter admission replay is identical 202 without a second reservation [8.70ms]
+(pass) any missing required capability denies admission with 403 [7.07ms]
+(pass) SQL int64 meter arithmetic reaches the canonical boundary exactly and refuses overflow [13.06ms]
+(pass) policy expiry while an admission waits to batch cannot elect a task [49.12ms]
+(pass) same-org multi-user and multi-CLI races share caps while another org admits independently [42.77ms]
+(pass) failed dependent SQL rolls back task reservation outbox audit operation and meter together [8.11ms]
+(pass) a ledger CAS miss on admission elects no task or dependent writes [9.54ms]
+(pass) admission denies a registered worker after its enroller loses admin authority [6.57ms]
+(pass) admission rechecks the worker enroller admin chain at batch election [7.58ms]
+(pass) cancellation elected before authority expires completes and reports its committed result [8.09ms]
+(pass) unavailable policy source denies new work with 503 and no admission effects [7.27ms]
+(pass) failed cancellation dependent SQL reports unavailable and rolls back elected effects [10.32ms]
+
+apps/cloud/test/hosted-status-regressions.test.ts:
+(pass) status combined task pagination enumerates disjoint UUID ranges without skips [29.28ms]
+(pass) status fails closed on unavailable policy or operational source tables [8.53ms]
+(pass) supervisor authority checks current epoch and admin authorizer; observations use real task audits [7.74ms]
+
+ 34 pass
+ 0 fail
+ 151 expect() calls
+Ran 34 tests across 3 files. [350.00ms]

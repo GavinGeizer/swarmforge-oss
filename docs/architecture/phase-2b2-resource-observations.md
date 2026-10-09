@@ -2,8 +2,8 @@
 
 Status: implementation checkpoint, 2026-10-09. This worksheet records verified
 platform limits and explicit planning calculations. It does not certify hosted
-admission, edge performance, or pilot readiness. Integrated dispatch measurements
-must be added after its production handlers pass the independent load tests.
+admission, edge performance, or pilot readiness. Integrated local protocol measurements appear below. They are complementary
+SQLite evidence; independent live D1/edge load tests remain outstanding.
 
 ## Platform limits
 
@@ -110,3 +110,46 @@ end-to-end run are prerequisites to a pilot. Repository brokerage, task-scoped
 BYOK custody, snapshot hygiene, and runtime isolation remain separate prerequisites
 to enabling untrusted customer execution. Production deployment requires owner
 authorization.
+
+
+## Integrated local protocol sample
+
+Reproduce from `apps/cloud` with:
+
+```sh
+bun --no-env-file --config=/dev/null scripts/measure-hosted-local.ts
+```
+
+The sample invokes the default production Worker, preserves rate limits, executes
+production SQL with foreign keys/atomic SQLite batches, and retains history for ten
+sequential metered tasks. Each receives a claim, acknowledgement, renewal and settlement:
+50 task requests total. Identity is synthetic, transport is in-process and supervisor
+reports are simulated. No child executes in this cost sample. Actual subprocess
+completion/cancellation is covered separately by `hosted-bun.test.ts`.
+
+| Operation | Samples | Prepared statements per request |
+| --- | ---: | ---: |
+| Browser-authorized metered admission | 10 | 14 |
+| Claim | 10 | 14 |
+| Acknowledgement | 10 | 13 |
+| Renewal | 10 | 13 |
+| Settlement | 10 | 14 |
+| Empty hosted scheduled cleanup plus identity cleanup/schema check | 1 | 13 |
+
+Counts include the default Worker's rate-limit statement. Component-reviewed dispatch
+counts exclude that statement and are therefore one lower. This empty-cleanup sample
+is not a bound for populated recovery batches. The dispatch correction report records
+bounded populated cleanup separately; final integrated busy-cleanup verification remains
+a review requirement. The adapter rejects more than 100 bound arguments, but this sample
+does not measure D1 scanned rows or index write amplification.
+
+SQLite allocated pages rose from 121 to 138 at 4,096 bytes/page: 69,632 additional
+allocated bytes over ten tasks, approximately 6,963 bytes/task for this small sample.
+The ending 565,248 bytes includes identity, indexes and retained history. Page allocation
+is not live D1 `size_after`, linear long-term storage growth, or a retention policy.
+Operation/audit history and encrypted result size must be measured at larger scale.
+
+The result asserts zero remaining reserved meter and ten consumed units. Per-operation
+wall times are recorded in the preserved JSON log only as local timings; no Cloudflare
+CPU claim follows. No scan/write accounting or remote load result was fabricated.
+Evidence: [local sample](reviews/phase-2b2/native/phase2b2-final-local-protocol-cost.log).

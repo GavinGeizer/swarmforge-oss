@@ -1,0 +1,1 @@
+{"probe":"coherent_60s_task_real_31s_claim_delay","status":200,"response":{"task":null,"server_time":1791587166082},"persistedChanged":false,"task":{"state":"queued","runtime_ms":60000,"duration_ms":60000,"lease_expires_at":null},"reservation":{"quantity":"60000"},"outbox":{"state":"queued","attempts":0},"dbClock":{"now":1791587166083}}

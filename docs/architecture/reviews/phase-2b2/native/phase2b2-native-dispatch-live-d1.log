@@ -1,0 +1,220 @@
+TAP version 13
+# Subtest: dispatch real D1: ledger changes after settlement reads leave every persisted row unchanged
+not ok 1 - dispatch real D1: ledger changes after settlement reads leave every persisted row unchanged
+  ---
+  duration_ms: 69.08102
+  type: 'test'
+  location: '/tmp/swarmforge-phase2b2-dispatch/apps/cloud/test/hosted-dispatch.integration.ts:31:1'
+  failureType: 'testCodeFailure'
+  error: 'listen EPERM: operation not permitted 127.0.0.1'
+  code: 'EPERM'
+  stack: |-
+    Server.setupListenHandle [as _listen2] (node:net:2145:21)
+    listenInCluster (node:net:2224:12)
+    node:net:2448:7
+    process.processTicksAndRejections (node:internal/process/task_queues:90:21)
+  ...
+# Subtest: dispatch: claim elects one supervisor, ack advances, renew extends finite lease
+not ok 2 - dispatch: claim elects one supervisor, ack advances, renew extends finite lease
+  ---
+  duration_ms: 1.570908
+  type: 'test'
+  location: '/tmp/swarmforge-phase2b2-dispatch/apps/cloud/test/hosted-dispatch.integration.ts:145:1'
+  failureType: 'testCodeFailure'
+  error: 'listen EPERM: operation not permitted 127.0.0.1'
+  code: 'EPERM'
+  stack: |-
+    Server.setupListenHandle [as _listen2] (node:net:2145:21)
+    listenInCluster (node:net:2224:12)
+    node:net:2448:7
+    process.processTicksAndRejections (node:internal/process/task_queues:90:21)
+  ...
+# Subtest: dispatch: duplicate claim elects exactly one supervisor (concurrent)
+not ok 3 - dispatch: duplicate claim elects exactly one supervisor (concurrent)
+  ---
+  duration_ms: 1.051828
+  type: 'test'
+  location: '/tmp/swarmforge-phase2b2-dispatch/apps/cloud/test/hosted-dispatch.integration.ts:232:1'
+  failureType: 'testCodeFailure'
+  error: 'listen EPERM: operation not permitted 127.0.0.1'
+  code: 'EPERM'
+  stack: |-
+    Server.setupListenHandle [as _listen2] (node:net:2145:21)
+    listenInCluster (node:net:2224:12)
+    node:net:2448:7
+    process.processTicksAndRejections (node:internal/process/task_queues:90:21)
+  ...
+# Subtest: dispatch: lost ack reply returns same lease only while current
+not ok 4 - dispatch: lost ack reply returns same lease only while current
+  ---
+  duration_ms: 0.46738
+  type: 'test'
+  location: '/tmp/swarmforge-phase2b2-dispatch/apps/cloud/test/hosted-dispatch.integration.ts:267:1'
+  failureType: 'testCodeFailure'
+  error: 'listen EPERM: operation not permitted 127.0.0.1'
+  code: 'EPERM'
+  stack: |-
+    Server.setupListenHandle [as _listen2] (node:net:2145:21)
+    listenInCluster (node:net:2224:12)
+    node:net:2448:7
+    process.processTicksAndRejections (node:internal/process/task_queues:90:21)
+  ...
+# Subtest: dispatch: stale fence and expired renew denied (no lease extension)
+not ok 5 - dispatch: stale fence and expired renew denied (no lease extension)
+  ---
+  duration_ms: 0.535718
+  type: 'test'
+  location: '/tmp/swarmforge-phase2b2-dispatch/apps/cloud/test/hosted-dispatch.integration.ts:313:1'
+  failureType: 'testCodeFailure'
+  error: 'listen EPERM: operation not permitted 127.0.0.1'
+  code: 'EPERM'
+  stack: |-
+    Server.setupListenHandle [as _listen2] (node:net:2145:21)
+    listenInCluster (node:net:2224:12)
+    node:net:2448:7
+    process.processTicksAndRejections (node:internal/process/task_queues:90:21)
+  ...
+# Subtest: dispatch: worker revocation blocks claim/renew but cleanup settle survives
+not ok 6 - dispatch: worker revocation blocks claim/renew but cleanup settle survives
+  ---
+  duration_ms: 0.555788
+  type: 'test'
+  location: '/tmp/swarmforge-phase2b2-dispatch/apps/cloud/test/hosted-dispatch.integration.ts:371:1'
+  failureType: 'testCodeFailure'
+  error: 'listen EPERM: operation not permitted 127.0.0.1'
+  code: 'EPERM'
+  stack: |-
+    Server.setupListenHandle [as _listen2] (node:net:2145:21)
+    listenInCluster (node:net:2224:12)
+    node:net:2448:7
+    process.processTicksAndRejections (node:internal/process/task_queues:90:21)
+  ...
+# Subtest: dispatch: settlement consumes meter exactly once; duplicate same-payload idempotent, changed conflicts
+not ok 7 - dispatch: settlement consumes meter exactly once; duplicate same-payload idempotent, changed conflicts
+  ---
+  duration_ms: 0.965976
+  type: 'test'
+  location: '/tmp/swarmforge-phase2b2-dispatch/apps/cloud/test/hosted-dispatch.integration.ts:461:1'
+  failureType: 'testCodeFailure'
+  error: 'listen EPERM: operation not permitted 127.0.0.1'
+  code: 'EPERM'
+  stack: |-
+    Server.setupListenHandle [as _listen2] (node:net:2145:21)
+    listenInCluster (node:net:2224:12)
+    node:net:2448:7
+    process.processTicksAndRejections (node:internal/process/task_queues:90:21)
+  ...
+# Subtest: dispatch: settlement works after entitlement revocation/expiry/period end
+not ok 8 - dispatch: settlement works after entitlement revocation/expiry/period end
+  ---
+  duration_ms: 0.613007
+  type: 'test'
+  location: '/tmp/swarmforge-phase2b2-dispatch/apps/cloud/test/hosted-dispatch.integration.ts:548:1'
+  failureType: 'testCodeFailure'
+  error: 'listen EPERM: operation not permitted 127.0.0.1'
+  code: 'EPERM'
+  stack: |-
+    Server.setupListenHandle [as _listen2] (node:net:2145:21)
+    listenInCluster (node:net:2224:12)
+    node:net:2448:7
+    process.processTicksAndRejections (node:internal/process/task_queues:90:21)
+  ...
+# Subtest: dispatch: failed meter CAS rejects without partial terminal state
+not ok 9 - dispatch: failed meter CAS rejects without partial terminal state
+  ---
+  duration_ms: 0.61144
+  type: 'test'
+  location: '/tmp/swarmforge-phase2b2-dispatch/apps/cloud/test/hosted-dispatch.integration.ts:614:1'
+  failureType: 'testCodeFailure'
+  error: 'listen EPERM: operation not permitted 127.0.0.1'
+  code: 'EPERM'
+  stack: |-
+    Server.setupListenHandle [as _listen2] (node:net:2145:21)
+    listenInCluster (node:net:2224:12)
+    node:net:2448:7
+    process.processTicksAndRejections (node:internal/process/task_queues:90:21)
+  ...
+# Subtest: dispatch: cancel race keeps stop discoverable; revoked supervisor cannot report
+not ok 10 - dispatch: cancel race keeps stop discoverable; revoked supervisor cannot report
+  ---
+  duration_ms: 0.96453
+  type: 'test'
+  location: '/tmp/swarmforge-phase2b2-dispatch/apps/cloud/test/hosted-dispatch.integration.ts:679:1'
+  failureType: 'testCodeFailure'
+  error: 'listen EPERM: operation not permitted 127.0.0.1'
+  code: 'EPERM'
+  stack: |-
+    Server.setupListenHandle [as _listen2] (node:net:2145:21)
+    listenInCluster (node:net:2224:12)
+    node:net:2448:7
+    process.processTicksAndRejections (node:internal/process/task_queues:90:21)
+  ...
+# Subtest: dispatch: DB/audit failure rolls back claim (no partial lease)
+not ok 11 - dispatch: DB/audit failure rolls back claim (no partial lease)
+  ---
+  duration_ms: 0.544645
+  type: 'test'
+  location: '/tmp/swarmforge-phase2b2-dispatch/apps/cloud/test/hosted-dispatch.integration.ts:731:1'
+  failureType: 'testCodeFailure'
+  error: 'listen EPERM: operation not permitted 127.0.0.1'
+  code: 'EPERM'
+  stack: |-
+    Server.setupListenHandle [as _listen2] (node:net:2145:21)
+    listenInCluster (node:net:2224:12)
+    node:net:2448:7
+    process.processTicksAndRejections (node:internal/process/task_queues:90:21)
+  ...
+# Subtest: dispatch: expiry cleanup holds claimed work and releases unclaimed queues
+not ok 12 - dispatch: expiry cleanup holds claimed work and releases unclaimed queues
+  ---
+  duration_ms: 0.425463
+  type: 'test'
+  location: '/tmp/swarmforge-phase2b2-dispatch/apps/cloud/test/hosted-dispatch.integration.ts:762:1'
+  failureType: 'testCodeFailure'
+  error: 'listen EPERM: operation not permitted 127.0.0.1'
+  code: 'EPERM'
+  stack: |-
+    Server.setupListenHandle [as _listen2] (node:net:2145:21)
+    listenInCluster (node:net:2224:12)
+    node:net:2448:7
+    process.processTicksAndRejections (node:internal/process/task_queues:90:21)
+  ...
+# Subtest: dispatch: taskAuthorizerGuard pins account/cli/grant authority
+not ok 13 - dispatch: taskAuthorizerGuard pins account/cli/grant authority
+  ---
+  duration_ms: 0.438783
+  type: 'test'
+  location: '/tmp/swarmforge-phase2b2-dispatch/apps/cloud/test/hosted-dispatch.integration.ts:846:1'
+  failureType: 'testCodeFailure'
+  error: 'listen EPERM: operation not permitted 127.0.0.1'
+  code: 'EPERM'
+  stack: |-
+    Server.setupListenHandle [as _listen2] (node:net:2145:21)
+    listenInCluster (node:net:2224:12)
+    node:net:2448:7
+    process.processTicksAndRejections (node:internal/process/task_queues:90:21)
+  ...
+# Subtest: dispatch: strict schemas and safe envelope on every route
+not ok 14 - dispatch: strict schemas and safe envelope on every route
+  ---
+  duration_ms: 0.460265
+  type: 'test'
+  location: '/tmp/swarmforge-phase2b2-dispatch/apps/cloud/test/hosted-dispatch.integration.ts:894:1'
+  failureType: 'testCodeFailure'
+  error: 'listen EPERM: operation not permitted 127.0.0.1'
+  code: 'EPERM'
+  stack: |-
+    Server.setupListenHandle [as _listen2] (node:net:2145:21)
+    listenInCluster (node:net:2224:12)
+    node:net:2448:7
+    process.processTicksAndRejections (node:internal/process/task_queues:90:21)
+  ...
+1..14
+# tests 14
+# suites 0
+# pass 0
+# fail 14
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 442.310261
