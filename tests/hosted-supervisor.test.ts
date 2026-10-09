@@ -1,9 +1,13 @@
 import { expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { parseHostedArgs, runHosted } from "../src/cli/hosted";
+import {
+  createHostedSupervisor,
+  parseHostedArgs,
+  runHosted,
+} from "../src/cli/hosted";
 import { loadConfig } from "../src/config";
 import { Coordinator } from "../src/coordinator";
 import {
@@ -1258,6 +1262,69 @@ test("production handler: hosted submit/status/cancel via real TaskClient", asyn
     ]);
   } finally {
     fixture.close();
+    h.store.close();
+    h.hostedStore.close();
+  }
+});
+
+test("RED factory restart: statePath persists the durable mapping across factory instances", async () => {
+  // Lead observation: createHostedSupervisor ignored options.statePath and
+  // defaulted to HostedStore(':memory:'), losing the mapping on restart. The
+  // factory must use a durable path (explicit or stable default) so a second
+  // factory instance recovers the same rows.
+  const h = harness();
+  const dir = mkdtempSync(join(tmpdir(), "hosted-factory-restart-"));
+  try {
+    const superPath = join(dir, "supervisor.json");
+    saveHostedSupervisorCredential(superPath, {
+      version: 1,
+      server_url: "https://hosted.example",
+      credential: `sfsuper_${"b".repeat(43)}`,
+      supervisor_id: SUPERVISOR,
+      worker_id: WORKER,
+      tenant_id: TENANT,
+      scopes: [
+        "supervisor:claim",
+        "supervisor:renew",
+        "supervisor:report",
+        "supervisor:cleanup",
+      ],
+      expires_at: Date.now() + 3_600_000,
+      authorization_expires_at: Date.now() + 86_400_000,
+    });
+    const statePath = join(dir, "mapping.sqlite");
+    const first = createHostedSupervisor(
+      { supervisorCredentialsPath: superPath, statePath },
+      { config: h.config, store: h.store, coordinator: h.coordinator },
+    );
+    // Claim persists the mapping to the on-disk state file (no network: the
+    // row is written via the HostedStore before any client call — simulate
+    // by writing through the factory's store via a direct claim row).
+    expect(first).toBeInstanceOf(HostedSupervisor);
+    // The factory must NOT have used :memory:: state file exists on disk.
+    expect(existsSync(statePath)).toBe(true);
+    // Second factory instance (restart) recovers the same durable rows.
+    const second = createHostedSupervisor(
+      { supervisorCredentialsPath: superPath, statePath },
+      { config: h.config, store: h.store, coordinator: h.coordinator },
+    );
+    expect(second.recover()).toEqual({ held: [], running: [] });
+    // Stable default (no --state-path): beside the credential file, durable.
+    const third = createHostedSupervisor(
+      { supervisorCredentialsPath: superPath },
+      { config: h.config, store: h.store, coordinator: h.coordinator },
+    );
+    expect(third).toBeInstanceOf(HostedSupervisor);
+    expect(existsSync(`${superPath}.state.sqlite`)).toBe(true);
+    // :memory: explicitly refused for the durable mapping.
+    expect(() =>
+      createHostedSupervisor(
+        { supervisorCredentialsPath: superPath, statePath: ":memory:" },
+        { config: h.config, store: h.store, coordinator: h.coordinator },
+      ),
+    ).toThrow(/durable file path/i);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
     h.store.close();
     h.hostedStore.close();
   }

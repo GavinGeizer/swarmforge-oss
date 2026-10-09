@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { resolve } from "node:path";
 import type { Config } from "../config";
 import type { Coordinator } from "../coordinator";
 import { HostedTaskClient, SupervisorClient } from "../hosted-client";
@@ -132,6 +133,35 @@ export interface HostedRuntimeDeps {
 }
 
 /**
+ * Stable non-memory default for the durable hosted mapping: beside the
+ * supervisor credential file (`<credentials>.state.sqlite`), overridable via
+ * --state-path or SWARMFORGE_HOSTED_STATE_PATH. Never :memory: in production
+ * factory use — a restart must recover the same task/lease/fence mapping.
+ */
+export function hostedSupervisorStatePath(
+  statePath: string | undefined,
+  supervisorCredentialsPath: string,
+): string {
+  if (
+    statePath !== undefined &&
+    (statePath === ":memory:" || statePath.trim() === "")
+  )
+    throw new UsageError(
+      "hosted --state-path must be a durable file path, never :memory:.",
+    );
+  const explicit =
+    statePath ?? process.env.SWARMFORGE_HOSTED_STATE_PATH ?? null;
+  if (explicit) {
+    if (explicit === ":memory:")
+      throw new UsageError(
+        "hosted --state-path must be a durable file path, never :memory:.",
+      );
+    return resolve(explicit);
+  }
+  return resolve(`${supervisorCredentialsPath}.state.sqlite`);
+}
+
+/**
  * Factory: builds a working HostedSupervisor from private credential/state
  * paths. Reads credentials via the approved private helper, enforces tenant
  * binding and expiry, and wires real Coordinator+Store+provider clients.
@@ -166,6 +196,18 @@ export function createHostedSupervisor(
     new SupervisorClient(origin, stored.credential, stored.tenant_id);
   if (client.tenantId !== stored.tenant_id)
     throw new Error("Hosted supervisor client binds a different tenant.");
+  // Durable mapping path: statePath is authoritative when given, else a
+  // stable private default beside the supervisor credential file (never
+  // :memory:, or a restart would lose the task/lease/fence mapping). An
+  // explicitly injected deps.hostedStore still wins for tests.
+  const resolvedStatePath =
+    deps.hostedStore !== undefined
+      ? null
+      : hostedSupervisorStatePath(options.statePath, credentialPath);
+  // Persist launch intent BEFORE opening the DB: a factory restart must find
+  // the durable mapping path (and any prior rows). DB-write errors after a
+  // process start are never swallowed — startControlled throws, and the ack
+  // path holds instead of executing.
   return new HostedSupervisor({
     config: deps.config,
     store: deps.store,
@@ -173,7 +215,7 @@ export function createHostedSupervisor(
     provider,
     agent,
     client,
-    hostedStore: deps.hostedStore ?? new HostedStore(":memory:"),
+    hostedStore: deps.hostedStore ?? new HostedStore(resolvedStatePath!),
     supervisorCredential: () => {
       const current = readHostedSupervisorCredential(credentialPath);
       if (!current)
