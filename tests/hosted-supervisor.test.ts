@@ -1089,6 +1089,134 @@ test("claim -> mapping -> ack -> real start; duplicate delivery reuses mapping",
   }
 }, 20000);
 
+test("B duplicate-task repro: duplicate ACK AFTER child exit + mapping stopped must NOT spawn again", async () => {
+  // Exact B repro (70bcfaa0) against 7eef source: REAL Coordinator + Store +
+  // HostedStore + provider + 300ms child, mock ACK transport returning the
+  // SAME lease/fence. First ackAndStart spawns 1; wait for natural child exit
+  // with the mapping stopped and pid set BEFORE settle; second ackAndStart
+  // must be rejected and spawn count must stay 1.
+  const fixture = supervisorFixture();
+  const h = harness();
+  try {
+    const supervisor = supervisorUnderTest(h, fixture.origin);
+    const claimed = await supervisor.claimOnce();
+    expect(claimed?.task_id).toBe(TASK);
+    const before = h.provider.spawnedCommands.length;
+    await supervisor.ackAndStart(claimed!);
+    expect(h.provider.spawnedCommands.length).toBe(before + 1);
+    // Let the 300ms-class child exit naturally, then record the mapping
+    // stopped with the pid still set (pre-settle, as in the B repro).
+    await Bun.sleep(1200);
+    const stopped = await supervisor.stopAndConfirm(TASK, "natural exit");
+    expect(stopped.state).toBe("stopped");
+    expect(stopped.child_pid).toBeGreaterThan(0);
+    // Duplicate ACK with the SAME lease/fence must NOT spawn a second child.
+    await expect(supervisor.ackAndStart(claimed!)).rejects.toThrow(
+      /start right|already (acknowledged|running|stopped|settled)|duplicate/i,
+    );
+    expect(h.provider.spawnedCommands.length).toBe(before + 1);
+  } finally {
+    fixture.close();
+    h.store.close();
+    h.hostedStore.close();
+  }
+}, 30000);
+
+test("concurrent duplicate ACKs on the SAME file from two supervisor instances: only one wins pre-launch", async () => {
+  // Two HostedSupervisor instances sharing one on-disk HostedStore file race
+  // the same task/lease/fence through ackAndStart concurrently. The durable
+  // CAS grant is atomic (single conditional UPDATE): exactly one caller wins
+  // the start right BEFORE any spawn; the loser is rejected and spawns
+  // nothing. Spawn count across BOTH providers is exactly 1.
+  const dir = mkdtempSync(join(tmpdir(), "hosted-concurrent-"));
+  const dbPath = join(dir, "mapping.sqlite");
+  const mkHarness = () => {
+    const h = harness();
+    h.hostedStore.close();
+    const shared = new HostedStore(dbPath);
+    return { ...h, hostedStore: shared };
+  };
+  const fixture = supervisorFixture();
+  const ha = mkHarness();
+  const hb = mkHarness();
+  try {
+    const sa = supervisorUnderTest(ha, fixture.origin);
+    const sb = supervisorUnderTest(hb, fixture.origin);
+    const claimed = await sa.claimOnce();
+    expect(claimed?.task_id).toBe(TASK);
+    const [ra, rb] = await Promise.allSettled([
+      sa.ackAndStart(claimed!),
+      sb.ackAndStart(claimed!),
+    ]);
+    const won = [ra, rb].filter((r) => r.status === "fulfilled");
+    const lost = [ra, rb].filter((r) => r.status === "rejected");
+    expect(won.length).toBe(1);
+    expect(lost.length).toBe(1);
+    expect(String((lost[0] as PromiseRejectedResult).reason)).toMatch(
+      /start right denied/i,
+    );
+    expect(
+      ha.provider.spawnedCommands.length + hb.provider.spawnedCommands.length,
+    ).toBe(1);
+    // Cleanup the winner's runtime.
+    const winner = ra.status === "fulfilled" ? sa : sb;
+    await winner.stopAndConfirm(TASK, "concurrent test cleanup");
+  } finally {
+    fixture.close();
+    ha.store.close();
+    ha.hostedStore.close();
+    hb.store.close();
+    hb.hostedStore.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+}, 30000);
+
+test("new-process recovery after exit does NOT reuse the start right", async () => {
+  // After a natural exit + stopped mapping, a NEW process reopening the same
+  // on-disk DB must also be refused: the start right was consumed, and the
+  // row carries state + pid proof that survives restarts.
+  const dir = mkdtempSync(join(tmpdir(), "hosted-noreuse-"));
+  const dbPath = join(dir, "mapping.sqlite");
+  const fixture = supervisorFixture();
+  const h = harness();
+  h.hostedStore.close();
+  const shared = new HostedStore(dbPath);
+  const hw = { ...h, hostedStore: shared };
+  try {
+    const supervisor = supervisorUnderTest(hw, fixture.origin);
+    const claimed = await supervisor.claimOnce();
+    const before = hw.provider.spawnedCommands.length;
+    await supervisor.ackAndStart(claimed!);
+    expect(hw.provider.spawnedCommands.length).toBe(before + 1);
+    await Bun.sleep(1200);
+    const stopped = await supervisor.stopAndConfirm(TASK, "natural exit");
+    expect(stopped.child_pid).toBeGreaterThan(0);
+    shared.close();
+    // New process: fresh provider + fresh supervisor over the same file.
+    const reopened = new HostedStore(dbPath);
+    const h2 = harness();
+    h2.hostedStore.close();
+    const hw2 = { ...h2, hostedStore: reopened };
+    try {
+      const supervisor2 = supervisorUnderTest(hw2, fixture.origin);
+      await expect(supervisor2.ackAndStart(claimed!)).rejects.toThrow(
+        /start right denied/i,
+      );
+      expect(hw2.provider.spawnedCommands.length).toBe(0);
+    } finally {
+      h2.store.close();
+      reopened.close();
+    }
+  } finally {
+    fixture.close();
+    h.store.close();
+    try {
+      shared.close();
+    } catch {}
+    rmSync(dir, { recursive: true, force: true });
+  }
+}, 60000);
+
 test("crash before/after mapping: restart holds ambiguity, never blindly re-execs", async () => {
   const h = harness();
   try {

@@ -204,6 +204,55 @@ export class HostedStore {
       return { mapping: full, created: true };
     })();
   }
+  /**
+   * Durable start-right-once CAS grant (B duplicate-task fix). Atomically
+   * transitions mapped -> acknowledged for ONE caller per task/lease/fence.
+   * The grant is a single conditional UPDATE inside the store transaction:
+   * it wins only when the row is still in a never-started state (mapped),
+   * binds the same lease/fence, and carries NO pid, NO start and NO
+   * stop-confirmation. Every other durable state — acknowledged (a launch is
+   * already in flight or done), running, stop_intended, stopped, settled,
+   * held, any pid-bearing row, any stop-confirmed row, any uncertain-launch
+   * row — is REJECTED, even after child exit or restart. Concurrent duplicate
+   * ack calls cannot both win: SQLite serializes the transactions and the
+   * second conditional UPDATE matches zero rows. Proven-never-started retry
+   * after an ambiguous write/network crash is the ONLY safe retry, and it
+   * goes through this same gate (mapped + no pid + no start); anything else
+   * holds for trusted reconciliation instead of a blind spawn.
+   */
+  grantStartRight(
+    taskId: string,
+    lease: { lease_id: string; fence: number },
+  ): HostedMapping {
+    return this.db.transaction(() => {
+      const result = this.db
+        .query(
+          "UPDATE hosted_mappings SET state='acknowledged',updated_at=? WHERE task_id=? AND state='mapped' AND lease_id=? AND fence=? AND stop_confirmed=0 AND child_pid IS NULL AND runtime_started_at_mono_ms IS NULL AND consumed_runtime_unknown=0",
+        )
+        .run(Date.now(), taskId, lease.lease_id, lease.fence);
+      const changed =
+        typeof result === "number" ? result : (result.changes ?? 0);
+      if (changed === 0) {
+        const current = this.get(taskId);
+        if (!current)
+          throw new Error("Hosted start right denied: no durable mapping row.");
+        if (
+          current.lease_id !== lease.lease_id ||
+          current.fence !== lease.fence
+        )
+          throw new Error(
+            "Hosted start right denied: lease/fence mismatch, holding existing reservation.",
+          );
+        throw new Error(
+          `Hosted start right denied: duplicate launch refused (state=${current.state}, pid=${current.child_pid ?? "none"}, stop_confirmed=${current.stop_confirmed}); start right already granted or consumed.`,
+        );
+      }
+      const granted = this.get(taskId);
+      if (!granted)
+        throw new Error("Hosted start right denied: row vanished mid-grant.");
+      return granted;
+    })();
+  }
   get(taskId: string): HostedMapping | null {
     const row = this.db
       .query("SELECT * FROM hosted_mappings WHERE task_id=?")

@@ -204,6 +204,16 @@ export class HostedSupervisor {
       throw new Error("Too little remaining authority; refusing to start.");
     const duration = Math.min(authority, reply.task.controlled_duration_ms);
     void mapping;
+    // B duplicate-task fix: durable start-right-once CAS grant AFTER the
+    // server ack but BEFORE any staging/spawn. Granted exactly once per
+    // task/lease/fence via an atomic conditional UPDATE; duplicate acks —
+    // even after child exit or restart, even with the same lease/fence —
+    // are rejected here and never reach spawn. No exact-once promise beyond
+    // this gate: only proven-never-started rows can ever hold the right.
+    mapping = this.options.hostedStore.grantStartRight(task.task_id, {
+      lease_id: task.lease_id,
+      fence: task.fence,
+    });
     // D4: monotonic staging clock starts AFTER the ack await. All staging
     // (Store create, pause verify, vm handle) consumes authority; the final
     // budget subtracts the full elapsed staging immediately before start and
@@ -255,11 +265,13 @@ export class HostedSupervisor {
       );
     }
     this.assertNoUncontrolledDispatch(local.worker_id);
-    const acknowledged = this.options.hostedStore.updateLease(
-      task.task_id,
-      { lease_id: task.lease_id, fence: task.fence },
-      "acknowledged",
-    );
+    // The CAS grant above already transitioned mapped -> acknowledged
+    // atomically; re-read the granted row instead of a second transition.
+    const acknowledged = this.options.hostedStore.get(task.task_id);
+    if (!acknowledged || acknowledged.state !== "acknowledged")
+      throw new Error(
+        "Hosted start right lost before staging; refusing start.",
+      );
     // Actual runtime start (real inert subprocess) only after durable ACK.
     // The local worker must carry a vm handle: create the VM record first via
     // the real provider, then start the controlled subprocess.

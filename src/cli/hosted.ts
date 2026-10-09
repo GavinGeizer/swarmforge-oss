@@ -334,8 +334,14 @@ export async function runHosted(
       },
       live,
     );
-    // Recover durable intent first: ambiguous rows stay held, never re-exec.
+    // Startup recovery FIRST: retry durable verified stop + same-key
+    // settlement for held/stopped rows from prior runs BEFORE claiming any
+    // new work. recover() alone only marks held + reports; reconcile()
+    // actually recovers stop/settlement instead of held-forever.
     const recovered = supervisor.recover();
+    const reconciled = await supervisor
+      .reconcile({ settleOutcome: "cancelled" })
+      .catch(() => ({ stopped: [], settled: [], held: recovered.held }));
     const looped = await runSupervisorLoop(supervisor, {
       maxTasks: command.maxTasks ?? 1,
     });
@@ -348,12 +354,17 @@ export async function runHosted(
       event: "supervisor",
       mode: "controlled",
       recovered_held: recovered.held.length,
+      reconciled_stopped: reconciled.stopped,
+      reconciled_settled: reconciled.settled,
+      reconciled_held: reconciled.held,
       claimed: looped.claimed,
       completed: looped.completed,
-      held: [...new Set([...recovered.held, ...looped.held])],
+      held: [
+        ...new Set([...recovered.held, ...reconciled.held, ...looped.held]),
+      ],
     };
     output(summary, `Hosted supervisor: ${JSON.stringify(summary)}`);
-    return looped.held.length > 0 || recovered.held.length > 0 ? 2 : 0;
+    return looped.held.length > 0 || reconciled.held.length > 0 ? 2 : 0;
   }
   const live = requireDeps();
   const client = createHostedTaskClient(
