@@ -16,7 +16,10 @@ import { type Credential, fixture } from "./machine-helpers.ts";
 // by the fixture is clearly labelled: the miniflare outbound service returns
 // synthetic provider users (user100/user200) and never contacts GitHub.
 
-const BUN = process.env.SWARMFORGE_TEST_BUN ?? "/tmp/opencode/bun142/bin/bun";
+// Bun under test: prefer the explicit SWARMFORGE_TEST_BUN override (used to pin
+// the verified runtime on hosts whose default bun is an older snapshot), and
+// otherwise resolve the actual available `bun` from PATH so fresh hosts work.
+const BUN = process.env.SWARMFORGE_TEST_BUN ?? "bun";
 
 async function runDriver(
   directory: string,
