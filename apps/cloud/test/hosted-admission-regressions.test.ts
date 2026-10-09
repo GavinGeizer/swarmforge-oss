@@ -702,3 +702,194 @@ test("failed cancellation dependent SQL reports unavailable and rolls back elect
     h.close();
   }
 });
+
+test("execution grant issuance cannot elect after browser or installation expiry while waiting to batch", async () => {
+  for (const boundary of ["browser", "installation"] as const) {
+    const h = await fixture();
+    try {
+      const a = await h.login();
+      const linked = await h.linked(a);
+      if (boundary === "browser")
+        h.db.sqlite
+          .query("UPDATE sessions SET expires_at=? WHERE session_id=?")
+          .run(Date.now() + 40, a.sessionId);
+      else
+        h.db.sqlite
+          .query(
+            "UPDATE cli_installations SET authorization_expires_at=? WHERE installation_id=?",
+          )
+          .run(Date.now() + 40, linked.installation_id);
+      h.db.beforeBatch = async () => {
+        h.db.beforeBatch = undefined;
+        await Bun.sleep(60);
+      };
+      const r = await h.request(
+        `/v1/tenants/${a.tenant}/cli-installations/${linked.installation_id}/execution-authorizations`,
+        { ...a.headers, "idempotency-key": crypto.randomUUID() },
+        "POST",
+        {},
+      );
+      expect(r.status).toBe(409);
+      expect(
+        h.db.sqlite
+          .query("SELECT count(*) n FROM hosted_execution_grants")
+          .get(),
+      ).toEqual({ n: 0 });
+      expect(
+        h.db.sqlite
+          .query(
+            "SELECT count(*) n FROM audit_events WHERE action='hosted.execution_authorized'",
+          )
+          .get(),
+      ).toEqual({ n: 0 });
+    } finally {
+      h.close();
+    }
+  }
+});
+
+test("execution grant issuance replay rechecks browser expiry at SQL time despite a stale Worker clock", async () => {
+  const h = await fixture();
+  const realNow = Date.now;
+  try {
+    const a = await h.login();
+    const linked = await h.linked(a);
+    const path = `/v1/tenants/${a.tenant}/cli-installations/${linked.installation_id}/execution-authorizations`;
+    const headers = { ...a.headers, "idempotency-key": crypto.randomUUID() };
+    const first = await h.request(path, headers, "POST", {});
+    expect(first.status).toBe(201);
+    const clock = Date.now();
+    h.db.sqlite
+      .query("UPDATE sessions SET expires_at=? WHERE session_id=?")
+      .run(clock + 10, a.sessionId);
+    await Bun.sleep(20);
+    Date.now = () => clock;
+    const replay = await h.request(path, headers, "POST", {});
+    expect(replay.status).toBe(409);
+    expect(
+      h.db.sqlite.query("SELECT count(*) n FROM hosted_execution_grants").get(),
+    ).toEqual({ n: 1 });
+    expect(
+      h.db.sqlite
+        .query(
+          "SELECT count(*) n FROM audit_events WHERE action='hosted.execution_authorized'",
+        )
+        .get(),
+    ).toEqual({ n: 1 });
+  } finally {
+    Date.now = realNow;
+    h.close();
+  }
+});
+
+test("fresh grant election returns its committed reply after browser expiry within the batch", async () => {
+  const h = await fixture();
+  try {
+    const a = await h.login();
+    const linked = await h.linked(a);
+    h.db.sqlite.exec(
+      "CREATE TRIGGER expire_browser_after_grant AFTER INSERT ON hosted_execution_grants BEGIN UPDATE sessions SET created_at=0,expires_at=1 WHERE session_id=NEW.session_id; END",
+    );
+    const r = await h.request(
+      `/v1/tenants/${a.tenant}/cli-installations/${linked.installation_id}/execution-authorizations`,
+      { ...a.headers, "idempotency-key": crypto.randomUUID() },
+      "POST",
+      {},
+    );
+    expect(r.status).toBe(201);
+    const reply = (await r.json()) as { grant_id: string };
+    expect(
+      h.db.sqlite.query("SELECT grant_id FROM hosted_execution_grants").get(),
+    ).toEqual({ grant_id: reply.grant_id });
+    expect(
+      h.db.sqlite
+        .query(
+          "SELECT count(*) n FROM audit_events WHERE action='hosted.execution_authorized'",
+        )
+        .get(),
+    ).toEqual({ n: 1 });
+  } finally {
+    h.close();
+  }
+});
+
+test("execution grant election refuses a proposed credential already expired on the SQL clock", async () => {
+  const h = await fixture();
+  const realNow = Date.now;
+  try {
+    const a = await h.login();
+    const linked = await h.linked(a);
+    Date.now = () => realNow() - 3601000;
+    const r = await h.request(
+      `/v1/tenants/${a.tenant}/cli-installations/${linked.installation_id}/execution-authorizations`,
+      { ...a.headers, "idempotency-key": crypto.randomUUID() },
+      "POST",
+      {},
+    );
+    expect(r.status).toBe(409);
+    expect(
+      h.db.sqlite.query("SELECT count(*) n FROM hosted_execution_grants").get(),
+    ).toEqual({ n: 0 });
+    expect(
+      h.db.sqlite
+        .query(
+          "SELECT count(*) n FROM audit_events WHERE action='hosted.execution_authorized'",
+        )
+        .get(),
+    ).toEqual({ n: 0 });
+  } finally {
+    Date.now = realNow;
+    h.close();
+  }
+});
+
+test("same-key grant issuance race replays one fresh winner and refuses a revoked winner without phantom audit", async () => {
+  const h = await fixture();
+  try {
+    const a = await h.login();
+    const linked = await h.linked(a);
+    const path = `/v1/tenants/${a.tenant}/cli-installations/${linked.installation_id}/execution-authorizations`;
+    const headers = { ...a.headers, "idempotency-key": crypto.randomUUID() };
+    let arrivals = 0;
+    let release!: () => void;
+    const barrier = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    h.db.beforeBatch = async () => {
+      if (++arrivals === 2) {
+        h.db.beforeBatch = undefined;
+        release();
+      }
+      await barrier;
+    };
+    const responses = await Promise.all([
+      h.request(path, headers, "POST", {}),
+      h.request(path, headers, "POST", {}),
+    ]);
+    expect(arrivals).toBe(2);
+    expect(responses.map((r) => r.status).sort()).toEqual([200, 201]);
+    const replies = (await Promise.all(responses.map((r) => r.json()))) as {
+      grant_id: string;
+    }[];
+    expect(replies[0]).toEqual(replies[1]);
+    expect(
+      h.db.sqlite.query("SELECT count(*) n FROM hosted_execution_grants").get(),
+    ).toEqual({ n: 1 });
+    h.db.sqlite
+      .query("UPDATE hosted_execution_grants SET revoked_at=? WHERE grant_id=?")
+      .run(Date.now(), replies[0]!.grant_id);
+    expect((await h.request(path, headers, "POST", {})).status).toBe(409);
+    expect(
+      h.db.sqlite.query("SELECT count(*) n FROM hosted_execution_grants").get(),
+    ).toEqual({ n: 1 });
+    expect(
+      h.db.sqlite
+        .query(
+          "SELECT count(*) n FROM audit_events WHERE action='hosted.execution_authorized'",
+        )
+        .get(),
+    ).toEqual({ n: 1 });
+  } finally {
+    h.close();
+  }
+});

@@ -54,6 +54,17 @@ export const hostedSqlNow =
 // revocation (status), or authorization-window change all invalidate grants.
 const hostedLiveGrant = `g.revoked_at IS NULL AND g.expires_at>MAX(?,${hostedSqlNow}) AND i.status='active' AND i.organization_id=g.organization_id AND g.epoch=i.epoch AND g.user_id=i.user_id AND g.authorization_expires_at=i.authorization_expires_at AND g.authorization_expires_at>MAX(?,${hostedSqlNow}) AND EXISTS(SELECT 1 FROM users u JOIN memberships m USING(user_id) JOIN organizations o USING(organization_id) WHERE u.user_id=g.user_id AND m.organization_id=g.organization_id AND u.status='active' AND m.status='active' AND o.status='active')`;
 
+function currentBrowserGuard(ctx: Context, tenant: string) {
+  const guard = browserGuard(ctx, tenant, false);
+  return {
+    ...guard,
+    sql: guard.sql.replace(
+      "s.expires_at>?",
+      `s.expires_at>MAX(?,${hostedSqlNow})`,
+    ),
+  };
+}
+
 // Downstream single-batch admission/claim CAS must recheck the underlying
 // grant + CLI installation epoch/user/membership/org at mutation time. This
 // guard composes into conditional DML; it is never a preflight-only check.
@@ -144,10 +155,19 @@ async function issuanceReplay(
 ) {
   const k = key(ctx);
   const s = ctx.session!;
+  const guard = currentBrowserGuard(ctx, tenant);
   const row = await ctx.env.DB.prepare(
-    "SELECT result_ciphertext FROM hosted_execution_grants WHERE organization_id=? AND installation_id=? AND session_id=? AND idempotency_key=? AND revoked_at IS NULL AND expires_at>?",
+    `SELECT result_ciphertext FROM hosted_execution_grants WHERE organization_id=? AND installation_id=? AND user_id=? AND session_id=? AND idempotency_key=? AND revoked_at IS NULL AND expires_at>MAX(?,${hostedSqlNow}) AND ${guard.sql}`,
   )
-    .bind(tenant, installation, s.session_id, k, Date.now())
+    .bind(
+      tenant,
+      installation,
+      s.user_id,
+      s.session_id,
+      k,
+      Date.now(),
+      ...guard.args,
+    )
     .first<{ result_ciphertext: string }>();
   if (!row) return null;
   const reply = hostedExecutionCredentialReplySchema.parse(
@@ -195,7 +215,7 @@ async function authorize(ctx: Context, tenant: string, installation: string) {
     s.user_id,
     target.authorization_expires_at,
   );
-  const guard = browserGuard(ctx, tenant, false);
+  const guard = currentBrowserGuard(ctx, tenant);
   const cipher = await seal(ctx.env.AUTH_SECRET, JSON.stringify(issued.reply));
   // Same-window predicates: browser session, installation epoch/user/status,
   // and installation authorization window are all rechecked inside the batch
@@ -203,14 +223,14 @@ async function authorize(ctx: Context, tenant: string, installation: string) {
   // carries ON CONFLICT DO NOTHING on UNIQUE(installation, session, key): a
   // racing loser's write no-ops instead of throwing (D1 batches are atomic;
   // a throw would abort the whole batch AND escape as 503). The final SELECT
-  // then reads the winner's ciphertext for clean replay. The winner's own
-  // row decrypts to its credential (re-authorized below: revoked/rotated
-  // winners are rejected, never resurrected). The loser's phantom grant_id
+  // then reads the fresh election's ciphertext without repeating authority
+  // expiry during the batch. A racing loser must recheck current browser and
+  // grant authority before replay. The loser's phantom grant_id
   // never lands, so the conditional audit writes nothing for it — atomic
   // audit with no new resource.
   const result = await ctx.env.DB.batch([
     ctx.env.DB.prepare(
-      `INSERT INTO hosted_execution_grants SELECT ?,?,?,?,?,?,?,?,?,?,?,?,?,?,NULL WHERE ${guard.sql} AND EXISTS(SELECT 1 FROM cli_installations WHERE installation_id=? AND organization_id=? AND user_id=? AND status='active' AND epoch=? AND authorization_expires_at=?) ON CONFLICT(installation_id,session_id,idempotency_key) DO NOTHING`,
+      `INSERT INTO hosted_execution_grants SELECT ?,?,?,?,?,?,?,?,?,?,?,?,?,?,NULL WHERE ${guard.sql} AND ?>${hostedSqlNow} AND EXISTS(SELECT 1 FROM cli_installations WHERE installation_id=? AND organization_id=? AND user_id=? AND status='active' AND epoch=? AND authorization_expires_at=? AND authorization_expires_at>${hostedSqlNow}) ON CONFLICT(installation_id,session_id,idempotency_key) DO NOTHING`,
     ).bind(
       issued.reply.grant_id,
       issued.hash,
@@ -227,6 +247,7 @@ async function authorize(ctx: Context, tenant: string, installation: string) {
       issued.reply.expires_at,
       issued.reply.authorization_expires_at,
       ...guard.args,
+      issued.reply.expires_at,
       installation,
       tenant,
       s.user_id,
@@ -243,8 +264,15 @@ async function authorize(ctx: Context, tenant: string, installation: string) {
       [issued.reply.grant_id],
     ),
     ctx.env.DB.prepare(
-      `SELECT result_ciphertext FROM hosted_execution_grants WHERE organization_id=? AND installation_id=? AND session_id=? AND idempotency_key=? AND revoked_at IS NULL AND expires_at>? AND ${guard.sql}`,
-    ).bind(tenant, installation, s.session_id, k, Date.now(), ...guard.args),
+      "SELECT result_ciphertext FROM hosted_execution_grants WHERE grant_id=? AND organization_id=? AND installation_id=? AND user_id=? AND session_id=? AND idempotency_key=?",
+    ).bind(
+      issued.reply.grant_id,
+      tenant,
+      installation,
+      s.user_id,
+      s.session_id,
+      k,
+    ),
   ]);
   const saved = result.at(-1)?.results[0] as
     | { result_ciphertext: string }
@@ -261,20 +289,9 @@ async function authorize(ctx: Context, tenant: string, installation: string) {
   const value = hostedExecutionCredentialReplySchema.parse(
     JSON.parse(await open(ctx.env.AUTH_SECRET, saved.result_ciphertext)),
   );
-  // Never replay a subsequently revoked/rotated grant merely because the key matches.
-  await hostedAuth({
-    ...ctx,
-    request: new Request(ctx.request.url, {
-      headers: { authorization: `Bearer ${value.credential}` },
-    }),
-  });
-  // 201 for the issuer whose row landed; 200 replay when the ciphertext
-  // belongs to a racing winner (our insert no-op'd on the key conflict).
-  return json(
-    hostedExecutionCredentialReplySchema,
-    value,
-    value.grant_id === issued.reply.grant_id ? 201 : 200,
-  );
+  // This request's fresh grant row is the successful election witness.
+  // Replays use issuanceReplay's current browser and grant authority checks.
+  return json(hostedExecutionCredentialReplySchema, value, 201);
 }
 
 export async function revokeExecutionGrant(ctx: Context, p: HostedPrincipal) {

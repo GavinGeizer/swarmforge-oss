@@ -356,6 +356,7 @@ export async function hostedStatusRoute(ctx: Context) {
     await ctx.env.DB.prepare(
       `SELECT s.supervisor_id,s.worker_id,s.name,s.status,s.revoked_at,s.authorization_expires_at,w.status worker_status,w.epoch worker_epoch,w.authorization_expires_at worker_authorization_expires_at,s.authorizing_user_id admin_chain_user_id,
       EXISTS(SELECT 1 FROM users u JOIN memberships m ON m.user_id=u.user_id JOIN organizations o ON o.organization_id=m.organization_id WHERE u.user_id=s.authorizing_user_id AND u.status='active' AND m.organization_id=s.organization_id AND m.status='active' AND m.role IN ('owner','admin') AND o.status='active') admin_chain_active,
+      EXISTS(SELECT 1 FROM users u JOIN memberships m ON m.user_id=u.user_id JOIN organizations o ON o.organization_id=m.organization_id WHERE u.user_id=w.authorizing_user_id AND u.status='active' AND m.organization_id=w.organization_id AND m.status='active' AND m.role IN ('owner','admin') AND o.status='active') worker_admin_chain_active,
       (SELECT c.expires_at FROM hosted_supervisor_credentials c WHERE c.organization_id=s.organization_id AND c.supervisor_id=s.supervisor_id AND c.audience='hosted-supervisor' AND c.epoch=s.epoch AND c.scopes=? AND c.revoked_at IS NULL ORDER BY c.expires_at DESC LIMIT 1) credential_expires_at,
       (SELECT count(*) FROM hosted_supervisor_credentials c WHERE c.organization_id=s.organization_id AND c.supervisor_id=s.supervisor_id) credential_count,
       (SELECT a.action FROM audit_events a WHERE a.organization_id=s.organization_id AND (${observedPredicate}) ORDER BY a.at DESC,a.event_id DESC LIMIT 1) last_observed_action,
@@ -381,6 +382,7 @@ export async function hostedStatusRoute(ctx: Context) {
         worker_authorization_expires_at: number;
         admin_chain_user_id: string;
         admin_chain_active: number;
+        worker_admin_chain_active: number;
         credential_expires_at: number | null;
         credential_count: number;
         last_observed_action: string | null;
@@ -416,6 +418,7 @@ export async function hostedStatusRoute(ctx: Context) {
       cleanup_eligible,
       execution_eligible:
         cleanup_eligible &&
+        r.worker_admin_chain_active === 1 &&
         r.worker_status === "registered" &&
         r.worker_authorization_expires_at > now &&
         decision.allowed,

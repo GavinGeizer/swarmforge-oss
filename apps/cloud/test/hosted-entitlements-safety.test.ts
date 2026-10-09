@@ -264,3 +264,43 @@ test("legacy allowance alias checks period expiry at SQL execution rather than o
     h.close();
   }
 });
+
+test("explicit reserve helper rejects expired or future allowance periods at SQL execution time", async () => {
+  const h = await localFixture();
+  try {
+    const a = await h.login();
+    const p = await h.seedPolicy(a.tenant, policy);
+    const row = h.db.sqlite
+      .query("SELECT allowance_id FROM hosted_allowances")
+      .get() as { allowance_id: string };
+    const now = Date.now();
+    for (const [start, end, suppliedNow] of [
+      [now - 2000, now - 1000, now - 1500],
+      [now + 10000, now + 20000, now],
+    ] as const) {
+      h.db.sqlite
+        .query("UPDATE hosted_allowances SET period_start=?,period_end=?")
+        .run(start, end);
+      const result = await allowanceReserveStatement(h.context("/"), {
+        ...valid,
+        allowanceId: row.allowance_id,
+        tenant: a.tenant,
+        entitlementId: p.entitlement_id,
+        periodStart: start,
+        periodEnd: end,
+        expectedReserved: "0",
+        newReserved: "1000",
+        newConsumed: "0",
+        now: suppliedNow,
+      }).run();
+      expect(result.meta.changes).toBe(0);
+      expect(
+        h.db.sqlite
+          .query("SELECT reserved_quantity FROM hosted_allowances")
+          .get(),
+      ).toEqual({ reserved_quantity: "0" });
+    }
+  } finally {
+    h.close();
+  }
+});

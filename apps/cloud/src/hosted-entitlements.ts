@@ -378,7 +378,7 @@ export function allowanceReserveStatement(
   if (!Number.isSafeInteger(now)) throw new Error("invalid authority time");
   validateAllowanceCasOptions(o);
   return ctx.env.DB.prepare(
-    `UPDATE hosted_allowances SET reserved_quantity=?,consumed_quantity=? WHERE allowance_id=? AND organization_id=? AND entitlement_id=? AND resource=? AND unit=? AND resource_class=? AND period_start=? AND period_end=? AND reserved_quantity=? AND consumed_quantity=? AND EXISTS(SELECT 1 FROM hosted_entitlements e WHERE e.entitlement_id=hosted_allowances.entitlement_id AND e.organization_id=? AND e.revoked_at IS NULL AND e.valid_from<=MAX(?,${hostedSqlNow}) AND e.valid_until>MAX(?,${hostedSqlNow}))`,
+    `UPDATE hosted_allowances SET reserved_quantity=?,consumed_quantity=? WHERE allowance_id=? AND organization_id=? AND entitlement_id=? AND resource=? AND unit=? AND resource_class=? AND period_start=? AND period_end=? AND period_start<=MAX(?,${hostedSqlNow}) AND period_end>MAX(?,${hostedSqlNow}) AND reserved_quantity=? AND consumed_quantity=? AND EXISTS(SELECT 1 FROM hosted_entitlements e WHERE e.entitlement_id=hosted_allowances.entitlement_id AND e.organization_id=? AND e.revoked_at IS NULL AND e.valid_from<=MAX(?,${hostedSqlNow}) AND e.valid_until>MAX(?,${hostedSqlNow}))`,
   ).bind(
     o.newReserved,
     o.newConsumed,
@@ -390,6 +390,8 @@ export function allowanceReserveStatement(
     o.resourceClass,
     o.periodStart,
     o.periodEnd,
+    now,
+    now,
     o.expectedReserved,
     o.expectedConsumed,
     o.tenant,

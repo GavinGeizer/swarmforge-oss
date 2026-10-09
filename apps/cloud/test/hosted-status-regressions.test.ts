@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { type HostedStatus, hostedStatusRoute } from "../src/hosted-status.ts";
+import { supervisorRoute } from "../src/hosted-supervisors.ts";
 import { hostedSupervisorScopes } from "../src/hosted-types.ts";
 import { localFixture } from "./local-fixture.ts";
 
@@ -194,6 +195,46 @@ test("supervisor authority checks current epoch and admin authorizer; observatio
     h.db.sqlite.query("UPDATE memberships SET role='member'").run();
     const member = await status(h, a.tenant, a.headers);
     expect(member.supervisors[0]!.cleanup_eligible).toBe(false);
+  } finally {
+    h.close();
+  }
+});
+
+test("status denies execution when a different worker enroller loses authority while preserving supervisor cleanup", async () => {
+  const h = await localFixture({
+    handlers: [hostedStatusRoute, supervisorRoute],
+  });
+  try {
+    const a = await h.login();
+    const w = await h.enrolledWorker(a);
+    const b = await h.login(200);
+    const now = Date.now();
+    h.db.sqlite
+      .query("INSERT INTO memberships VALUES(?,?,'admin','active',?,?)")
+      .run(a.tenant, b.user, now, now);
+    await h.seedPolicy(a.tenant, {
+      capabilities: {
+        hosted_control_plane: true,
+        remote_worker_enrollment: true,
+        hosted_task_execution: true,
+      },
+      max_concurrent_workers: 4,
+      max_active_tasks: 8,
+      max_task_runtime: 10000,
+      maximum_resource_reservations: 8,
+      valid_for_ms: 3600000,
+    });
+    await h.registerSupervisor({ ...b, tenant: a.tenant }, w.worker_id);
+    const before = await status(h, a.tenant, b.headers);
+    expect(before.supervisors[0]!.execution_eligible).toBe(true);
+    h.db.sqlite
+      .query(
+        "UPDATE memberships SET role='member' WHERE organization_id=? AND user_id=?",
+      )
+      .run(a.tenant, a.user);
+    const current = await status(h, a.tenant, b.headers);
+    expect(current.supervisors[0]!.execution_eligible).toBe(false);
+    expect(current.supervisors[0]!.cleanup_eligible).toBe(true);
   } finally {
     h.close();
   }
