@@ -1,0 +1,6 @@
+$ cf workers types --mode local
+
+┌ Error
+│ listen EPERM: operation not permitted 127.0.0.1
+└
+error: script "types" exited with code 1

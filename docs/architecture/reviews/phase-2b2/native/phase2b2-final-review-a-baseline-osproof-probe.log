@@ -1,0 +1,5 @@
+{"claimLeaseRemaining":16534,"taskRemaining":106524}
+{"phase":"before_stall","pid":38,"procState":"S","leaseRemaining":16524}
+{"phase":"after_stall","pid":38,"procState":"Z","nonexecuting":true}
+{"completion":"cancelled","stopConfirmed":true,"journalRetained":true}
+{"leaseExpiresAt":1791589450062,"observedWall":1791589451066,"expiredCloudLease":true,"expiredLocalLease":true,"childAliveAfterExpiry":true,"childPid":38}

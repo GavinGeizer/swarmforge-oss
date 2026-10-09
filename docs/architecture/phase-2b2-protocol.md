@@ -152,3 +152,38 @@ runtime runs without inheriting provider/repository/model/cloud bearer credentia
 only fixed inert operations and finite deadlines are permitted. A runtime watchdog
 survives supervisor process failure or otherwise fails closed before lease expiry.
 No hosted imports or contact are added to default self-hosted startup.
+
+## Independent controlled-child lease watchdog
+
+The hosted Linux child enforces authority independently of its supervisor's event
+loop. Before spawn, the provider translates the validated ACK budget and fixed task
+deadline into shared Linux boot-time milliseconds from `/proc/uptime`, subtracting
+20ms conservatively. Only bounded numeric lease/task deadlines and duration enter
+the explicit child environment; no bearer, repository or provider secret is passed.
+The child adds 10ms to clock observations to account for the clock's 10ms resolution.
+Missing, malformed or expired initial authority refuses work, including delayed startup.
+Wall clocks and process-relative `performance.now`/Bun hrtime do not cross the boundary.
+
+Only a current validated server renewal may send an absolute lease deadline and the
+unchanged task deadline over the existing private stdin pipe. Frames are bounded to
+256 bytes. Receipt after the previous child lease expires cannot reopen execution;
+malformed, out-of-bounds, disconnected or expired authority stops the child. The full
+requested duration remains a separate timer. Parent silence/stall stops at the child
+lease; parent EOF also stops. Unreadable shared clock fails closed. This is an inert
+Linux runtime reliability boundary, not malicious same-UID isolation or a repository
+credential broker.
+
+The provider awaits the renewal write callback; the supervisor then rechecks current
+run, durable stop state and prior local authority before publishing the new deadline.
+Write errors never count as delivered renewal authority. Child lease expiry reports
+cancelled; durable PID/start identity remains available for actual OS stop proof and
+resource settlement. Unreaped zombies are present to `kill(pid,0)` but nonexecuting;
+trusted proof checks their captured boot/start identity before accepting that state.
+
+Server-side revocation denies new admission/claims/renewals at the current SQL guard.
+An already executing inert child learns cancellation/revocation through supervised
+renewal/status/stop handling or expires under its last finite authority; it cannot
+extend authority by parent silence. Normal server leases are 30 seconds, renewed by
+the supervisor before expiry with a conservative margin. A database/network outage
+retains uncertain capacity and cannot constitute stop proof. Existing entitlement
+expiry does not block emergency cleanup authorized by the surviving cleanup principal.

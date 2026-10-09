@@ -1,0 +1,3 @@
+{"parentBefore":{"boot":"485567.09","hrtime":"7226527","performance":7.238014}}
+{"child":{"boot":"485567.10","hrtime":"4890740","performance":4.901085}}
+{"parentAfter":{"boot":"485567.10","hrtime":"14847186","performance":14.848983},"childStatus":0}

@@ -81,3 +81,15 @@ root ancestors. Full suites, generated Worker types and immutable final review
 remain mandatory unfinished gates, not waived requirements. Native reviewer and
 runtime agents stopped after reporting an account usage limit. Original findings,
 corrections and verification limits are preserved. See [current summary](phase-2b2-summary.md).
+
+
+## Latest correction checkpoint
+
+Native integrated A/C reviews of f1d0526 found a high parent-only lease watchdog defect
+and a medium stale SQL-clock rotation replay. Corrections and independent narrow
+approvals are preserved. Runtime source1a2502a and replay source1a03be1 are integrated;
+full duration/parser semantics have six independently rerun anonymous-pipe component
+cases, while actual provider socket IPC remains restricted. A test fixture uniqueness
+failure was corrected using bounded real-clock waiting, with assertions retained.
+Final root697pass/85fail/2skip/1error; cloudSQLite87pass. Final third review and unrestricted
+infrastructure gates remain incomplete; no completion, merge or deployment is claimed.

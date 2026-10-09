@@ -1,0 +1,20 @@
+{"claimLeaseRemaining":19992,"taskRemaining":109980}
+{"phase":"before_stall","pid":37,"procState":"S","leaseRemaining":19980}
+37 |   const waitUntil=performance.now()+Math.max(0,a.lease_expires_at!-Date.now()+1000);
+38 |   while(performance.now()<waitUntil) {} // simulate supervisor event-loop stall; real child runs independently
+39 |   let alive=false;try{process.kill(mapping.child_pid!,0);alive=true;}catch{}
+40 |   let after:string|null=null;try{after=readFileSync(`/proc/${mapping.child_pid}/stat`,'utf8').split(') ')[1]!.split(' ')[0]!;}catch{}
+41 |   assert(Date.now()>a.lease_expires_at!);
+42 |   assert(after===null||after==='Z',`child still executing: ${after}`);
+       ^
+AssertionError: child still executing: S
+ generatedMessage: false,
+     actual: false,
+   expected: true,
+   operator: "==",
+       diff: "simple",
+       code: "ERR_ASSERTION"
+
+      at /tmp/phase2b2-final-review-a-frozen-baseline-osproof-probe.ts:42:3
+
+Bun v1.4.2 (Linux x64)

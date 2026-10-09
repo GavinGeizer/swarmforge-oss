@@ -1,0 +1,149 @@
+$ node --experimental-strip-types --test test/*.integration.ts && bun run test:sql
+✖ test/abuse.integration.ts (1072.649979ms)
+✖ test/additional-hostile.integration.ts (1115.528127ms)
+✖ test/auth.integration.ts (1076.007332ms)
+
+  #  /home/overlord/.nvm/versions/node/v24.19.0/bin/node[24]: void node::InternalCallbackScope::Close() at ../src/api/callback.cc:165
+  #  Assertion failed: (env_->execution_async_id()) == (0)
+
+----- Native stack trace -----
+
+ 1: 0x921e57 node::Assert(node::AssertionInfo const&) [/home/overlord/.nvm/versions/node/v24.19.0/bin/node]
+ 2: 0x7f97ee node::InternalCallbackScope::Close() [/home/overlord/.nvm/versions/node/v24.19.0/bin/node]
+ 3: 0x7f9821 node::InternalCallbackScope::~InternalCallbackScope() [/home/overlord/.nvm/versions/node/v24.19.0/bin/node]
+ 4: 0x9cc01d  [/home/overlord/.nvm/versions/node/v24.19.0/bin/node]
+ 5: 0x9ce75c node::PerIsolatePlatformData::FlushForegroundTasksInternal() [/home/overlord/.nvm/versions/node/v24.19.0/bin/node]
+ 6: 0x19e2283  [/home/overlord/.nvm/versions/node/v24.19.0/bin/node]
+ 7: 0x19f908a  [/home/overlord/.nvm/versions/node/v24.19.0/bin/node]
+ 8: 0x19e34b7 uv_run [/home/overlord/.nvm/versions/node/v24.19.0/bin/node]
+ 9: 0x7fd735 node::SpinEventLoopInternal(node::Environment*) [/home/overlord/.nvm/versions/node/v24.19.0/bin/node]
+10: 0x982f8a node::NodeMainInstance::Run() [/home/overlord/.nvm/versions/node/v24.19.0/bin/node]
+11: 0x8c12c5 node::Start(int, char**) [/home/overlord/.nvm/versions/node/v24.19.0/bin/node]
+12: 0x71f9aee29d90  [/lib/x86_64-linux-gnu/libc.so.6]
+13: 0x71f9aee29e40 __libc_start_main [/lib/x86_64-linux-gnu/libc.so.6]
+14: 0x7e5f4e _start [/home/overlord/.nvm/versions/node/v24.19.0/bin/node]
+✖ test/cli-runtime.integration.ts (4209.000946ms)
+✔ test/config.integration.ts (205.064084ms)
+✖ test/enrollment.integration.ts (849.632129ms)
+✖ test/hosted-admission.integration.ts (957.351406ms)
+✖ test/hosted-authority.integration.ts (958.642536ms)
+✖ test/hosted-cleanup-compatibility.integration.ts (1010.065019ms)
+✖ test/hosted-dispatch.integration.ts (1098.871222ms)
+✖ test/hosted-entitlements.integration.ts (1106.898395ms)
+✖ test/hosted-schema.integration.ts (1063.612446ms)
+✖ test/hosted-status.integration.ts (1061.731269ms)
+✖ test/hosted-supervisors.integration.ts (1144.01412ms)
+✖ test/linking.integration.ts (972.279442ms)
+✖ test/local-setup.integration.ts (1173.566855ms)
+✖ test/pairing-hostile.integration.ts (1012.676313ms)
+✖ test/preview-operations.integration.ts (289.786004ms)
+✔ test/provider.integration.ts (287.502904ms)
+✖ test/runtime.integration.ts (933.238519ms)
+
+  #  /home/overlord/.nvm/versions/node/v24.19.0/bin/node[129]: void node::InternalCallbackScope::Close() at ../src/api/callback.cc:165
+  #  Assertion failed: (env_->execution_async_id()) == (0)
+
+----- Native stack trace -----
+
+ 1: 0x921e57 node::Assert(node::AssertionInfo const&) [/home/overlord/.nvm/versions/node/v24.19.0/bin/node]
+ 2: 0x7f97ee node::InternalCallbackScope::Close() [/home/overlord/.nvm/versions/node/v24.19.0/bin/node]
+ 3: 0x7f9821 node::InternalCallbackScope::~InternalCallbackScope() [/home/overlord/.nvm/versions/node/v24.19.0/bin/node]
+ 4: 0x9cc01d  [/home/overlord/.nvm/versions/node/v24.19.0/bin/node]
+ 5: 0x9ce75c node::PerIsolatePlatformData::FlushForegroundTasksInternal() [/home/overlord/.nvm/versions/node/v24.19.0/bin/node]
+ 6: 0x19e2283  [/home/overlord/.nvm/versions/node/v24.19.0/bin/node]
+ 7: 0x19f908a  [/home/overlord/.nvm/versions/node/v24.19.0/bin/node]
+ 8: 0x19e34b7 uv_run [/home/overlord/.nvm/versions/node/v24.19.0/bin/node]
+ 9: 0x7fd735 node::SpinEventLoopInternal(node::Environment*) [/home/overlord/.nvm/versions/node/v24.19.0/bin/node]
+10: 0x982f8a node::NodeMainInstance::Run() [/home/overlord/.nvm/versions/node/v24.19.0/bin/node]
+11: 0x8c12c5 node::Start(int, char**) [/home/overlord/.nvm/versions/node/v24.19.0/bin/node]
+12: 0x7987bf429d90  [/lib/x86_64-linux-gnu/libc.so.6]
+13: 0x7987bf429e40 __libc_start_main [/lib/x86_64-linux-gnu/libc.so.6]
+14: 0x7e5f4e _start [/home/overlord/.nvm/versions/node/v24.19.0/bin/node]
+✖ test/worker-client.integration.ts (7572.208152ms)
+ℹ tests 21
+ℹ suites 0
+ℹ pass 2
+ℹ fail 19
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 7646.095363
+
+✖ failing tests:
+
+test at test/abuse.integration.ts:1:1
+✖ test/abuse.integration.ts (1072.649979ms)
+  'test failed'
+
+test at test/additional-hostile.integration.ts:1:1
+✖ test/additional-hostile.integration.ts (1115.528127ms)
+  'test failed'
+
+test at test/auth.integration.ts:1:1
+✖ test/auth.integration.ts (1076.007332ms)
+  'test failed'
+
+test at test/cli-runtime.integration.ts:1:1
+✖ test/cli-runtime.integration.ts (4209.000946ms)
+  'test failed'
+
+test at test/enrollment.integration.ts:1:1
+✖ test/enrollment.integration.ts (849.632129ms)
+  'test failed'
+
+test at test/hosted-admission.integration.ts:1:1
+✖ test/hosted-admission.integration.ts (957.351406ms)
+  'test failed'
+
+test at test/hosted-authority.integration.ts:1:1
+✖ test/hosted-authority.integration.ts (958.642536ms)
+  'test failed'
+
+test at test/hosted-cleanup-compatibility.integration.ts:1:1
+✖ test/hosted-cleanup-compatibility.integration.ts (1010.065019ms)
+  'test failed'
+
+test at test/hosted-dispatch.integration.ts:1:1
+✖ test/hosted-dispatch.integration.ts (1098.871222ms)
+  'test failed'
+
+test at test/hosted-entitlements.integration.ts:1:1
+✖ test/hosted-entitlements.integration.ts (1106.898395ms)
+  'test failed'
+
+test at test/hosted-schema.integration.ts:1:1
+✖ test/hosted-schema.integration.ts (1063.612446ms)
+  'test failed'
+
+test at test/hosted-status.integration.ts:1:1
+✖ test/hosted-status.integration.ts (1061.731269ms)
+  'test failed'
+
+test at test/hosted-supervisors.integration.ts:1:1
+✖ test/hosted-supervisors.integration.ts (1144.01412ms)
+  'test failed'
+
+test at test/linking.integration.ts:1:1
+✖ test/linking.integration.ts (972.279442ms)
+  'test failed'
+
+test at test/local-setup.integration.ts:1:1
+✖ test/local-setup.integration.ts (1173.566855ms)
+  'test failed'
+
+test at test/pairing-hostile.integration.ts:1:1
+✖ test/pairing-hostile.integration.ts (1012.676313ms)
+  'test failed'
+
+test at test/preview-operations.integration.ts:1:1
+✖ test/preview-operations.integration.ts (289.786004ms)
+  'test failed'
+
+test at test/runtime.integration.ts:1:1
+✖ test/runtime.integration.ts (933.238519ms)
+  'test failed'
+
+test at test/worker-client.integration.ts:1:1
+✖ test/worker-client.integration.ts (7572.208152ms)
+  'test failed'
+error: script "test" exited with code 1

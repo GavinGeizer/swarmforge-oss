@@ -1,0 +1,2 @@
+$ tsc --noEmit && biome check src test scripts cloudflare.config.ts wrangler.config.ts
+Checked 70 files in 47ms. No fixes applied.

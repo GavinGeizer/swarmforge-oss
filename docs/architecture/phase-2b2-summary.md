@@ -1,7 +1,8 @@
 # Phase 2B.2 implementation and verification checkpoint
 
-**Status: changes requested; Phase 2B.2 acceptance is not complete.** A high runtime
-lease-watchdog defect is under correction following the resumed independent review. Final
+**Status: corrected candidate; Phase 2B.2 acceptance is not complete.** The resumed
+review found a high runtime watchdog defect and a medium rotation replay defect;
+corrections and remaining qualification limits are recorded below. Final
 independent integrated reviews and unrestricted infrastructure verification are
 outstanding. Untrusted customer execution remains disabled. No production deployment,
 master merge, Stripe, managed inference or production provisioning occurred.
@@ -287,3 +288,95 @@ ancestors. A further minimal IPC probe confirms nonempty parent pipe writes repo
 EPERM and deliver no bytes; this creates an additional real renewable-child test gap.
 IPC errors must fail closed. No authority, credential, helper or assertion is weakened
 to accommodate these restrictions.
+
+
+## Watchdog correction integration
+
+Runtime correction `1a2502a` (integration `7c0f147`) makes lease expiry independent
+of a stalled supervisor. The child receives validated initial numeric boot-clock
+deadlines fixed before spawn, checks startup delay/current authority, and accepts
+only bounded renewed absolute authority through its private pipe. Parent EOF, invalid
+clock/input and expiry fail closed. The child retains its full separate task duration;
+expiry reports cancelled, with the journal retained until OS stop confirmation.
+Provider writes await delivery callbacks; a post-write stop/expiry race cannot publish
+new parent authority. See the expanded [protocol](phase-2b2-protocol.md).
+
+A fixture-only follow-up `f24b4a8` (integration `5cea3ef`) supplies required initial
+authority to the existing direct compiled-child test. Its completion/embedded-binary
+assertions remain unchanged and pass. A missing-authority fixture is a real protocol
+fixture defect, not an environment failure; its original failure is preserved.
+The lead also found and corrected a positive-test renewal frame that exceeded its
+immutable deadline; valid frames now clamp to that deadline, matching the production
+provider, while the full 31-second/zero-exit assertions remain intact.
+
+The dedicated author's final production-code full run before the fixture follow-up
+reported 693 passed, 86 failed, two existing skips and one error. Successful renewable
+31-second execution and malformed/buffered renewal IPC tests remain unqualified under
+nonempty pipe-write EPERM. Genuine child-live/stalled-parent expiry, startup refusal,
+initial-authority validation, ordinary completion and parent EOF tests exercise real
+subprocesses; they do not establish successful renewal delivery on a deployable host.
+A final integrated root run after both corrections and the fixture follow-up is being
+recorded separately. Final full-suite failure counts supersede earlier checkpoints.
+
+
+## Independent correction verification and additional component evidence
+
+Reviewer A independently approved the narrow A-H1 correction at exact `1a2502a`.
+A frozen archive of original `f1d0526` showed the child still executing (`S`) after
+lease expiry. Corrected production Worker/client/child code showed `R` before the
+stall and a nonexecuting zombie (`Z`) afterward, cancelled completion, retained
+journal identity and trusted OS stop confirmation. Earlier `kill(pid,0)`-only
+observations were explicitly corrected: presence alone does not distinguish a zombie
+from executing work. An accidental moving-checkout baseline attempt is retained and
+excluded from baseline RED evidence. Original reports were not overwritten.
+
+A separate permitted anonymous-pipe harness validates the unchanged child parser
+at pinned `f24b4a8`, with source hashes verified. Six real-subprocess cases pass:
+full 31-second work with 62 valid renewals, malformed/expired/oversized rejection,
+late closed-channel refusal and buffered late frames unable to reopen authority.
+Reviewer A independently reran all six cases; the full consumer exit occurred at
+31,027.269ms. This tests the child parser over an actual anonymous OS pipe. The
+production provider uses a socket-backed subprocess stdin; its writes remain EPERM.
+Those original tests remain failed, and the full production supervisor/client/provider
+renewal path is not qualified by the anonymous-pipe component result.
+
+The final integrated root run also exposed a real test-fixture defect: two manually
+seeded allowance periods could share one millisecond and violate their unique key.
+The fixture now waits for a distinct actual clock tick with a bounded retry; no
+quota/cleanup assertion, uniqueness constraint or production behavior was changed.
+All 28 dispatch tests and cloud checks pass after that correction. Its original full
+run UNIQUE failure is preserved rather than attributed to the environment.
+
+Production-source equivalence was inspected: current `src` matches reviewed watchdog
+`1a2502a`, and `hosted-supervisors.ts` matches independently approved `1a03be1`.
+Remaining gates include the third independent concurrency/recovery review, final
+corrected security/integrated signoff, unrestricted socket IPC/TCP/D1, privately owned
+credential/journal recovery, full green suites and edge resource qualification.
+
+
+## Latest final integrated verification checkpoint
+
+After both production corrections, the compiled-child fixture update and the real-clock
+allowance fixture correction, the complete root command finished with **697 passed,
+85 failed, two existing skips, one error**, 3,989 assertions across 59 files, 147.15s.
+The complete complementary cloud SQLite command passed **87 tests**, zero failures,
+322 assertions across ten files. Root TypeScript/Biome passed 133 files and cloud
+TypeScript/Biome passed 70 files. All failure names/traces are preserved; they are
+not certified as exclusively environmental. The prior 696/86 root result included
+the now-corrected allowance UNIQUE fixture failure and remains preserved separately.
+
+The unmodified full cloud infrastructure command still failed with two file-level
+passes and 19 file-level failures, zero skips. Worker generated types still failed
+socket initialization. Local `cf build` printed success alongside denied Docker and
+Wrangler logging access, so it does not qualify infrastructure build readiness.
+The final code's Linux executable/archive build and package verification are recorded
+in the durable handoff after the final feature commit. No remote publication, master
+merge or deployment occurred. Original and corrected worker branches are retained
+in the Git bundle, including the pinned commits needed to rerun the parser harness.
+
+The high child-stall and medium rotation replay findings have independent narrow
+correction approvals. Phase acceptance still requires the remaining third independent
+review and final integrated signoff, actual provider renewal transport, unrestricted
+D1/TCP/protected durable storage, full green suites and operational edge qualification.
+The automated content-filter interruptions are recorded as incomplete reviews, not
+approval. Customer/untrusted execution remains structurally disabled.

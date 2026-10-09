@@ -1,0 +1,41 @@
+$ cf build --mode local
+├  Build
+│  Delegating to Wrangler
+[31m✘ [41;31m[[41;97mERROR[41;31m][0m [1mError: listen EPERM: operation not permitted 127.0.0.1[0m
+
+      at Server.setupListenHandle [as _listen2] (node:net:2145:21)
+      at listenInCluster (node:net:2224:12)
+      at node:net:2448:7
+      at process.processTicksAndRejections (node:internal/process/task_queues:90:21) {
+    code: 'EPERM',
+    errno: -1,
+    syscall: 'listen',
+    address: '127.0.0.1'
+  }
+
+
+[31m✘ [41;31m[[41;97mERROR[41;31m][0m [1mFailed to write to log file Error: EROFS: read-only file system, open '/home/overlord/.config/.wrangler/logs/wrangler-2026-10-09_23-42-45_576.log'[0m
+
+      at async open (node:internal/fs/promises:697:25)
+      at async writeFile (node:internal/fs/promises:1317:14)
+      at async /home/overlord/swarmforge/apps/cloud/node_modules/wrangler/wrangler-dist/cli.js:65089:7
+      at async Mutex.runWith (/home/overlord/swarmforge/apps/cloud/node_modules/miniflare/dist/src/index.js:70213:16)
+      at async appendToDebugLogFile (/home/overlord/swarmforge/apps/cloud/node_modules/wrangler/wrangler-dist/cli.js:65086:3) {
+    errno: -30,
+    code: 'EROFS',
+    syscall: 'open',
+    path: '/home/overlord/.config/.wrangler/logs/wrangler-2026-10-09_23-42-45_576.log'
+  }
+
+
+[31m✘ [41;31m[[41;97mERROR[41;31m][0m [1mWould have written: [0m
+
+  --- 2026-10-09T23:42:45.785Z debug
+  🪵  Writing logs to "/home/overlord/.config/.wrangler/logs/wrangler-2026-10-09_23-42-45_576.log"
+  ---
+  
+
+
+permission denied while trying to connect to the docker API at unix:///var/run/docker.sock
+🪵  Logs were written to "/home/overlord/.config/.wrangler/logs/wrangler-2026-10-09_23-42-45_576.log"
+◆  Build complete
