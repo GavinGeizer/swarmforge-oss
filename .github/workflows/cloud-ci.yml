@@ -1,7 +1,7 @@
 name: cloud-api-ci
 on:
   push:
-    branches: [master, phase2a-cloud-foundation, phase2b1-cloud-linking]
+    branches: [master, phase2a-cloud-foundation, phase2b1-cloud-linking, phase2b2-hosted-dispatch]
   pull_request:
 permissions:
   contents: read
