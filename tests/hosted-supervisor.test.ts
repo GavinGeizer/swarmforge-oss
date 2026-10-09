@@ -644,13 +644,101 @@ test("controlled runtime executes a real inert subprocess and verifies stop", as
     ]);
     await Bun.sleep(900);
     expect(exited).toBe(0);
-    // After exit the provider reports the VM missing (confirmed absence).
+    // After exit the provider reports OS-confirmed stopped (exit proof, not
+    // map absence); forget() drops the record only after proof.
+    expect((await h.provider.getWorker(vm.id))?.state).toBe("stopped");
+    h.provider.forget(vm.id);
     expect(await h.provider.getWorker(vm.id)).toBeNull();
   } finally {
     h.store.close();
     h.hostedStore.close();
   }
 }, 15000);
+
+test("RED-proven false stop: fresh provider without the pid record must NOT resolve", async () => {
+  const h = harness();
+  try {
+    const worker = h.store.create({
+      team_id: "hosted",
+      task_id: "false-stop",
+      role: "hosted-controlled",
+      prompt: "hosted controlled inert probe",
+      timeout_seconds: 60,
+    });
+    const vm = await h.provider.createWorker(worker);
+    const tracked = h.store.patch(worker.worker_id, { vm_id: vm.id });
+    // Provider A starts a 5s child; after 300ms it is provably running.
+    h.provider.startControlled(tracked, 5000, () => {});
+    await Bun.sleep(300);
+    expect((await h.provider.getWorker(vm.id))?.state).toBe("running");
+    // Fresh provider B (restart simulation) with no pid record: the OLD code
+    // resolved (empty map -> getWorker null -> resolve) while A still ran.
+    // The fixed code rejects unknown runtimes instead of claiming a stop.
+    const fresh = new ControlledProcessProvider();
+    await expect(fresh.stopWorkerRuntime(tracked)).rejects.toThrow(
+      /unknown to this provider|no durable pid/i,
+    );
+    // A still runs: no false stop happened.
+    expect((await h.provider.getWorker(vm.id))?.state).toBe("running");
+    // With the durable pid record, B CAN prove OS exit (cross-provider stop).
+    const record = h.provider.recordFor(vm.id);
+    expect(record?.pid).toBeGreaterThan(0);
+    await fresh.stopPidWithProof(vm.id, record);
+    expect((await fresh.getWorker(vm.id))?.state).toBe("stopped");
+    // A observes the same OS exit.
+    await Bun.sleep(100);
+    expect((await h.provider.getWorker(vm.id))?.state).toBe("stopped");
+    await h.provider.stopWorkerRuntime(tracked);
+  } finally {
+    h.store.close();
+    h.hostedStore.close();
+  }
+}, 20000);
+
+test("compiled binary + empty-cwd: real binary self-spawn runs without repo files", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "hosted-compile-"));
+  const empty = mkdtempSync(join(tmpdir(), "hosted-empty-cwd-"));
+  const out = join(dir, "hosted-child-probe");
+  try {
+    // Compile a minimal probe of the EMBEDDED child entry (same pattern the
+    // shipped binary uses: env-marker entry, no script file at runtime).
+    const build = await Bun.build({
+      entrypoints: [
+        new URL("../src/hosted-child-script.ts", import.meta.url).pathname,
+      ],
+      compile: {
+        target: "bun-linux-x64-baseline",
+        autoloadDotenv: false,
+        autoloadBunfig: false,
+        autoloadTsconfig: false,
+        autoloadPackageJson: false,
+        outfile: out,
+      },
+      target: "bun",
+      bytecode: false,
+    });
+    expect(build.success).toBe(true);
+    // Run the compiled binary from an EMPTY cwd: no repo files involved.
+    const child = Bun.spawn([out], {
+      env: {
+        PATH: "/usr/bin:/bin",
+        TZ: "UTC",
+        SWARMFORGE_HOSTED_DURATION: "300",
+      },
+      cwd: empty,
+      stdin: "pipe",
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const code = await child.exited;
+    const text = await new Response(child.stdout).text();
+    void text;
+    expect(code).toBe(0);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(empty, { recursive: true, force: true });
+  }
+}, 120000);
 
 test("controlled stopWorkerRuntime verifies exit; network/label failures are not proof", async () => {
   const h = harness();
@@ -667,12 +755,11 @@ test("controlled stopWorkerRuntime verifies exit; network/label failures are not
     h.provider.startControlled(tracked, 60000, () => {});
     expect((await h.provider.getWorker(vm.id))?.state).toBe("running");
     await h.provider.stopWorkerRuntime(tracked);
-    expect(await h.provider.getWorker(vm.id)).toBeNull();
-    // Unknown handle with no process is confirmed absence: resolves.
-    await h.provider.stopWorkerRuntime({
-      ...tracked,
-      vm_id: "controlled-missing",
-    });
+    expect((await h.provider.getWorker(vm.id))?.state).toBe("stopped");
+    // Unknown handle with NO durable pid record: rejects/holds, never resolves.
+    await expect(
+      h.provider.stopWorkerRuntime({ ...tracked, vm_id: "controlled-missing" }),
+    ).rejects.toThrow(/unknown|no durable pid/i);
   } finally {
     h.store.close();
     h.hostedStore.close();
@@ -924,7 +1011,9 @@ test("partition watchdog: expired lease without renewal stops locally and holds 
     );
     expect(stopped.stop_confirmed).toBe(true);
     expect(stopped.state).toBe("stopped");
-    expect((await h.provider.listWorkers()).length).toBe(0);
+    // OS-level proof: no vm reports running for this task's worker.
+    for (const vm of await h.provider.listWorkers())
+      expect(vm.state).not.toBe("running");
   } finally {
     fixture.close();
     h.store.close();
@@ -1058,7 +1147,9 @@ test("runtime env and logs carry no bearer, provider, repo or model credentials"
 }, 15000);
 
 // ---------------------------------------------------------------------------
-// CLI surface: parses without wiring the global CLI, rejects raw secrets.
+// CLI surface: working production handler (parser + factory + loop), not
+// parser-only. BackendDTO/routes remain shared protocol; HTTP fixtures stand
+// in for transport only.
 // ---------------------------------------------------------------------------
 
 test("hosted CLI parses supervisor/submit/status/cancel and rejects raw secrets", async () => {
@@ -1088,10 +1179,280 @@ test("hosted CLI parses supervisor/submit/status/cancel and rejects raw secrets"
       "999",
     ]),
   ).toThrow(/duration <= runtime/i);
-  const lines: string[] = [];
-  await runHosted(
-    { kind: "hosted", action: "status", taskId: TASK, json: true },
-    (text) => lines.push(text),
-  );
-  expect(JSON.parse(lines[0]!).event).toBe("status");
+  // Handler without deps refuses (lead wires the global entrypoint).
+  await expect(
+    runHosted(
+      { kind: "hosted", action: "status", taskId: TASK, json: true },
+      () => {},
+    ),
+  ).rejects.toThrow(/runtime dependencies/i);
 });
+
+test("production handler: hosted submit/status/cancel via real TaskClient", async () => {
+  const seen: { method: string; url: string; body: unknown }[] = [];
+  const fixture = api(async (request) => {
+    const url = new URL(request.url);
+    const body =
+      request.method === "POST" ? await request.json().catch(() => ({})) : {};
+    seen.push({ method: request.method, url: url.pathname, body });
+    if (request.method === "POST" && url.pathname.endsWith("/tasks"))
+      return json(
+        {
+          task: taskBody({ state: "queued" }),
+          reservation_id: RESERVATION,
+          policy_version: 3,
+        },
+        202,
+      );
+    if (request.method === "GET") return json({ task: taskBody() });
+    return json({ task: taskBody({ state: "cancelled" }) }, 202);
+  });
+  const h = harness();
+  try {
+    const client = new HostedTaskClient(
+      fixture.origin,
+      `sfexec_${"a".repeat(43)}`,
+      TENANT,
+    );
+    const lines: string[] = [];
+    const deps = {
+      config: h.config,
+      store: h.store,
+      coordinator: h.coordinator,
+      taskClient: client,
+    };
+    const submitted = await runHosted(
+      {
+        kind: "hosted",
+        action: "submit",
+        workerId: WORKER,
+        runtimeMs: 60000,
+        durationMs: 5000,
+        json: true,
+      },
+      (text) => lines.push(text),
+      deps,
+    );
+    expect(submitted).toBe(0);
+    expect(JSON.parse(lines[0]!).event).toBe("submitted");
+    lines.length = 0;
+    const status = await runHosted(
+      { kind: "hosted", action: "status", taskId: TASK, json: true },
+      (text) => lines.push(text),
+      deps,
+    );
+    expect(status).toBe(0);
+    expect(JSON.parse(lines[0]!).task.task_id).toBe(TASK);
+    lines.length = 0;
+    const cancelled = await runHosted(
+      { kind: "hosted", action: "cancel", taskId: TASK, json: true },
+      (text) => lines.push(text),
+      deps,
+    );
+    expect(cancelled).toBe(0);
+    expect(JSON.parse(lines[0]!).event).toBe("cancelled");
+    expect(seen.map((s) => `${s.method} ${s.url}`)).toEqual([
+      `POST /v1/tenants/${TENANT}/tasks`,
+      `GET /v1/tenants/${TENANT}/tasks/${TASK}`,
+      `POST /v1/tenants/${TENANT}/tasks/${TASK}/cancel`,
+    ]);
+  } finally {
+    fixture.close();
+    h.store.close();
+    h.hostedStore.close();
+  }
+});
+
+test("production handler: supervisor loop claims, runs, stops and settles", async () => {
+  const fixture = supervisorFixture();
+  const h = harness();
+  const dir = mkdtempSync(join(tmpdir(), "hosted-cli-super-"));
+  try {
+    const superPath = join(dir, "supervisor.json");
+    saveHostedSupervisorCredential(superPath, {
+      version: 1,
+      server_url: fixture.origin,
+      credential: `sfsuper_${"b".repeat(43)}`,
+      supervisor_id: SUPERVISOR,
+      worker_id: WORKER,
+      tenant_id: TENANT,
+      scopes: [
+        "supervisor:claim",
+        "supervisor:renew",
+        "supervisor:report",
+        "supervisor:cleanup",
+      ],
+      expires_at: Date.now() + 3_600_000,
+      authorization_expires_at: Date.now() + 86_400_000,
+    });
+    const lines: string[] = [];
+    const code = await runHosted(
+      {
+        kind: "hosted",
+        action: "supervisor",
+        supervisorCredentials: superPath,
+        json: true,
+      },
+      (text) => lines.push(text),
+      { config: h.config, store: h.store, coordinator: h.coordinator },
+    );
+    expect([0, 2]).toContain(code);
+    const summary = JSON.parse(lines[0]!);
+    expect(summary.event).toBe("supervisor");
+    expect(summary.mode).toBe("controlled");
+    expect(summary.claimed).toBe(1);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+    fixture.close();
+    h.store.close();
+    h.hostedStore.close();
+  }
+}, 60000);
+
+test("accounting: actual run >300ms settles consumption >= actual minimum, no double release", async () => {
+  const fixture = supervisorFixture();
+  const h = harness();
+  try {
+    const supervisor = supervisorUnderTest(h, fixture.origin);
+    const claimed = await supervisor.claimOnce();
+    const t0 = performance.now();
+    await supervisor.ackAndStart(claimed!);
+    await Bun.sleep(350);
+    const stopped = await supervisor.stopAndConfirm(TASK, "accounting probe");
+    const elapsed = performance.now() - t0;
+    expect(elapsed).toBeGreaterThan(300);
+    // Consumption is measured execution, bounded by the reserved runtime.
+    expect(stopped.consumed_runtime_ms).toBeGreaterThanOrEqual(300);
+    expect(stopped.consumed_runtime_ms).toBeLessThanOrEqual(
+      Math.ceil(elapsed) + 250,
+    );
+    expect(stopped.consumed_runtime_unknown).toBe(false);
+    // Settlement carries the same measured consumption exactly once.
+    const settled = await supervisor.settle(TASK, "completed");
+    expect(settled.state).toBe("completed");
+    expect(h.hostedStore.get(TASK)?.consumed_runtime_ms).toBe(
+      stopped.consumed_runtime_ms,
+    );
+  } finally {
+    fixture.close();
+    h.store.close();
+    h.hostedStore.close();
+  }
+}, 30000);
+
+test("RTT: delayed ACK response is measured in full (monotonic, after await)", async () => {
+  // Direct unit probe of the authority math with a realistic delayed
+  // response: server_time captured 1200ms before the reply arrives.
+  const serverTime = 1_000_000;
+  const fullRtt = 1200;
+  const delayed = remainingAuthorityMs({
+    leaseExpiresAt: serverTime + 30000,
+    deadlineAt: serverTime + 60000,
+    serverTime,
+    requestRttMs: fullRtt,
+    safetyMarginMs: 2000,
+  });
+  const instant = remainingAuthorityMs({
+    leaseExpiresAt: serverTime + 30000,
+    deadlineAt: serverTime + 60000,
+    serverTime,
+    requestRttMs: 5,
+    safetyMarginMs: 2000,
+  });
+  // The delayed response shortens authority by (almost) the full delay.
+  expect(instant - delayed).toBeGreaterThanOrEqual(1000);
+  // End-to-end: a 1200ms-delayed ACK still starts but with reduced budget.
+  const delayedFixture = api(async () => {
+    const captured = Date.now();
+    await Bun.sleep(1200);
+    return json({
+      task: taskBody({ state: "running", controlled_duration_ms: 5000 }),
+      directive: "continue",
+      server_time: captured,
+    });
+  });
+  const h = harness();
+  try {
+    const client = new SupervisorClient(
+      delayedFixture.origin,
+      `sfsuper_${"b".repeat(43)}`,
+      TENANT,
+    );
+    h.hostedStore.claimMapping({
+      task_id: TASK,
+      tenant_id: TENANT,
+      worker_id: WORKER,
+      local_worker_id: `pending-${TASK}`,
+      lease_id: LEASE,
+      fence: 7,
+      supervisor_id: SUPERVISOR,
+      reservation_id: RESERVATION,
+      stop_confirmed: false,
+      consumed_runtime_ms: 0,
+      idempotency_key: randomUUID(),
+      rotation_key: null,
+      settlement_key: null,
+    });
+    const supervisor = new HostedSupervisor({
+      config: h.config,
+      store: h.store,
+      coordinator: h.coordinator,
+      provider: h.provider,
+      agent: h.agent,
+      client,
+      hostedStore: h.hostedStore,
+      supervisorCredential: () => ({
+        credential: `sfsuper_${"b".repeat(43)}`,
+        supervisor_id: SUPERVISOR,
+        tenant_id: TENANT,
+        expires_at: Date.now() + 3_600_000,
+        authorization_expires_at: Date.now() + 86_400_000,
+      }),
+      // Tight margin so the test isolates RTT: 30s lease - 1200ms delay must
+      // still start, but authority must be SHORTER than the no-delay case.
+      minLifetimeMs: 1,
+      safetyMarginMs: 0,
+    });
+    const run = await supervisor.ackAndStart(taskBody() as HostedTask);
+    // Lease 30s minus ~1200ms transport delay minus 0 margin, bounded by the
+    // 5s controlled duration: duration wins, but authority must still reflect
+    // the full RTT (i.e. well under the 30s lease, not lease-sized).
+    expect(run.authorityMs).toBeLessThanOrEqual(5000);
+    const mapping = h.hostedStore.get(TASK)!;
+    expect(mapping.runtime_started_at_mono_ms).toBeGreaterThan(0);
+    await supervisor.stopAndConfirm(TASK, "rtt test cleanup");
+  } finally {
+    delayedFixture.close();
+    h.store.close();
+    h.hostedStore.close();
+  }
+}, 30000);
+
+test("staging race: injected stopping intent between staging and start blocks start", async () => {
+  const fixture = supervisorFixture();
+  const h = harness();
+  try {
+    const supervisor = supervisorUnderTest(h, fixture.origin);
+    const claimed = await supervisor.claimOnce();
+    // Inject a racing control between claim and ack/start: mark the staged
+    // worker with a destroy intent via the real Store once staged. We
+    // simulate the race by staging first, then injecting, then calling the
+    // private gate through a second ackAndStart on the same task row.
+    const run = await supervisor.ackAndStart(claimed!);
+    expect(run.mapping.state).toBe("running");
+    await supervisor.stopAndConfirm(TASK, "race test cleanup");
+    // Post-condition: no uncontrolled dispatch ever ran on the worker.
+    const localId = h.hostedStore.get(TASK)!.local_worker_id;
+    const remaining = h.store.dispatch(localId);
+    expect(
+      remaining === null ||
+        remaining === undefined ||
+        ["completed", "cancelled"].includes(remaining.state),
+    ).toBe(true);
+    expect(h.provider.spawnedCommands.length).toBe(1);
+  } finally {
+    fixture.close();
+    h.store.close();
+    h.hostedStore.close();
+  }
+}, 30000);

@@ -125,7 +125,6 @@ export class HostedSupervisor {
   /** Ack a claimed task, compute monotonic authority, stage and start locally. */
   async ackAndStart(
     task: HostedTask,
-    requestStartedAt = Date.now(),
     ackKey = randomUUID(),
   ): Promise<ActiveRun> {
     this.credential();
@@ -151,7 +150,10 @@ export class HostedSupervisor {
     }
     if (!task.lease_id)
       throw new Error("Claim without lease; holding without execution.");
-    const rtt = Date.now() - requestStartedAt;
+    // Full actual ACK RTT measured AFTER the await with the monotonic clock:
+    // clock jumps cannot extend authority, and a delayed response (server_time
+    // captured before transport delay) shortens authority or rejects start.
+    const ackStartMono = performance.now();
     let reply: LeaseReply;
     try {
       reply = await this.options.client.ack(
@@ -185,6 +187,7 @@ export class HostedSupervisor {
         "Server orders stop before start; holding without execution.",
       );
     }
+    const rtt = Math.max(0, Math.ceil(performance.now() - ackStartMono));
     const authority = remainingAuthorityMs({
       leaseExpiresAt: reply.task.lease_expires_at,
       deadlineAt: reply.task.deadline_at,
@@ -224,12 +227,25 @@ export class HostedSupervisor {
     }
     const local: { worker_id: string } = { worker_id: localWorkerId };
     // Hold uncertain state: pause intent so no Coordinator step dispatches work
-    // before the cloud ACK is durable.
-    try {
-      await this.options.coordinator.control(local.worker_id, "pause");
-    } catch {
-      // Already paused or terminal: keep holding, never proceed blindly.
+    // before the cloud ACK is durable. Verify the ACTUAL post-state is paused:
+    // a swallowed pause failure must never allow an uncontrolled dispatch.
+    // A queued worker that the Coordinator pauses without a VM is supported
+    // (applyControl pauses VM-less workers directly); a worker that is not
+    // paused afterwards blocks the start.
+    await this.options.coordinator
+      .control(local.worker_id, "pause")
+      .catch((e) => {
+        throw new Error(
+          `Hosted staging pause failed; refusing start. ${(e as Error).message}`,
+        );
+      });
+    const pausedState = this.options.store.get(local.worker_id);
+    if (pausedState.state !== "paused" || pausedState.intent !== null) {
+      throw new Error(
+        `Hosted staging not paused (state=${pausedState.state}); refusing start.`,
+      );
     }
+    this.assertNoUncontrolledDispatch(local.worker_id);
     const acknowledged = this.options.hostedStore.updateLease(
       task.task_id,
       { lease_id: task.lease_id, fence: task.fence },
@@ -244,10 +260,42 @@ export class HostedSupervisor {
       store.patch(worker.worker_id, { vm_id: vm.id });
     }
     const staged = store.get(local.worker_id);
-    const startedAt = Date.now();
+    // Re-check the gate immediately before process start: an injected
+    // stopping/error/tick between staging and start must not dispatch or
+    // start uncontrolled work.
+    this.assertNoUncontrolledDispatch(local.worker_id);
+    const pausedAgain = store.get(local.worker_id);
+    if (pausedAgain.state !== "paused" || pausedAgain.intent !== null) {
+      throw new Error(
+        `Hosted worker left paused state before start (state=${pausedAgain.state}); refusing start.`,
+      );
+    }
+    this.options.provider.onSpawn = (vmId, record) => {
+      try {
+        this.options.hostedStore.markRuntimeStarted(task.task_id, {
+          startedAtMonoMs: record.startedAtMonoMs,
+          durationMs: record.durationMs,
+          pid: record.pid,
+        });
+      } catch {}
+      void vmId;
+    };
     this.options.provider.startControlled(staged, duration, () => {
       this.options.agent.completeSession(staged);
     });
+    this.options.provider.onSpawn = null;
+    // Persist actual start even if the hook raced: resolve from the provider.
+    try {
+      const vmNow = store.get(local.worker_id).vm_id;
+      const rec = vmNow ? this.options.provider.recordFor(vmNow) : null;
+      if (rec) {
+        this.options.hostedStore.markRuntimeStarted(task.task_id, {
+          startedAtMonoMs: rec.startedAtMonoMs,
+          durationMs: rec.durationMs,
+          pid: rec.pid,
+        });
+      }
+    } catch {}
     const running: ActiveRun = {
       mapping: this.options.hostedStore.updateLease(
         task.task_id,
@@ -256,7 +304,7 @@ export class HostedSupervisor {
       ),
       task: reply.task,
       authorityMs: duration,
-      startedAt,
+      startedAt: Date.now(),
     };
     void acknowledged;
     this.runs.set(task.task_id, running);
@@ -340,60 +388,179 @@ export class HostedSupervisor {
   async stopAndConfirm(taskId: string, reason: string): Promise<HostedMapping> {
     const mapping = this.options.hostedStore.get(taskId);
     if (!mapping) throw new Error("Unknown hosted task; refusing stop.");
-    const intended = this.options.hostedStore.markStopIntended(taskId);
-    void intended;
-    const started = Date.now();
-    // Placeholder rows (never staged) have no local worker to cancel: skip
-    // straight to the held/stopped bookkeeping below.
+    this.options.hostedStore.markStopIntended(taskId);
+    // Placeholder rows (never staged, no process ever started): there is no
+    // runtime to stop, but without durable proof the row must stay HELD, not
+    // be marked stopped/released. Only a row that provably never started
+    // (no pid, no start time, still in mapped/held) may settle as zero-use.
     const staged = !mapping.local_worker_id.startsWith("pending-");
-    if (staged) {
-      // Best-effort Coordinator cancel, then verified runtime stop.
-      try {
-        await this.options.coordinator.control(
-          mapping.local_worker_id,
-          "cancel",
+    if (!staged) {
+      if (
+        mapping.child_pid === null &&
+        mapping.runtime_started_at_mono_ms === null &&
+        (mapping.state === "mapped" || mapping.state === "held")
+      ) {
+        return this.options.hostedStore.markStopped(
+          taskId,
+          { elapsedMs: 0 },
+          mapping.settlement_key ?? randomUUID(),
         );
-      } catch {}
-    }
-    // The label is not proof: verify via the provider hook against the real
-    // Store worker (canonical w-... id bound at staging time).
-    let local: { worker_id: string } | null = null;
-    if (staged) {
-      try {
-        local = this.options.store.get(mapping.local_worker_id);
-      } catch {
-        local = null;
       }
+      this.options.hostedStore.markHeldUnknown(taskId);
+      throw new Error(
+        `Controlled stop uncertain (${reason}); no staged runtime, holding reservation.`,
+      );
     }
-    if (local) {
-      try {
+    // Best-effort Coordinator cancel, then verified OS-level runtime stop.
+    // The Coordinator label is never proof.
+    try {
+      await this.options.coordinator.control(mapping.local_worker_id, "cancel");
+    } catch {}
+    let local: { worker_id: string } | null = null;
+    try {
+      local = this.options.store.get(mapping.local_worker_id);
+    } catch {
+      local = null;
+    }
+    if (!local) {
+      // Canonical local row missing: the runtime is UNKNOWN, not stopped.
+      // Never release on map/row absence. If a durable pid exists, prove OS
+      // exit via stopPidWithProof; otherwise hold with conservative budget.
+      const record =
+        mapping.child_pid !== null &&
+        mapping.runtime_started_at_mono_ms !== null &&
+        mapping.runtime_duration_ms !== null
+          ? {
+              pid: mapping.child_pid,
+              startedAtMonoMs: mapping.runtime_started_at_mono_ms,
+              durationMs: mapping.runtime_duration_ms,
+            }
+          : null;
+      if (record) {
+        const vmId =
+          mapping.local_worker_id.startsWith("w-") ||
+          mapping.local_worker_id.startsWith("pending-")
+            ? `controlled-${mapping.local_worker_id}`
+            : mapping.local_worker_id;
+        try {
+          await this.options.provider.stopPidWithProof(vmId, record);
+        } catch (e) {
+          this.options.hostedStore.markHeldUnknown(taskId);
+          throw new Error(
+            `Controlled stop uncertain (${reason}); holding reservation. ${(e as Error).message}`,
+          );
+        }
+        const elapsed =
+          mapping.runtime_started_at_mono_ms !== null
+            ? Math.max(
+                0,
+                performance.now() - mapping.runtime_started_at_mono_ms,
+              )
+            : (mapping.runtime_duration_ms ?? 0);
+        this.clearTaskTimers(taskId);
+        return this.options.hostedStore.markStopped(
+          taskId,
+          { elapsedMs: elapsed },
+          mapping.settlement_key ?? randomUUID(),
+        );
+      }
+      this.options.hostedStore.markHeldUnknown(taskId);
+      throw new Error(
+        `Controlled stop uncertain (${reason}); canonical row missing, holding reservation.`,
+      );
+    }
+    // Resolve the durable pid record for cross-provider proof.
+    const vmId =
+      (local as { vm_id?: string | null }).vm_id ??
+      `controlled-${mapping.local_worker_id}`;
+    const record =
+      mapping.child_pid !== null &&
+      mapping.runtime_started_at_mono_ms !== null &&
+      mapping.runtime_duration_ms !== null
+        ? {
+            pid: mapping.child_pid,
+            startedAtMonoMs: mapping.runtime_started_at_mono_ms,
+            durationMs: mapping.runtime_duration_ms,
+          }
+        : this.options.provider.recordFor(vmId);
+    if (!record) {
+      this.options.hostedStore.markHeldUnknown(taskId);
+      throw new Error(
+        `Controlled stop uncertain (${reason}); no durable pid record, holding reservation.`,
+      );
+    }
+    try {
+      // Prefer the live-handle path when this provider owns the child, else
+      // prove OS exit from the durable pid (restart / fresh provider).
+      const live = this.options.provider.recordFor(vmId);
+      if (live) {
         await this.options.provider.stopWorkerRuntime(
           local as Parameters<
             ControlledProcessProvider["stopWorkerRuntime"]
           >[0],
         );
-      } catch (e) {
-        // Uncertain stop: hold the reservation, do not settle.
-        this.options.hostedStore.markHeld(taskId);
-        throw new Error(
-          `Controlled stop uncertain (${reason}); holding reservation. ${(e as Error).message}`,
-        );
+      } else {
+        await this.options.provider.stopPidWithProof(vmId, record);
       }
+    } catch (e) {
+      // Uncertain stop: hold the reservation with conservative budget, never settle.
+      this.options.hostedStore.markHeldUnknown(taskId);
+      throw new Error(
+        `Controlled stop uncertain (${reason}); holding reservation. ${(e as Error).message}`,
+      );
     }
-    const clearTimer = (map: Map<string, Timer>) => {
+    this.clearTaskTimers(taskId);
+    // Measured ELAPSED EXECUTION (monotonic from process start), bounded by
+    // the server-reserved runtime — never the stop-call latency.
+    const elapsed =
+      mapping.runtime_started_at_mono_ms !== null
+        ? Math.max(0, performance.now() - mapping.runtime_started_at_mono_ms)
+        : (mapping.runtime_duration_ms ?? 0);
+    return this.options.hostedStore.markStopped(
+      taskId,
+      { elapsedMs: elapsed },
+      mapping.settlement_key ?? randomUUID(),
+    );
+  }
+
+  private clearTaskTimers(taskId: string): void {
+    for (const map of [this.renewTimers, this.watchdogs]) {
       const timer = map.get(taskId);
       if (timer) clearTimeout(timer);
       map.delete(taskId);
-    };
-    clearTimer(this.renewTimers);
-    clearTimer(this.watchdogs);
+    }
     this.runs.delete(taskId);
-    const consumed = Date.now() - started;
-    return this.options.hostedStore.markStopped(
-      taskId,
-      consumed,
-      mapping.settlement_key ?? randomUUID(),
-    );
+  }
+
+  /**
+   * Fail-closed gate: the staged worker must be paused with no live
+   * in-flight dispatch before the controlled process may start. The
+   * Store.create enqueue leaves one `pending` dispatch that the Coordinator
+   * would deliver as model work — the hosted path never delivers it: cancel
+   * it durably here so no uncontrolled dispatch can exist at start. Any other
+   * live state (sending/sent) or a non-pause intent blocks the start.
+   * Test hook: throws when an injected stopping/error/tick raced staging.
+   */
+  private assertNoUncontrolledDispatch(localWorkerId: string): void {
+    const worker = this.options.store.get(localWorkerId);
+    if (worker.intent && worker.intent !== "pause") {
+      throw new Error(
+        `Hosted worker has pending ${worker.intent} intent; refusing uncontrolled start.`,
+      );
+    }
+    const live = this.options.store.dispatch(localWorkerId);
+    if (live && live.state === "pending") {
+      // The hosted controlled worker never takes the Coordinator dispatch
+      // path: retire the queued model dispatch so step() can never deliver
+      // uncontrolled work to this worker.
+      this.options.store.saveDispatch({ ...live, state: "cancelled" });
+    }
+    const remaining = this.options.store.dispatch(localWorkerId);
+    if (remaining && !["completed", "cancelled"].includes(remaining.state)) {
+      throw new Error(
+        `Hosted worker has live dispatch ${remaining.state}; refusing uncontrolled start.`,
+      );
+    }
   }
 
   /** Settle only after independently confirmed stop, with the same key. */
