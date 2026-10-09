@@ -1,0 +1,2 @@
+{"subprocessStdinTarget":"socket:[2366989]"}
+{"writeCode":"EPERM","syscall":"write","message":"EPERM: operation not permitted, write"}
