@@ -284,9 +284,13 @@ test("redaction scrubs known secrets, credential fields and URL passwords recurs
 
 test("MCP diagnostics redact cloud machine credentials without loading a cloud account", async () => {
   const h = harness();
-  const tokens = ["sfcli_", "sfworker_", "sfenroll_"].map(
-    (prefix) => prefix + "A".repeat(43),
-  );
+  const tokens = [
+    "sfcli_",
+    "sfworker_",
+    "sfenroll_",
+    "sfexec_",
+    "sfsuper_",
+  ].map((prefix) => prefix + "A".repeat(43));
   const worker = h.store.create({ ...task, timeout_seconds: 60 });
   h.store.patch(worker.worker_id, { error: tokens.join(" ") });
   const server = createMcpServer(h.coordinator);

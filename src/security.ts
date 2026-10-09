@@ -55,7 +55,7 @@ export class Redactor {
         // Recognize machine credentials even when a diagnostic contains a token
         // this local coordinator has never loaded. No cloud account is consulted.
         .replace(
-          /(?<![A-Za-z0-9_-])(?:sfcli_|sfworker_|sfenroll_)[A-Za-z0-9_-]{43}(?![A-Za-z0-9_-])/g,
+          /(?<![A-Za-z0-9_-])(?:sfcli_|sfworker_|sfenroll_|sfexec_|sfsuper_)[A-Za-z0-9_-]{43}(?![A-Za-z0-9_-])/g,
           "[REDACTED]",
         )
         .replace(/(https?:\/\/)[^\s/@]+:[^\s/@]+@/g, "$1[REDACTED]@")
