@@ -331,7 +331,7 @@ export class HostedSupervisor {
       journalStart(record);
       void vmId;
     };
-    this.options.provider.startControlled(staged, launchDurationMs, () => {
+    await this.options.provider.startControlled(staged, launchDurationMs, () => {
       this.options.agent.completeSession(staged);
     });
     this.options.provider.onSpawn = null;

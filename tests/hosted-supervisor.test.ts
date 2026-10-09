@@ -640,7 +640,7 @@ test("controlled runtime executes a real inert subprocess and verifies stop", as
     const vm = await h.provider.createWorker(worker);
     const tracked = h.store.patch(worker.worker_id, { vm_id: vm.id });
     let exited: number | null | undefined;
-    h.provider.startControlled(tracked, 500, (code) => {
+    await h.provider.startControlled(tracked, 500, (code) => {
       exited = code;
     });
     // Env allowlist: provider spawns with a fixed env, never process.env.
@@ -673,7 +673,7 @@ test("RED-proven false stop: fresh provider without the pid record must NOT reso
     const vm = await h.provider.createWorker(worker);
     const tracked = h.store.patch(worker.worker_id, { vm_id: vm.id });
     // Provider A starts a 5s child; after 300ms it is provably running.
-    h.provider.startControlled(tracked, 5000, () => {});
+    await h.provider.startControlled(tracked, 5000, () => {});
     await Bun.sleep(300);
     expect((await h.provider.getWorker(vm.id))?.state).toBe("running");
     // Fresh provider B (restart simulation) with no pid record: the OLD code
@@ -721,7 +721,7 @@ test("D3 stale identity never signals an unrelated live victim (no unsafe reuse 
     const trackedVictim = h.store.patch(wVictim.worker_id, {
       vm_id: vmVictim.id,
     });
-    h.provider.startControlled(trackedVictim, 30000, () => {});
+    await h.provider.startControlled(trackedVictim, 30000, () => {});
     await Bun.sleep(300);
     expect((await h.provider.getWorker(vmVictim.id))?.state).toBe("running");
     const genuine = h.provider.recordFor(vmVictim.id)!;
@@ -1000,6 +1000,91 @@ test("compiled binary + empty-cwd: real binary self-spawn runs without repo file
   }
 }, 120000);
 
+test("compiled launcher + hook from empty cwd: actual provider self-spawn via Bun.isStandaloneExecutable", async () => {
+  // Compiles ONLY the child script proves the child — not the launcher. This
+  // test compiles a probe that imports the ACTUAL provider
+  // (src/hosted-runtime.ts) plus the documented cli-hook pattern
+  // (isHostedChildRuntime() before any CLI parsing, no env setter), then runs
+  // the binary from an EMPTY cwd: the launcher must self-spawn via
+  // Bun.isStandaloneExecutable === true, run the fixed inert workload to
+  // natural exit, and report OS-verified stopped with matching starttime.
+  const dir = mkdtempSync(join(tmpdir(), "hosted-launcher-"));
+  const src = mkdtempSync(join(tmpdir(), "hosted-launcher-src-"));
+  const empty = mkdtempSync(join(tmpdir(), "hosted-launcher-cwd-"));
+  const out = join(dir, "hosted-launcher-probe");
+  try {
+    for (const f of [
+      "hosted-child.ts",
+      "hosted-runtime.ts",
+      "domain.ts",
+      "artifact-types.ts",
+    ])
+      await Bun.write(
+        join(src, f),
+        await Bun.file(new URL(`../src/${f}`, import.meta.url).pathname).text(),
+      );
+    const probe = [
+      'import { isHostedChildRuntime, runHostedChildRuntime } from "./hosted-child";',
+      'import { ControlledProcessProvider, procStarttime } from "./hosted-runtime";',
+      "if (isHostedChildRuntime()) await runHostedChildRuntime();",
+      'if (process.argv[2] !== "launcher-probe") process.exit(3);',
+      "const provider = new ControlledProcessProvider();",
+      "const worker = { worker_id: 'probe', vm_id: 'controlled-probe' } as never;",
+      "let exited: number | null | undefined;",
+      "await provider.startControlled(worker, Number(process.argv[3] ?? '400'), (c) => { exited = c; });",
+      "const t0 = Date.now();",
+      "while (exited === undefined && Date.now() - t0 < 15000) await Bun.sleep(50);",
+      'const vm = await provider.getWorker("controlled-probe");',
+      'const rec = provider.recordFor("controlled-probe");',
+      "console.log(JSON.stringify({ standalone: Bun.isStandaloneExecutable, exited, vmState: vm?.state ?? null, pid: rec?.pid ?? null, starttimeOk: rec ? procStarttime(rec.pid) === rec.starttime : null, exeSelf: rec?.exe ?? null }));",
+      'provider.forget("controlled-probe");',
+      'process.exit(exited === 0 && vm?.state === "stopped" ? 0 : 1);',
+      "",
+    ].join("\n");
+    await Bun.write(join(src, "probe.ts"), probe);
+    const build = await Bun.build({
+      entrypoints: [join(src, "probe.ts")],
+      compile: {
+        target: "bun-linux-x64-baseline",
+        autoloadDotenv: false,
+        autoloadBunfig: false,
+        autoloadTsconfig: false,
+        autoloadPackageJson: false,
+        outfile: out,
+      },
+      target: "bun",
+      bytecode: false,
+    });
+    expect(build.success).toBe(true);
+    const child = Bun.spawn([out, "launcher-probe", "400"], {
+      env: { PATH: "/usr/bin:/bin", TZ: "UTC" },
+      cwd: empty,
+      stdin: "pipe",
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [code, text] = await Promise.all([
+      child.exited,
+      new Response(child.stdout).text(),
+    ]);
+    const report = JSON.parse(text.trim().split("\n").at(-1)!);
+    expect(report.standalone).toBe(true);
+    expect(report.exited).toBe(0);
+    expect(report.vmState).toBe("stopped");
+    expect(report.pid).toBeGreaterThan(0);
+    // starttimeOk compares INSIDE the launcher (same-process read right after
+    // spawn, where /proc is readable): cross-process post-hoc reads race
+    // with short-lived children and prove nothing about the record.
+    expect(report.starttimeOk).toBe(true);
+    expect(String(report.exeSelf)).toBe(out);
+    expect(code).toBe(0);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(src, { recursive: true, force: true });
+    rmSync(empty, { recursive: true, force: true });
+  }
+}, 180000);
+
 test("controlled stopWorkerRuntime verifies exit; network/label failures are not proof", async () => {
   const h = harness();
   try {
@@ -1012,7 +1097,7 @@ test("controlled stopWorkerRuntime verifies exit; network/label failures are not
     });
     const vm = await h.provider.createWorker(worker);
     const tracked = h.store.patch(worker.worker_id, { vm_id: vm.id });
-    h.provider.startControlled(tracked, 60000, () => {});
+    await h.provider.startControlled(tracked, 60000, () => {});
     expect((await h.provider.getWorker(vm.id))?.state).toBe("running");
     await h.provider.stopWorkerRuntime(tracked);
     expect((await h.provider.getWorker(vm.id))?.state).toBe("stopped");

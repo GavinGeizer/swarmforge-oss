@@ -11,8 +11,10 @@
 //   if (isHostedChildRuntime()) await runHostedChildRuntime();
 //   ```
 //   placed BEFORE `runCli()` at the `import.meta.main` entry so the compiled
-//   binary self-spawn enters child mode without parsing CLI args. Lead wires
-//   this in src/cli.ts after review; this file only provides the hook.
+//   binary self-spawn enters child mode without parsing CLI args and without
+//   any env setter (the provider uses Bun.isStandaloneExecutable to choose
+//   self-spawn vs dev script). Lead wires this in src/cli.ts after review;
+//   this file only provides the hook.
 //
 // Entry contract: env SWARMFORGE_HOSTED_CHILD=1 +
 // SWARMFORGE_HOSTED_DURATION=<bounded ms>. Only input is the bounded

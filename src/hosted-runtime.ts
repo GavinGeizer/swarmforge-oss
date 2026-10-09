@@ -152,11 +152,11 @@ export class ControlledProcessProvider implements WorkerProvider {
     return this.records.get(vmId) ?? null;
   }
   /** Starts the fixed inert workload. Duration comes from the server lease math. */
-  startControlled(
+  async startControlled(
     w: Worker,
     durationMs: number,
     onExit: (code: number | null) => void,
-  ): void {
+  ): Promise<void> {
     if (!Number.isSafeInteger(durationMs) || durationMs <= 0)
       throw new Error("Controlled duration is invalid.");
     const id = this.vmId(w);
@@ -165,37 +165,44 @@ export class ControlledProcessProvider implements WorkerProvider {
         "Controlled runtime already started; refusing duplicate.",
       );
     this.spawnedCommands.push(`controlled-probe duration_ms=${durationMs}`);
-    // Self-spawn the current binary (works dev + compiled): the child enters
-    // the embedded hosted-child runtime via the env marker. No argv payload,
-    // no external runtime, no repo file. Bun may need an explicit `run`
-    // subcommand when execPath is a bare runtime without a bundled entry
-    // (bare `bun` with no script prints usage and exits 0): detect the
-    // marker-binary form via SWARMFORGE_HOSTED_ENTRY, else fall back to the
-    // current source file (dev/test) which the child runs as a script.
-    const entry = process.env.SWARMFORGE_HOSTED_ENTRY;
-    const child =
-      entry !== undefined
-        ? spawn(process.execPath, [], {
+    // Runtime-native launch choice: a compiled binary self-spawns
+    // process.execPath (the child enters the embedded hosted-child runtime
+    // via the env marker); source execution runs the dev/test script entry.
+    // Bun.isStandaloneExecutable is documented + typed (bun-types/bun.d.ts,
+    // docs/bundler/executables.mdx) and reports false under direct 1.4.2
+    // source execution — no externally set env marker needed. A legacy
+    // SWARMFORGE_HOSTED_ENTRY override is honored only as a test seam for
+    // exercising the compiled branch from source. Bare `bun` with no script
+    // prints usage and exits 0, so source mode must pass an explicit file.
+    const standalone = (
+      Bun as unknown as { isStandaloneExecutable?: unknown }
+    ).isStandaloneExecutable;
+    const compiled =
+      standalone === true ||
+      (standalone !== false &&
+        process.env.SWARMFORGE_HOSTED_ENTRY !== undefined);
+    const child = compiled
+      ? spawn(process.execPath, [], {
+          env: {
+            PATH: "/usr/bin:/bin",
+            TZ: "UTC",
+            [HOSTED_CHILD_ENV]: "1",
+            [HOSTED_CHILD_DURATION_ENV]: String(durationMs),
+          },
+          stdio: ["pipe", "pipe", "pipe"],
+        })
+      : spawn(
+          process.execPath,
+          [new URL("./hosted-child-script.ts", import.meta.url).pathname],
+          {
             env: {
               PATH: "/usr/bin:/bin",
               TZ: "UTC",
-              [HOSTED_CHILD_ENV]: "1",
               [HOSTED_CHILD_DURATION_ENV]: String(durationMs),
             },
             stdio: ["pipe", "pipe", "pipe"],
-          })
-        : spawn(
-            process.execPath,
-            [new URL("./hosted-child-script.ts", import.meta.url).pathname],
-            {
-              env: {
-                PATH: "/usr/bin:/bin",
-                TZ: "UTC",
-                [HOSTED_CHILD_DURATION_ENV]: String(durationMs),
-              },
-              stdio: ["pipe", "pipe", "pipe"],
-            },
-          );
+          },
+        );
     // Hold the parent end open: EOF reaches the child only when the
     // supervisor (and its stdio) is actually gone. Keep flowing so no
     // buffered pause wedges the pipe.
@@ -205,10 +212,22 @@ export class ControlledProcessProvider implements WorkerProvider {
     child.stderr?.on("data", () => {});
     child.stdout?.resume();
     child.stderr?.resume();
+    // OS start identity is read AFTER the stdio handshake above: a compiled
+    // binary needs a scheduling beat before the grandchild's /proc/stat is
+    // readable (immediate synchronous reads can race exec). Retry briefly;
+    // a persistently unreadable identity still refuses unjournaled execution.
+    let starttime: string | null = null;
+    let exe: string | null = null;
+    for (let i = 0; i < 40; i++) {
+      starttime = procStarttime(child.pid!);
+      exe = procExe(child.pid!) ?? procExe(process.pid) ?? null;
+      if (starttime !== null && exe !== null) break;
+      await Bun.sleep(25);
+    }
     const record: ControlledProcessRecord = {
       pid: child.pid!,
-      starttime: procStarttime(child.pid!) ?? "unknown",
-      exe: procExe(child.pid!) ?? procExe(process.pid) ?? "unknown",
+      starttime: starttime ?? "unknown",
+      exe: exe ?? "unknown",
       durationMs,
       startedAtMonoMs: performance.now(),
     };
