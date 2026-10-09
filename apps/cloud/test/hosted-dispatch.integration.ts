@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { cleanupHosted, taskAuthorizerGuard } from "../src/hosted-dispatch.ts";
+import { type Context, type Env, HttpError } from "../src/common.ts";
+import {
+  cleanupHosted,
+  hostedDispatchRoute,
+  taskAuthorizerGuard,
+} from "../src/hosted-dispatch.ts";
 import {
   dispatchFixture,
   dispatchPolicy,
@@ -22,6 +27,120 @@ function claimHeaders(
 ) {
   return { ...supervisorBearer(supervisor.credential), "idempotency-key": k };
 }
+
+test("dispatch real D1: ledger changes after settlement reads leave every persisted row unchanged", async () => {
+  const { h, a, supervisor } = await setup();
+  try {
+    const seed = await h.seedQueuedTask(
+      a.tenant,
+      supervisor.worker_id,
+      a.user,
+      {
+        runtime_ms: 10000,
+        quantity: "10000",
+        withAllowance: { reserved_quantity: "10000", consumed_quantity: "0" },
+      },
+    );
+    const claimed = await h.request(
+      "/v1/supervisor/claim",
+      claimHeaders(supervisor),
+      "POST",
+      {},
+    );
+    assert.equal(claimed.status, 200);
+    const task = (
+      (await claimed.json()) as {
+        task: { task_id: string; lease_id: string; fence: number };
+      }
+    ).task;
+    const lease = { lease_id: task.lease_id, fence: task.fence };
+    assert.equal(
+      (
+        await h.request(
+          `/v1/supervisor/tasks/${seed.taskId}/ack`,
+          claimHeaders(supervisor),
+          "POST",
+          lease,
+        )
+      ).status,
+      200,
+    );
+    const snapshot = async () =>
+      Object.fromEntries(
+        await Promise.all(
+          [
+            "hosted_tasks",
+            "hosted_reservations",
+            "hosted_outbox",
+            "hosted_allowances",
+            "hosted_operations",
+            "audit_events",
+          ].map(async (table) => [
+            table,
+            (await h.db.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all())
+              .results,
+          ]),
+        ),
+      );
+    let before: Awaited<ReturnType<typeof snapshot>> | undefined;
+    let injected = false;
+    // The actual production handler pre-reads real workerd D1. The proxy adds
+    // exactly one committed SQL mutation immediately before its D1 batch.
+    const database = new Proxy(h.db, {
+      get(target, property) {
+        if (property === "batch")
+          return async (statements: Parameters<typeof h.db.batch>[0]) => {
+            assert.equal(injected, false);
+            injected = true;
+            await h.db
+              .prepare(
+                "UPDATE hosted_allowances SET reserved_quantity='9000' WHERE allowance_id=?",
+              )
+              .bind(seed.allowanceId)
+              .run();
+            before = await snapshot();
+            return h.db.batch(statements);
+          };
+        const value = Reflect.get(target, property);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    const ctx: Context = {
+      request: new Request(
+        `https://api.example.invalid/v1/supervisor/tasks/${seed.taskId}/settle`,
+        {
+          method: "POST",
+          headers: {
+            ...claimHeaders(supervisor),
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            ...lease,
+            outcome: "completed",
+            stop_confirmed: true,
+            consumed_runtime_ms: 100,
+          }),
+        },
+      ),
+      env: {
+        DB: database as unknown as Env["DB"],
+        AUTH_SECRET: "test-auth-secret-with-at-least-thirty-two-characters",
+      } as Env,
+      request_id: crypto.randomUUID(),
+      route: "retained-real-d1-dispatch-barrier",
+      actor: null,
+    };
+    await assert.rejects(
+      () => hostedDispatchRoute(ctx),
+      (error: unknown) => error instanceof HttpError && error.status === 409,
+    );
+    assert.equal(injected, true);
+    assert.ok(before);
+    assert.deepEqual(await snapshot(), before);
+  } finally {
+    await h.mf.dispose();
+  }
+});
 
 test("dispatch: claim elects one supervisor, ack advances, renew extends finite lease", async () => {
   const { h, a, supervisor } = await setup();
@@ -81,7 +200,7 @@ test("dispatch: claim elects one supervisor, ack advances, renew extends finite 
     };
     assert.equal(acked.task.state, "running");
     assert.equal(acked.directive, "continue");
-    // Renew: same lease_id, current fence in, fence+1 out, extended expiry.
+    // Renew preserves the ownership fence and absolute deadline.
     const renew = await h.request(
       `/v1/supervisor/tasks/${seed.taskId}/renew`,
       claimHeaders(supervisor),
@@ -100,7 +219,8 @@ test("dispatch: claim elects one supervisor, ack advances, renew extends finite 
       server_time: number;
     };
     assert.equal(renewed.task.lease_id, lease.lease_id);
-    assert.equal(renewed.task.fence, (lease.fence as number) + 1);
+    assert.equal(renewed.task.fence, lease.fence);
+    assert.ok(renewed.task.lease_expires_at <= renewed.task.deadline_at);
     assert.ok(
       renewed.task.lease_expires_at > (acked.task.lease_expires_at as number),
     );
@@ -733,6 +853,7 @@ test("dispatch: taskAuthorizerGuard pins account/cli/grant authority", async () 
       organization_id: a.tenant,
       worker_id: worker.worker_id,
       authorizing_user_id: a.user,
+      authorizing_session_id: a.sessionId,
       installation_id: null,
       execution_grant_id: null,
       state: "queued",

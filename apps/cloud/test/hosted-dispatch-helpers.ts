@@ -22,7 +22,7 @@ const bundled = build({
 import { z } from "zod";
 import { allowedOrigin, HttpError, json, type Context, type Env } from "../src/common.ts";
 import { hostedAuthorityRoute } from "../src/hosted-authority.ts";
-import { hostedDispatchRoute } from "../src/hosted-dispatch.ts";
+import { hostedDispatchRoute, hostedRecoveryRoute } from "../src/hosted-dispatch.ts";
 import { entitlementsRoute } from "../src/hosted-entitlements.ts";
 import { supervisorRoute } from "../src/hosted-supervisors.ts";
 import { createWorker } from "../src/index.ts";
@@ -40,7 +40,7 @@ export default {
       route: "hosted-dispatch-test",
       actor: null,
     };
-    for (const handler of [hostedDispatchRoute, supervisorRoute, hostedAuthorityRoute, entitlementsRoute]) {
+    for (const handler of [hostedDispatchRoute, hostedRecoveryRoute, supervisorRoute, hostedAuthorityRoute, entitlementsRoute]) {
       try {
         const response = await handler(ctx);
         if (response) return response;
@@ -174,6 +174,12 @@ export async function dispatchFixture(origin = "https://api.example.invalid") {
     return {
       user: me.subject_id,
       tenant: me.memberships[0]!.tenant_id,
+      sessionId: (await db
+        .prepare(
+          "SELECT session_id FROM sessions WHERE user_id=? ORDER BY created_at DESC LIMIT 1",
+        )
+        .bind(me.subject_id)
+        .first<{ session_id: string }>())!.session_id,
       headers: { cookie, origin, "x-csrf-token": session.csrf_token },
     };
   }
@@ -323,6 +329,12 @@ export async function dispatchFixture(origin = "https://api.example.invalid") {
     const outboxId = crypto.randomUUID();
     const requestId = crypto.randomUUID();
     const opKey = crypto.randomUUID();
+    const session = await db
+      .prepare(
+        "SELECT session_id FROM sessions WHERE user_id=? ORDER BY created_at DESC LIMIT 1",
+      )
+      .bind(userId)
+      .first<{ session_id: string }>();
     let allowanceId: string | null = null;
     if (overrides.withAllowance) {
       const entitlement = await db
@@ -356,13 +368,14 @@ export async function dispatchFixture(origin = "https://api.example.invalid") {
     await db.batch([
       db
         .prepare(
-          "INSERT INTO hosted_tasks(task_id,organization_id,worker_id,authorizing_user_id,request_id,principal_kind,principal_id,idempotency_key,fingerprint,execution_class,state,reservation_id,policy_version,runtime_ms,controlled_duration_ms,created_at,deadline_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+          "INSERT INTO hosted_tasks(task_id,organization_id,worker_id,authorizing_user_id,authorizing_session_id,request_id,principal_kind,principal_id,idempotency_key,fingerprint,execution_class,state,reservation_id,policy_version,runtime_ms,controlled_duration_ms,created_at,deadline_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         )
         .bind(
           taskId,
           tenant,
           workerId,
           userId,
+          session?.session_id ?? null,
           requestId,
           "account",
           userId,
