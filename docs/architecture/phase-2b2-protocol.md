@@ -56,9 +56,9 @@ interface HostedTask {
   lease_expires_at: number|null;
 }
 interface AdmissionReply { task: HostedTask; reservation_id: string; policy_version: number }
-interface ClaimReply { task: HostedTask|null } // task carries lease/id/fence/expiry
+interface ClaimReply { task: HostedTask|null; server_time: number }
 interface LeaseRequest { lease_id: string; fence: number }
-interface LeaseReply { task: HostedTask; directive: "continue"|"stop" }
+interface LeaseReply { task: HostedTask; directive: "continue"|"stop"; server_time: number }
 interface SettlementRequest extends LeaseRequest {
   outcome: "completed"|"failed"|"cancelled";
   stop_confirmed: true;
@@ -130,6 +130,12 @@ Ack never reallocates. Renewal cannot renew an expired lease. Deadline is absolu
 and never extends; policy/worker/task-authorizer authority is rechecked. Failed renewal
 or partition triggers local stop. No automatic execution retry until old runtime stop
 is confirmed; orphan recovery holds capacity and exposes trusted cleanup work.
+
+Claim/ack/renew/status replies include server_time captured at response construction.
+Clients derive a conservative monotonic stop deadline from server remaining authority
+minus the entire measured request round trip and a safety margin. They do not rely
+on matching local/server wall clocks. Each child runtime receives only a bounded
+remaining duration; a parent-process crash/IPC closure stops the child independently.
 
 ## Root integration contract
 
