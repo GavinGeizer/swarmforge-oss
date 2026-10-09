@@ -379,10 +379,6 @@ export class HostedSupervisor {
       });
       journaled = true;
     };
-    this.options.provider.onSpawn = (vmId, record) => {
-      journalStart(record);
-      void vmId;
-    };
     const completion = new Promise<"completed" | "failed" | "cancelled">(
       (resolve) => {
         this.finishRuns.set(task.task_id, resolve);
@@ -404,6 +400,7 @@ export class HostedSupervisor {
               : "failed",
           );
         },
+        journalStart,
       );
       const vmNow = store.get(local.worker_id).vm_id;
       const rec = vmNow ? this.options.provider.recordFor(vmNow) : null;
@@ -420,8 +417,6 @@ export class HostedSupervisor {
       throw new Error(
         `Hosted launch journal failed; runtime stop attempted and held. ${(error as Error).message}`,
       );
-    } finally {
-      this.options.provider.onSpawn = null;
     }
     const running: ActiveRun = {
       mapping: this.options.hostedStore.updateLease(

@@ -127,9 +127,6 @@ export class ControlledProcessProvider implements WorkerProvider {
   private children = new Map<string, ChildProcess>();
   private records = new Map<string, ControlledProcessRecord>();
   readonly spawnedCommands: string[] = [];
-  /** Durable pid journal hook: the supervisor persists pid+start per task. */
-  onSpawn: ((vmId: string, record: ControlledProcessRecord) => void) | null =
-    null;
   private vmId(w: Worker): string {
     if (!w.vm_id) throw new Error("Controlled worker has no runtime handle.");
     return w.vm_id;
@@ -198,6 +195,7 @@ export class ControlledProcessProvider implements WorkerProvider {
     w: Worker,
     durationMs: number,
     onExit: (code: number | null) => void,
+    journalSpawn?: (record: ControlledProcessRecord) => void,
   ): Promise<void> {
     if (!Number.isSafeInteger(durationMs) || durationMs <= 0)
       throw new Error("Controlled duration is invalid.");
@@ -287,7 +285,9 @@ export class ControlledProcessProvider implements WorkerProvider {
     this.children.set(id, child);
     this.records.set(id, record);
     try {
-      this.onSpawn?.(id, record);
+      // The durable journal belongs to this launch. Concurrent tasks must
+      // never share a mutable hook that can write another child's identity.
+      journalSpawn?.(record);
     } catch (error) {
       try {
         child.kill("SIGKILL");

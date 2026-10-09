@@ -47,6 +47,8 @@ const TENANT = randomUUID();
 const OTHER_TENANT = randomUUID();
 const WORKER = randomUUID();
 const SUPERVISOR = randomUUID();
+const SUPERVISOR_CREDENTIAL = randomUUID();
+const SUPERVISOR_SUBJECT = randomUUID();
 const TASK = randomUUID();
 const LEASE = randomUUID();
 const RESERVATION = randomUUID();
@@ -695,9 +697,11 @@ function supervisorFixture() {
       return json({ error: "unauthorized" }, 401);
     if (url.pathname === "/v1/supervisor/me")
       return json({
+        credential_id: SUPERVISOR_CREDENTIAL,
         supervisor_id: SUPERVISOR,
         tenant_id: TENANT,
         worker_id: WORKER,
+        subject_id: SUPERVISOR_SUBJECT,
         scopes: [
           "supervisor:claim",
           "supervisor:renew",
@@ -745,7 +749,7 @@ function supervisorFixture() {
   });
 }
 
-function harness() {
+function harness(provider = new ControlledProcessProvider()) {
   const config = loadConfig({
     FREESTYLE_API_TOKEN: "hosted-test-token",
     FREESTYLE_SNAPSHOT_ID: "hosted-test-snapshot",
@@ -758,7 +762,6 @@ function harness() {
     SWARMFORGE_TOKEN_IDLE_TIMEOUT_SECONDS: "0",
   });
   const store = new Store(":memory:");
-  const provider = new ControlledProcessProvider();
   const agent = new ControlledAgent();
   const coordinator = new Coordinator(config, store, provider, agent);
   const hostedStore = new HostedStore(":memory:");
@@ -791,6 +794,72 @@ function supervisorUnderTest(
     safetyMarginMs: 0,
   });
 }
+
+test("concurrent distinct tasks journal their own actual child identities before launch returns", async () => {
+  let releaseSecond!: () => void;
+  const secondGate = new Promise<void>((resolve) => {
+    releaseSecond = resolve;
+  });
+  class DelayedProvider extends ControlledProcessProvider {
+    calls = 0;
+    override async startControlled(
+      ...args: Parameters<ControlledProcessProvider["startControlled"]>
+    ) {
+      this.calls++;
+      if (this.calls === 2) await secondGate;
+      else await Bun.sleep(50);
+      return super.startControlled(...args);
+    }
+  }
+  const first = taskBody({ controlled_duration_ms: 5000 }) as HostedTask;
+  const second = taskBody({
+    task_id: randomUUID(),
+    reservation_id: randomUUID(),
+    controlled_duration_ms: 5000,
+  }) as HostedTask;
+  const tasks = new Map<string, HostedTask>([
+    [first.task_id, first],
+    [second.task_id, second],
+  ]);
+  const fixture = api((request) => {
+    const taskId = new URL(request.url).pathname.split("/").at(-2)!;
+    return json({
+      task: { ...tasks.get(taskId), state: "running" },
+      directive: "continue",
+      server_time: Date.now(),
+    });
+  });
+  const h = harness(new DelayedProvider());
+  const supervisor = supervisorUnderTest(h, fixture.origin);
+  let secondLaunch: Promise<unknown> | undefined;
+  try {
+    const firstLaunch = supervisor.ackAndStart(first);
+    secondLaunch = supervisor.ackAndStart(second);
+    await firstLaunch;
+    releaseSecond();
+    await secondLaunch;
+    const firstMapping = h.hostedStore.get(first.task_id)!;
+    const secondMapping = h.hostedStore.get(second.task_id)!;
+    const firstRecord = h.provider.recordFor(
+      h.store.get(firstMapping.local_worker_id).vm_id!,
+    )!;
+    const secondRecord = h.provider.recordFor(
+      h.store.get(secondMapping.local_worker_id).vm_id!,
+    )!;
+    expect(firstMapping.child_pid).toBe(firstRecord.pid);
+    expect(secondMapping.child_pid).toBe(secondRecord.pid);
+    expect(secondMapping.child_pid).not.toBe(firstMapping.child_pid);
+    expect(identityMatches(firstRecord)).toBe(true);
+    expect(identityMatches(secondRecord)).toBe(true);
+  } finally {
+    releaseSecond();
+    await secondLaunch?.catch(() => {});
+    await supervisor.close();
+    await h.coordinator.stop();
+    h.store.close();
+    fixture.close();
+  }
+});
 
 // ---------------------------------------------------------------------------
 // Credential schemas: isolated audiences, tenant binding, no cross reuse.
@@ -1055,6 +1124,40 @@ test("SIMULATED transport: task client submits/reads/cancels with exact controll
   }
 });
 
+test("SIMULATED transport: repeated admission key preserves request_id across client instances and still conflicts on changed work", async () => {
+  const attempts: Record<string, unknown>[] = [];
+  const committed = new Map<string, string>();
+  const fixture = api(async (request) => {
+    const key = request.headers.get("idempotency-key")!;
+    const payload = (await request.json()) as Record<string, unknown>;
+    attempts.push(payload);
+    const fingerprint = JSON.stringify(payload);
+    if (committed.has(key) && committed.get(key) !== fingerprint)
+      return json({}, 409);
+    committed.set(key, fingerprint);
+    return json({
+      task: taskBody({ state: "queued" }),
+      reservation_id: RESERVATION,
+      policy_version: 3,
+    });
+  });
+  const client = () =>
+    new HostedTaskClient(fixture.origin, `sfexec_${"a".repeat(43)}`, TENANT);
+  try {
+    await client().submitTask(WORKER, 60000, 5000, "admission-replay");
+    await client().submitTask(WORKER, 60000, 5000, "admission-replay");
+    expect(attempts[1]).toEqual(attempts[0]);
+    await client().submitTask(WORKER, 60000, 5000, "different-admission");
+    expect(attempts[2]!.request_id).not.toBe(attempts[0]!.request_id);
+    await expect(
+      client().submitTask(WORKER, 60000, 5001, "admission-replay"),
+    ).rejects.toThrow(/conflict/i);
+    expect(committed.size).toBe(2);
+  } finally {
+    fixture.close();
+  }
+});
+
 test("SIMULATED transport: task client stops on cross-tenant and malformed responses", async () => {
   const cross = api((request) =>
     new URL(request.url).pathname.endsWith("/cancel")
@@ -1088,6 +1191,45 @@ test("SIMULATED transport: task client stops on cross-tenant and malformed respo
 // SupervisorClient: identity/claim/ack/renew/status/settle/rotate.
 // ---------------------------------------------------------------------------
 
+test("SIMULATED transport: supervisor identity requires the exact production credential and subject fields", async () => {
+  const identity: Awaited<ReturnType<ProductionSupervisorClient["identity"]>> =
+    {
+      credential_id: SUPERVISOR_CREDENTIAL,
+      supervisor_id: SUPERVISOR,
+      tenant_id: TENANT,
+      worker_id: WORKER,
+      subject_id: SUPERVISOR_SUBJECT,
+      scopes: [
+        "supervisor:claim",
+        "supervisor:renew",
+        "supervisor:report",
+        "supervisor:cleanup",
+      ],
+      expires_at: Date.now() + 60000,
+      authorization_expires_at: Date.now() + 60000,
+    };
+  let reply: Record<string, unknown> = identity;
+  const fixture = api(() => json(reply));
+  const client = new SupervisorClient(
+    fixture.origin,
+    `sfsuper_${"b".repeat(43)}`,
+    TENANT,
+  );
+  try {
+    expect(await client.identity()).toEqual(identity);
+    const { credential_id: _credential, ...withoutCredential } = identity;
+    reply = withoutCredential;
+    await expect(client.identity()).rejects.toThrow(/invalid/i);
+    const { subject_id: _subject, ...withoutSubject } = identity;
+    reply = withoutSubject;
+    await expect(client.identity()).rejects.toThrow(/invalid/i);
+    reply = { ...identity, epoch: 1 };
+    await expect(client.identity()).rejects.toThrow(/invalid/i);
+  } finally {
+    fixture.close();
+  }
+});
+
 test("SIMULATED transport: supervisor claim/ack/renew/status/settle round-trips strict fields", async () => {
   const fixture = supervisorFixture();
   try {
@@ -1106,6 +1248,10 @@ test("SIMULATED transport: supervisor claim/ack/renew/status/settle round-trips 
     ).toThrow();
     const identity = await client.identity();
     expect(identity.supervisor_id).toBe(SUPERVISOR);
+    expect(identity).toMatchObject({
+      credential_id: SUPERVISOR_CREDENTIAL,
+      subject_id: SUPERVISOR_SUBJECT,
+    });
     const claim = await client.claim();
     expect(claim.task?.task_id).toBe(TASK);
     expect(claim.server_time).toBeGreaterThan(0);

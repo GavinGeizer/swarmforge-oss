@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
 import { cloudOrigin } from "./cloud-credentials";
 import {
@@ -92,9 +92,11 @@ export type SettlementRequest = z.infer<typeof settlementRequestSchema>;
 
 export const supervisorIdentitySchema = z
   .object({
+    credential_id: id,
     supervisor_id: id,
     tenant_id: id,
     worker_id: id,
+    subject_id: id,
     scopes: z.tuple([
       z.literal("supervisor:claim"),
       z.literal("supervisor:renew"),
@@ -152,6 +154,21 @@ export function remainingAuthorityMs(options: {
 const REQUEST_TIMEOUT_MS = 30000;
 const RESPONSE_LIMIT_BYTES = 131072;
 const MAX_ATTEMPTS = 3;
+
+function admissionRequestId(tenantId: string, idempotencyKey: string): string {
+  // A UUID v5 in the DNS namespace keeps the complete admission body stable
+  // when a caller retries the same key after a lost response or restart.
+  const hash = createHash("sha1")
+    .update(Buffer.from("6ba7b8109dad11d180b400c04fd430c8", "hex"))
+    .update(
+      `swarmforge-hosted-task:${JSON.stringify([tenantId, idempotencyKey])}`,
+    )
+    .digest();
+  hash[6] = (hash[6]! & 0x0f) | 0x50;
+  hash[8] = (hash[8]! & 0x3f) | 0x80;
+  const hex = hash.subarray(0, 16).toString("hex");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
 
 abstract class HostedHttpClient {
   readonly origin: string;
@@ -290,7 +307,7 @@ export class HostedTaskClient extends HostedHttpClient {
     workerId: string,
     runtimeMs: number,
     controlledDurationMs: number,
-    idempotencyKey = randomUUID(),
+    idempotencyKey: string = randomUUID(),
   ): Promise<AdmissionReply> {
     parse(id, workerId, "worker");
     if (
@@ -305,7 +322,7 @@ export class HostedTaskClient extends HostedHttpClient {
     // No secrets, prompts, repos, models or env in route payloads: fixed inert
     // controlled workload only.
     const body = {
-      request_id: randomUUID(),
+      request_id: admissionRequestId(this.tenantId, idempotencyKey),
       worker_id: workerId,
       execution_class: "controlled",
       runtime_ms: runtimeMs,
