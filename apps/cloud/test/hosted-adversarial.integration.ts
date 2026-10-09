@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import {
   type AdmissionReply,
@@ -41,7 +40,13 @@ import { fixture } from "./machine-helpers.ts";
 
 const CLAIM = "/v1/supervisor/claim";
 
+// Setup compatibility: the shared fixture on this branch applies only the
+// phase2b1 migrations (compatibility789 makes all-3 the default once
+// integrated), so tests apply migration 0003 explicitly themselves.
+// Assertion behavior is unchanged.
+
 async function statements(migration: string) {
+  const { readFile } = await import("node:fs/promises");
   const sql = await readFile(new URL(migration, import.meta.url), "utf8");
   return sql
     .replace(/--[^\n]*/g, "")
@@ -50,24 +55,30 @@ async function statements(migration: string) {
     .filter(Boolean);
 }
 
+async function hostedFixture() {
+  const h = await fixture();
+  for (const stmt of await statements(
+    "../migrations/0003_hosted_execution.sql",
+  ))
+    await h.db.prepare(stmt).run();
+  return h;
+}
+
+type HostedHarness = Awaited<ReturnType<typeof hostedFixture>>;
 type Setup = {
   tenant: string;
   user: string;
   workerId: string;
-  account: Awaited<ReturnType<Awaited<ReturnType<typeof fixture>>["login"]>>;
+  account: Awaited<ReturnType<HostedHarness["login"]>>;
 };
 
-async function setup(h: Awaited<ReturnType<typeof fixture>>): Promise<Setup> {
+async function setup(h: HostedHarness): Promise<Setup> {
   const account = await h.login();
   await h.linked(account);
   const invite = await h.enroll(account);
   const reg = await h.register(invite);
   assert.equal(reg.status, 201);
   const worker = (await reg.json()) as { worker_id: string };
-  for (const stmt of await statements(
-    "../migrations/0003_hosted_execution.sql",
-  ))
-    await h.db.prepare(stmt).run();
   return {
     tenant: account.tenant,
     user: account.user,
@@ -76,10 +87,7 @@ async function setup(h: Awaited<ReturnType<typeof fixture>>): Promise<Setup> {
   };
 }
 
-async function extraWorker(
-  h: Awaited<ReturnType<typeof fixture>>,
-  s: Setup,
-): Promise<string> {
+async function extraWorker(h: HostedHarness, s: Setup): Promise<string> {
   const invite = await h.enroll(s.account);
   const reg = await h.register(invite);
   assert.equal(reg.status, 201);
@@ -98,7 +106,7 @@ type PolicyOptions = {
 
 // Technical policy fixture only: finite ceilings, no pricing, no meter rows.
 async function seedPolicy(
-  h: Awaited<ReturnType<typeof fixture>>,
+  h: HostedHarness,
   s: Setup,
   options: PolicyOptions = {},
 ) {
@@ -155,19 +163,17 @@ function keyHeaders(k = crypto.randomUUID()) {
   return { "idempotency-key": k };
 }
 
-async function count(
-  h: Awaited<ReturnType<typeof fixture>>,
-  table: string,
-): Promise<number> {
+async function count(h: HostedHarness, table: string): Promise<number> {
   // Real count query against the migrated test DB. A missing table is a
   // failure, never a zero: nothing here may swallow SQL errors.
-  return (await h.db.prepare(`SELECT count(*) n FROM ${table}`).first<{
-    n: number;
-  }>())!.n;
+  const row = (await h.db
+    .prepare(`SELECT count(*) n FROM ${table}`)
+    .first()) as unknown as { n: number };
+  return row.n;
 }
 
 async function admission(
-  h: Awaited<ReturnType<typeof fixture>>,
+  h: HostedHarness,
   s: Setup,
   headers: Record<string, string>,
   body: unknown,
@@ -176,7 +182,7 @@ async function admission(
 }
 
 test("valid policy and registered worker admit exactly one task with reservation and outbox", async () => {
-  const h = await fixture();
+  const h = await hostedFixture();
   try {
     const s = await setup(h);
     await seedPolicy(h, s, { maxTasks: 10 });
@@ -198,12 +204,12 @@ test("valid policy and registered worker admit exactly one task with reservation
     assert.equal(await count(h, "hosted_tasks"), 1);
     const reservation = (await h.db
       .prepare("SELECT state,task_id FROM hosted_reservations")
-      .first<{ state: string; task_id: string }>())!;
+      .first()) as unknown as { state: string; task_id: string };
     assert.equal(reservation.state, "active");
     assert.equal(reservation.task_id, reply.task.task_id);
     const outbox = (await h.db
       .prepare("SELECT state,task_id FROM hosted_outbox")
-      .first<{ state: string; task_id: string }>())!;
+      .first()) as unknown as { state: string; task_id: string };
     assert.equal(outbox.state, "queued");
     assert.equal(outbox.task_id, reply.task.task_id);
   } finally {
@@ -212,7 +218,7 @@ test("valid policy and registered worker admit exactly one task with reservation
 });
 
 test("same idempotency key replays the same task; changed body conflicts without new rows", async () => {
-  const h = await fixture();
+  const h = await hostedFixture();
   try {
     const s = await setup(h);
     await seedPolicy(h, s, { maxTasks: 10 });
@@ -243,7 +249,7 @@ test("same idempotency key replays the same task; changed body conflicts without
 });
 
 test("one worker admits exactly one of six concurrent submissions; losers get quota 409", async () => {
-  const h = await fixture();
+  const h = await hostedFixture();
   try {
     const s = await setup(h);
     await seedPolicy(h, s, { maxTasks: 10 });
@@ -273,7 +279,7 @@ test("one worker admits exactly one of six concurrent submissions; losers get qu
 });
 
 test("three workers against a two-task ceiling admit exactly two; losers get quota 409", async () => {
-  const h = await fixture();
+  const h = await hostedFixture();
   try {
     const s = await setup(h);
     await seedPolicy(h, s, { maxWorkers: 3, maxTasks: 2 });
@@ -315,7 +321,7 @@ test("three workers against a two-task ceiling admit exactly two; losers get quo
 });
 
 test("absent, expired and revoked capability each deny admission with 403", async () => {
-  const h = await fixture();
+  const h = await hostedFixture();
   try {
     const s = await setup(h);
     const now = Date.now();
@@ -364,7 +370,7 @@ test("absent, expired and revoked capability each deny admission with 403", asyn
 });
 
 test("malformed execution bodies are rejected with 400 and admit nothing", async () => {
-  const h = await fixture();
+  const h = await hostedFixture();
   try {
     const s = await setup(h);
     await seedPolicy(h, s, { maxTasks: 10 });
@@ -393,7 +399,7 @@ test("malformed execution bodies are rejected with 400 and admit nothing", async
 });
 
 test("wrong audience or missing auth on admission is rejected with 401", async () => {
-  const h = await fixture();
+  const h = await hostedFixture();
   try {
     const s = await setup(h);
     await seedPolicy(h, s, { maxTasks: 10 });
@@ -428,7 +434,7 @@ test("wrong audience or missing auth on admission is rejected with 401", async (
 });
 
 test("cross-org submission is contained with 404 and leaves no rows", async () => {
-  const h = await fixture();
+  const h = await hostedFixture();
   try {
     const s = await setup(h);
     const other = await h.login(200);
@@ -450,7 +456,7 @@ test("cross-org submission is contained with 404 and leaves no rows", async () =
 });
 
 test("supervisor claim, renew and settle require a supervisor credential with 401", async () => {
-  const h = await fixture();
+  const h = await hostedFixture();
   try {
     const s = await setup(h);
     await seedPolicy(h, s, { maxTasks: 10 });

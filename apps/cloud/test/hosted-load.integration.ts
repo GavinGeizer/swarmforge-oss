@@ -24,6 +24,8 @@ test("bounded burst admits exactly the ceiling with quota 409s and no partial wr
   const h = await fixture();
   try {
     const a = await h.login();
+    // Setup compatibility: shared fixture here applies phase2b1 only, so
+    // apply migration 0003 explicitly (assertions unchanged).
     for (const stmt of (
       await readFile(
         new URL("../migrations/0003_hosted_execution.sql", import.meta.url),
