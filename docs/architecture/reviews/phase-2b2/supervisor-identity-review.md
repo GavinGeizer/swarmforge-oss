@@ -1,0 +1,39 @@
+# Reviewer B: supervisor identity 56790bc (vs approved b61f244) — APPROVED for identity slice
+
+- Verdict: **APPROVED** — for the identity/rotation/revocation slice only. No leases/admission/claim/ack in this slice (correctly out of scope; ACK etc. remain a future stage and are not defects here). Candidate may proceed to cloud lease handlers on top of this identity. Bun CCD5 P0 re-review follows separately; nothing here approves the Bun execution side.
+- Target: `56790bc08393c15a08e65036ada3e7fe757d57e6` ("supervisor identity/rotation/revocation with adversarial tests") over approved `b61f2444a6b28667c69893501d8f51013f3ce8af` (schema fix). Diff = 3 new files, +1469: `apps/cloud/src/hosted-supervisors.ts` (567 lines: `supervisorRoute/Auth/Guard`, execution|cleanup modes), `apps/cloud/test/hosted-supervisor-helpers.ts` (245, real Miniflare/workerd/D1 adapter invoking the PRODUCTION `supervisorRoute`), `apps/cloud/test/hosted-supervisors.integration.ts` (657, 17 tests). Provenance note: dispatch named branch suffix `w-8d986098-…`; that ref does not exist — the SHA resolves on `…/w-422960c4-…` (fetched by SHA, verified `git log` ancestry through `b61f244` to `fec6697`).
+- Read-only: `git fetch` + `git archive` to `/tmp/sf-ident` (+ run copy `/tmp/sf-sid`); my checkout stayed `fec6697` on the assigned architecture branch, clean, zero product edits, no conflation with any Bun-side fix.
+
+## Executed evidence (pinned Bun 1.4.2, real local Miniflare/workerd/D1 — not HTTP mocks)
+
+- `bun install --frozen-lockfile` (cloud pkg, 54 pkgs) then `node --experimental-strip-types --test test/hosted-supervisors.integration.ts`: **17 pass / 0 fail** (~18.6 s), each named test green (register→read, no-capabilities, cross-tenant 404, wrong-audience 401×6, scope-tamper 401, member 403/404, revoke→old-key 401 + guard 0, expiry 401, worker-revoked exec-deny/cleanup-allow, rotation successor + old-key death, exact-key replay + post-revoke closed, concurrent-key single-successor, idempotent register + 409 on changed payload, revoke→held + reservation-active, audit-drop rollback 503 with zero rows, strict-schema envelope, guard parity exec/cleanup).
+- `tsc --noEmit` (cloud project) clean; `biome check hosted-supervisors.ts` clean.
+- 5 adversarial probes of my own (temporary `zz-adv.test.ts`, since removed; real D1, no mocks): A1 new-session/same-key → 201 **new** supervisor (session-scoped idempotency, see discussion); A2 forged `tasks:create` scope → auth 401 + guard 0 (parity); A3 cross-tenant revoke → 404, row stays `registered`; A4 revoked token → 401 in BOTH execution and cleanup; A5 post-revoke rotation replay → 401. All 5 pass.
+
+## What is correct (adversarially verified)
+
+1. **Audience isolation.** `supervisorBearerFormat` + `WHERE c.audience='hosted-supervisor'` in every auth/guard/replay query; `sfcli_/sfworker_/sfexec_/sfenroll_/short/garbage` all 401, cookie-only 401 (no fallthrough). Credentials live in dedicated `hosted_supervisor_credentials` (hash-at-rest, fixed audience CHECK, composite org FK) — never in `machine_credentials`.
+2. **Epoch discipline.** Rotation = guarded CAS (`UPDATE … SET epoch=epoch+1 WHERE epoch=? + guard`), successor insert requires epoch+1 existence, old credential revoked in the same batch; concurrent second key → 401 with exactly 1 live credential (proven). Revocation bumps epoch and revokes all credentials; old-key replay (me/rotate/guard) fails.
+3. **Exact scope tuple.** Auth compares `JSON.stringify(JSON.parse(scopes))` to the canonical 4-scope JSON; forged subset/superset → 401 both layers (my A2 proves guard parity since ` supervisorGuard` also binds `c.scopes=?`).
+4. **Tenant confinement.** Registration looks up the worker by `(worker_id, organization_id)` and returns 404 otherwise (no cross-tenant probe oracle; my A3 proves revoke is 404 + untouched). Wrong-tenant supervisor_id in revoke cannot touch another org's row (guard-qualified UPDATE + final guarded SELECT).
+5. **Owner/admin authority, continuously.** Register/revoke require `authentication + membership(tenant, admin=true) + csrf`; member (even in-tenant) gets 403. Auth/guard require user active + membership active + role owner/admin + org active — including for cleanup mode (only the *worker* checks relax in cleanup, never org/user/admin).
+6. **Execution vs cleanup split (correct).** Execution requires worker `registered` + unexpired authorization; cleanup permits worker revoked/expired so trusted stop reporting survives worker loss — but NEVER revoked/expired supervisor credential/authorization or dead org/user/admin (A4 proves both modes deny post-revoke). Revocation moves owned `claimed/running` tasks to `held`, preserves `stop_requested`, leaves queued unassigned work and reservations `active` — hold-with-capacity, no assumed stop. Guard parity proven in-test for both modes.
+7. **Atomicity.** Register/revoke/rotate are single D1 batches with authority rechecks inside; audit-drop test proves full rollback (0 supervisors/credentials/operations). No partial rows.
+8. **No capability from registration.** `registered` supervisor has exactly the 4 supervisor scopes; zero `hosted_tasks`/`hosted_entitlements` rows; `sfexec_` audience untouched.
+9. **Hygiene.** Strict Zod everywhere (extra fields/query/body → 400, missing Idempotency-Key → 400), safe `{error:{code,message,request_id}}` envelope with no credential leakage asserted, hashed secrets, sealed (AES-GCM) idempotency/rotation ciphertexts, finite TTLs (1 h credential / 30 d authorization / 24 h operations / 10 min rotation recovery). Tests use `assert` without swallowed errors.
+
+## Discussion (not defects): session-scoped idempotency
+
+- The dispatch asked about "same user NEW session same key creates new supervisor (same as existing request_dedup)". Confirmed and CORRECT: `principal_key = session:<session_id>`, and the UNIQUE is `(organization_id, principal_key, operation, idempotency_key)` — deliberately mirroring `request_dedup`'s `(organization_id, session_id, operation, idempotency_key)` (migration `0001`, `index.ts:303`). My A1 shows new-session/same-key → 201 with a NEW supervisor id. This is pre-existing platform semantics (a key is a per-session retry token, not a cross-session dedupe token), not a defect: same-session/same-key/same-fingerprint replays without duplicates; changed fingerprint → 409; replay SELECT rechecks current browser authority + worker `registered`, so a lost reply never mints a second supervisor within its session. No execution duplication arises (registration admits no tasks/capabilities); no new authority beyond the same owner/admin's live session; fingerprint binds the request body (worker+name), tenant comes from the route + guard, never the client. If the lead later wants cross-session dedupe, that is a product decision with replay-ownership implications — not a safety fix.
+
+## Residual / out-of-scope (not blockers for this slice)
+
+- `supervisorRoute` is not yet wired into `src/index.ts` (helpers note the lead wires it; `index.ts` grep confirms no import) — integration + route-collision check belongs to the wiring stage.
+- ACK/claim/renew/settle/task admission are future handlers; their absence is declared scope, not a finding. `hosted_tasks` partial-unique worker-exclusivity + lease columns already exist from approved `b61f244`.
+- Rotation recovery TTL (10 min) and operation TTL (24 h) are technical defaults awaiting owner retention policy (consistent with prior phases).
+
+## Recommendation
+
+**APPROVED** for the supervisor-identity slice at `56790bc`. Author may proceed to cloud lease handlers on this identity. No Bun-side implication: Bun CCD5 P0 re-review (`e772344` lineage) follows separately.
+- Tool: Bun 1.4.2 (`/root/.bun142/bin/bun`), `node --experimental-strip-types --test`. Scratch `/tmp/sf-ident`, `/tmp/sf-sid` outside repo. Repo HEAD `fec6697`, attached branch, clean, remote unchanged.
+
