@@ -5,21 +5,12 @@
 // runs via `process.execPath` self-spawn with the SWARMFORGE_HOSTED_CHILD=1
 // marker. No external Bun, no repo files, no $bunfs path dependency.
 //
-// LEAD ENTRYPOINT HOOK (src/cli.ts owns the wire; exact snippet):
-//   ```ts
-//   import { isHostedChildRuntime, runHostedChildRuntime } from "./hosted-child";
-//   if (isHostedChildRuntime()) await runHostedChildRuntime();
-//   ```
-//   placed BEFORE `runCli()` at the `import.meta.main` entry so the compiled
-//   binary self-spawn enters child mode without parsing CLI args and without
-//   any env setter (the provider uses Bun.isStandaloneExecutable to choose
-//   self-spawn vs dev script). Lead wires this in src/cli.ts after review;
-//   this file only provides the hook.
+// src/cli.ts dynamically loads this hook before normal command parsing when
+// the isolated provider child marker is present.
 //
 // Entry contract: env SWARMFORGE_HOSTED_CHILD=1 +
 // SWARMFORGE_HOSTED_DURATION=<bounded ms>. Only input is the bounded
 // duration; no secrets, shell, repo/model/env.
-const raw = process.env.SWARMFORGE_HOSTED_DURATION;
 export const HOSTED_CHILD_ENV = "SWARMFORGE_HOSTED_CHILD";
 export const HOSTED_CHILD_DURATION_ENV = "SWARMFORGE_HOSTED_DURATION";
 export const HOSTED_CHILD_EXIT_PARENT_DEAD = 3;
@@ -91,5 +82,3 @@ export async function runHostedChildRuntime(
   finish(0);
   throw new Error("unreachable");
 }
-
-void raw;

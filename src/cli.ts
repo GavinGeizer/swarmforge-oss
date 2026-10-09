@@ -42,6 +42,9 @@ Usage:
   swarmforge cloud login [--cloud-url ORIGIN] [--name NAME] [--no-browser]
   swarmforge cloud status|logout|organizations|rotate [--credentials PATH] [--json]
   swarmforge cloud use ORGANIZATION_UUID [--cloud-url ORIGIN] [--no-browser]
+  swarmforge hosted supervisor [--supervisor-credentials PATH] [--state-path PATH] [--max-tasks N] [--json]
+  swarmforge hosted submit --worker UUID --runtime-ms N --duration-ms N [--task-credentials PATH]
+  swarmforge hosted status|cancel --task UUID [--task-credentials PATH] [--json]
   swarmforge init [--config PATH]
   swarmforge doctor [--live] [--vm ID] [--config PATH] [--env-file PATH] [--json]
   swarmforge [status] [--url URL] [--json] [--no-interactive]
@@ -63,6 +66,7 @@ Usage:
 Commands:
   github    Authorize repository clone/push access through GitHub device login.
   cloud     Link a separate organization-scoped SwarmForge Cloud installation.
+  hosted    Explicitly run or inspect bounded hosted controlled tasks.
   init      Ask for required settings, offer GitHub OAuth for GitHub repositories,
             and create .env in the current directory.
   doctor    Check local setup; --live explicitly probes remote readiness.
@@ -505,6 +509,10 @@ async function run(command: ParsedCommand): Promise<number> {
     case "version":
       write(VERSION);
       return 0;
+    case "hosted": {
+      const { runHosted } = await import("./cli/hosted");
+      return runHosted(command, write);
+    }
     case "cloud": {
       const { cloudCommand } = await import("./cli/cloud");
       return cloudCommand(command, write);
@@ -576,4 +584,11 @@ export async function runCli(args: readonly string[] = process.argv.slice(2)) {
   }
 }
 
-if (import.meta.main) process.exitCode = await runCli();
+if (import.meta.main) {
+  // Only the fixed controlled child hook bypasses normal argument parsing.
+  // The compiled provider self-spawns with an isolated environment.
+  if (process.env.SWARMFORGE_HOSTED_CHILD === "1") {
+    const { runHostedChildRuntime } = await import("./hosted-child");
+    await runHostedChildRuntime();
+  } else process.exitCode = await runCli();
+}

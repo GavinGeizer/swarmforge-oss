@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
-import type { Config } from "../config";
-import type { Coordinator } from "../coordinator";
+import { type Config, loadConfig } from "../config";
+import { Coordinator } from "../coordinator";
 import { HostedTaskClient, SupervisorClient } from "../hosted-client";
 import {
   hostedSupervisorCredentialPath,
@@ -10,115 +10,14 @@ import {
   readHostedTaskCredential,
 } from "../hosted-credentials";
 import { ControlledAgent, ControlledProcessProvider } from "../hosted-runtime";
-import { HostedStore } from "../hosted-store";
+import { ensurePrivateHostedPath, HostedStore } from "../hosted-store";
 import { HostedSupervisor } from "../hosted-supervisor";
-import type { Store } from "../store";
-import { UsageError } from "./arguments";
+import { Store } from "../store";
+import { type HostedCommand, UsageError } from "./arguments";
 
-/** Optional hosted command surface. NOT wired into the global CLI (lead wires after review). */
-export type HostedCommand =
-  | {
-      kind: "hosted";
-      action: "supervisor";
-      supervisorCredentials?: string;
-      statePath?: string;
-      serverUrl?: string;
-      maxTasks?: number;
-      json: boolean;
-    }
-  | {
-      kind: "hosted";
-      action: "submit" | "status" | "cancel";
-      taskCredentials?: string;
-      taskId?: string;
-      workerId?: string;
-      runtimeMs?: number;
-      durationMs?: number;
-      serverUrl?: string;
-      json: boolean;
-    };
+export { type HostedCommand, parseHostedArgs } from "./arguments";
 
-function value(iterator: Iterator<string>, flag: string, noun: string): string {
-  const next = iterator.next();
-  if (next.done || !next.value || next.value.startsWith("-"))
-    throw new UsageError(`${flag} requires ${noun}.`);
-  return next.value;
-}
-
-/** Parses hosted supervisor/submit/status/cancel args. Never accepts raw secrets in argv. */
-export function parseHostedArgs(args: readonly string[]): HostedCommand {
-  const [action, ...tail] = args;
-  if (!action || !["supervisor", "submit", "status", "cancel"].includes(action))
-    throw new UsageError(
-      "hosted requires supervisor, submit, status or cancel",
-    );
-  if (tail.some((a) => /sfexec_|sfsuper_|sfcli_|sfworker_/.test(a)))
-    throw new UsageError(
-      "Hosted commands never accept raw credentials in argv; use private credential file paths.",
-    );
-  const base = { kind: "hosted" as const, json: false };
-  if (action === "supervisor") {
-    const command: HostedCommand = {
-      ...base,
-      action: "supervisor",
-    };
-    const iterator = tail[Symbol.iterator]();
-    for (const arg of iterator) {
-      if (arg === "--supervisor-credentials")
-        command.supervisorCredentials = value(iterator, arg, "a path");
-      else if (arg === "--state-path")
-        command.statePath = value(iterator, arg, "a path");
-      else if (arg === "--server-url")
-        command.serverUrl = value(iterator, arg, "a server origin");
-      else if (arg === "--max-tasks")
-        command.maxTasks = Number(value(iterator, arg, "a task count"));
-      else if (arg === "--json") command.json = true;
-      else throw new UsageError("Unknown hosted supervisor option.");
-    }
-    if (
-      command.maxTasks !== undefined &&
-      (!Number.isSafeInteger(command.maxTasks) || command.maxTasks < 1)
-    )
-      throw new UsageError("hosted supervisor --max-tasks must be >= 1.");
-    return command;
-  }
-  const command: HostedCommand = {
-    ...base,
-    action: action as "submit" | "status" | "cancel",
-  };
-  const iterator = tail[Symbol.iterator]();
-  for (const arg of iterator) {
-    if (arg === "--task-credentials")
-      command.taskCredentials = value(iterator, arg, "a path");
-    else if (arg === "--task")
-      command.taskId = value(iterator, arg, "a task ID");
-    else if (arg === "--worker")
-      command.workerId = value(iterator, arg, "a worker ID");
-    else if (arg === "--runtime-ms")
-      command.runtimeMs = Number(value(iterator, arg, "milliseconds"));
-    else if (arg === "--duration-ms")
-      command.durationMs = Number(value(iterator, arg, "milliseconds"));
-    else if (arg === "--server-url")
-      command.serverUrl = value(iterator, arg, "a server origin");
-    else if (arg === "--json") command.json = true;
-    else throw new UsageError("Unknown hosted task option.");
-  }
-  if (action === "submit") {
-    if (
-      !command.workerId ||
-      !Number.isSafeInteger(command.runtimeMs) ||
-      !Number.isSafeInteger(command.durationMs) ||
-      (command.durationMs ?? 0) <= 0 ||
-      (command.durationMs ?? 0) > (command.runtimeMs ?? 0)
-    )
-      throw new UsageError(
-        "hosted submit requires --worker ID with bounded --runtime-ms/--duration-ms (duration <= runtime).",
-      );
-  } else if (!command.taskId) {
-    throw new UsageError(`hosted ${action} requires --task ID.`);
-  }
-  return command;
-}
+import { chmodSync } from "node:fs";
 
 export interface HostedRuntimeDeps {
   config: Config;
@@ -189,8 +88,16 @@ export function createHostedSupervisor(
     throw new Error(
       "Hosted server origin does not match the enrolled supervisor credential.",
     );
-  const provider = deps.provider ?? new ControlledProcessProvider();
-  const agent = deps.agent ?? new ControlledAgent();
+  const provider =
+    deps.provider ??
+    (deps.coordinator.provider instanceof ControlledProcessProvider
+      ? deps.coordinator.provider
+      : new ControlledProcessProvider());
+  const agent =
+    deps.agent ??
+    (deps.coordinator.agent instanceof ControlledAgent
+      ? deps.coordinator.agent
+      : new ControlledAgent());
   const client =
     deps.supervisorClient ??
     new SupervisorClient(origin, stored.credential, stored.tenant_id);
@@ -233,9 +140,9 @@ export function createHostedSupervisor(
 
 function createHostedTaskClient(
   options: { taskCredentialsPath?: string; serverUrl?: string },
-  deps: HostedRuntimeDeps,
+  deps?: HostedRuntimeDeps,
 ): HostedTaskClient {
-  if (deps.taskClient) return deps.taskClient;
+  if (deps?.taskClient) return deps.taskClient;
   const credentialPath = hostedTaskCredentialPath(options.taskCredentialsPath);
   const stored = readHostedTaskCredential(credentialPath);
   if (!stored)
@@ -253,7 +160,10 @@ function createHostedTaskClient(
 export interface SupervisorLoopResult {
   claimed: number;
   completed: string[];
+  cancelled: string[];
+  failed: string[];
   held: string[];
+  claim_failed: boolean;
 }
 
 /**
@@ -267,21 +177,29 @@ export async function runSupervisorLoop(
   options: { maxTasks?: number } = {},
 ): Promise<SupervisorLoopResult> {
   const maxTasks = options.maxTasks ?? 1;
-  const result: SupervisorLoopResult = { claimed: 0, completed: [], held: [] };
+  const result: SupervisorLoopResult = {
+    claimed: 0,
+    completed: [],
+    cancelled: [],
+    failed: [],
+    held: [],
+    claim_failed: false,
+  };
   for (let i = 0; i < maxTasks; i++) {
     let task: Awaited<ReturnType<HostedSupervisor["claimOnce"]>>;
     try {
       task = await supervisor.claimOnce(randomUUID());
     } catch {
+      result.claim_failed = true;
       break;
     }
     if (!task) break;
     result.claimed++;
     try {
       const run = await supervisor.ackAndStart(task);
-      // Wait for the bounded execution, then verify stop and settle with the
-      // same durable key. Renewal timers/watchdog run inside the supervisor.
-      await Bun.sleep(Math.min(run.authorityMs + 500, 30000));
+      // Child exit or a requested stop determines the outcome. Awaiting the
+      // bounded runtime avoids completing long tasks after an arbitrary 30s.
+      const outcome = await run.completion;
       const stopped = await supervisor
         .stopAndConfirm(task.task_id, "loop completion")
         .catch(() => null);
@@ -289,13 +207,13 @@ export async function runSupervisorLoop(
         result.held.push(task.task_id);
         continue;
       }
-      await supervisor.settle(task.task_id, "completed").catch(() => {
+      await supervisor.settle(task.task_id, outcome).catch(() => {
         result.held.push(task.task_id);
       });
       if (supervisor.activeRuns.has(task.task_id)) {
         result.held.push(task.task_id);
       } else if (!result.held.includes(task.task_id)) {
-        result.completed.push(task.task_id);
+        result[outcome].push(task.task_id);
       }
     } catch {
       result.held.push(task.task_id);
@@ -306,9 +224,8 @@ export async function runSupervisorLoop(
 
 /**
  * Working command handler using the real clients, durable intent/retry/stop,
- * completion, settlement and shutdown. `deps` is required (lead passes the
- * live Config/Store/Coordinator); tests inject production fakes + fixture
- * clients. Never contacts hosted endpoints during parse — only here.
+ * completion, settlement and shutdown. Without injected test dependencies it
+ * constructs fixed inert Config/Store/Coordinator without loading ambient settings. Never contacts hosted endpoints during parse — only here.
  */
 export async function runHosted(
   command: HostedCommand,
@@ -317,56 +234,120 @@ export async function runHosted(
 ): Promise<number> {
   const output = (value: Record<string, unknown>, text: string) =>
     write(command.json ? JSON.stringify(value) : text);
-  const requireDeps = (): HostedRuntimeDeps => {
-    if (!deps)
-      throw new Error(
-        "Hosted commands require runtime dependencies (lead wires the global entrypoint).",
-      );
-    return deps;
-  };
   if (command.action === "supervisor") {
-    const live = requireDeps();
-    const supervisor = createHostedSupervisor(
-      {
-        supervisorCredentialsPath: command.supervisorCredentials,
-        statePath: command.statePath,
-        serverUrl: command.serverUrl,
-      },
-      live,
+    const credentialPath = hostedSupervisorCredentialPath(
+      command.supervisorCredentials,
     );
-    // Startup recovery FIRST: retry durable verified stop + same-key
-    // settlement for held/stopped rows from prior runs BEFORE claiming any
-    // new work. recover() alone only marks held + reports; reconcile()
-    // actually recovers stop/settlement instead of held-forever.
-    const recovered = supervisor.recover();
-    const reconciled = await supervisor
-      .reconcile({ settleOutcome: "cancelled" })
-      .catch(() => ({ stopped: [], settled: [], held: recovered.held }));
-    const looped = await runSupervisorLoop(supervisor, {
-      maxTasks: command.maxTasks ?? 1,
-    });
-    // Shutdown: cancel timers so the process can exit; running children keep
-    // their own absolute deadline + parent-death watchdog.
-    for (const id of [...supervisor.activeRuns.keys()]) {
-      await supervisor.stopAndConfirm(id, "shutdown").catch(() => {});
+    const statePath = hostedSupervisorStatePath(
+      command.statePath,
+      credentialPath,
+    );
+    // Validate enrollment before creating any local state.
+    if (!readHostedSupervisorCredential(credentialPath))
+      throw new Error(
+        "Hosted supervisor is not enrolled. Provide --supervisor-credentials with a private sfsuper_ file.",
+      );
+    let ownedStore: Store | undefined;
+    let ownedHostedStore: HostedStore | undefined;
+    let ownedCoordinator: Coordinator | undefined;
+    let live = deps;
+    if (!live) {
+      const config = loadConfig({
+        FREESTYLE_API_TOKEN: "inert-unused",
+        FREESTYLE_SNAPSHOT_ID: "inert-unused",
+        SWARMFORGE_MODEL_BASE_URL: "https://inert.invalid",
+        SWARMFORGE_MODEL_API_KEY: "inert-unused",
+        SWARMFORGE_MODEL_NAME: "inert-unused",
+        SWARMFORGE_GIT_TREE: "none",
+        SWARMFORGE_GIT_PUSH_MODE: "none",
+        SWARMFORGE_DB_PATH: `${statePath}.workers.sqlite`,
+        SWARMFORGE_METRICS_ENABLED: "false",
+        SWARMFORGE_TOKEN_IDLE_TIMEOUT_SECONDS: "0",
+      });
+      // Open the private mapping first so its parent exists before the core Store.
+      const hostedStore = new HostedStore(statePath);
+      ownedHostedStore = hostedStore;
+      try {
+        ensurePrivateHostedPath(config.SWARMFORGE_DB_PATH);
+        ownedStore = new Store(config.SWARMFORGE_DB_PATH);
+        chmodSync(config.SWARMFORGE_DB_PATH, 0o600);
+        for (const suffix of ["-wal", "-shm"]) {
+          try {
+            chmodSync(`${config.SWARMFORGE_DB_PATH}${suffix}`, 0o600);
+          } catch {}
+        }
+        const provider = new ControlledProcessProvider();
+        const agent = new ControlledAgent();
+        ownedCoordinator = new Coordinator(config, ownedStore, provider, agent);
+        live = {
+          config,
+          store: ownedStore,
+          coordinator: ownedCoordinator,
+          provider,
+          agent,
+          hostedStore,
+        };
+      } catch (error) {
+        hostedStore.close();
+        ownedStore?.close();
+        throw error;
+      }
     }
-    const summary = {
-      event: "supervisor",
-      mode: "controlled",
-      recovered_held: recovered.held.length,
-      reconciled_stopped: reconciled.stopped,
-      reconciled_settled: reconciled.settled,
-      reconciled_held: reconciled.held,
-      claimed: looped.claimed,
-      completed: looped.completed,
-      held: [
-        ...new Set([...recovered.held, ...reconciled.held, ...looped.held]),
-      ],
-    };
-    output(summary, `Hosted supervisor: ${JSON.stringify(summary)}`);
-    return looped.held.length > 0 || reconciled.held.length > 0 ? 2 : 0;
+    let supervisor: HostedSupervisor | undefined;
+    try {
+      supervisor = createHostedSupervisor(
+        {
+          supervisorCredentialsPath: command.supervisorCredentials,
+          statePath: command.statePath,
+          serverUrl: command.serverUrl,
+        },
+        live,
+      );
+      // Startup recovery FIRST: retry durable verified stop + same-key
+      // settlement for held/stopped rows from prior runs BEFORE claiming any
+      // new work. recover() alone only marks held + reports; reconcile()
+      // actually recovers stop/settlement instead of held-forever.
+      const recovered = supervisor.recover();
+      const reconciled = await supervisor
+        .reconcile({ settleOutcome: "cancelled" })
+        .catch(() => ({ stopped: [], settled: [], held: recovered.held }));
+      const looped = await runSupervisorLoop(supervisor, {
+        maxTasks: command.maxTasks ?? 1,
+      });
+      const summary = {
+        event: "supervisor",
+        mode: "controlled",
+        recovered_held: recovered.held.length,
+        reconciled_stopped: reconciled.stopped,
+        reconciled_settled: reconciled.settled,
+        reconciled_held: reconciled.held,
+        claimed: looped.claimed,
+        claim_failed: looped.claim_failed,
+        completed: looped.completed,
+        cancelled: looped.cancelled,
+        failed: looped.failed,
+        held: [...new Set([...reconciled.held, ...looped.held])],
+      };
+      output(summary, `Hosted supervisor: ${JSON.stringify(summary)}`);
+      return looped.claim_failed ||
+        looped.held.length > 0 ||
+        reconciled.held.length > 0
+        ? 2
+        : 0;
+    } finally {
+      try {
+        await supervisor?.close();
+      } finally {
+        if (!supervisor) ownedHostedStore?.close();
+        try {
+          await ownedCoordinator?.stop();
+        } finally {
+          ownedStore?.close();
+        }
+      }
+    }
   }
-  const live = requireDeps();
+  const live = deps;
   const client = createHostedTaskClient(
     {
       taskCredentialsPath: command.taskCredentials,

@@ -13,6 +13,7 @@ export class UsageError extends Error {
 export type ConfigAction = "path" | "show" | "validate";
 
 export type ParsedCommand =
+  | HostedCommand
   | {
       kind: "artifacts";
       action: "list" | "download" | "preview";
@@ -343,6 +344,10 @@ function artifactCommand(rest: readonly string[]): ParsedCommand {
  * refused before any infrastructure is touched.
  */
 export function parseArguments(args: readonly string[]): ParsedCommand {
+  if (args[0] === "hosted") {
+    if (args.slice(1).some(isHelp)) return { kind: "help" };
+    return parseHostedArgs(args.slice(1));
+  }
   const [head, ...rest] = args;
   // No command at all is the historical status invocation.
   if (head === undefined)
@@ -553,5 +558,122 @@ function cloud(rest: readonly string[]): ParsedCommand {
       ))
   )
     throw new UsageError("cloud use requires an organization UUID");
+  return command;
+}
+
+/** Explicit hosted command; parsing reads no credentials or settings. */
+export type HostedCommand =
+  | {
+      kind: "hosted";
+      action: "supervisor";
+      supervisorCredentials?: string;
+      statePath?: string;
+      serverUrl?: string;
+      maxTasks?: number;
+      json: boolean;
+    }
+  | {
+      kind: "hosted";
+      action: "submit" | "status" | "cancel";
+      taskCredentials?: string;
+      taskId?: string;
+      workerId?: string;
+      runtimeMs?: number;
+      durationMs?: number;
+      serverUrl?: string;
+      json: boolean;
+    };
+
+function hostedValue(
+  iterator: Iterator<string>,
+  flag: string,
+  noun: string,
+): string {
+  const next = iterator.next();
+  if (next.done || !next.value || next.value.startsWith("-"))
+    throw new UsageError(`${flag} requires ${noun}.`);
+  return next.value;
+}
+
+/** Parses hosted supervisor/submit/status/cancel args. Never accepts raw secrets in argv. */
+export function parseHostedArgs(args: readonly string[]): HostedCommand {
+  const [action, ...tail] = args;
+  if (!action || !["supervisor", "submit", "status", "cancel"].includes(action))
+    throw new UsageError(
+      "hosted requires supervisor, submit, status or cancel",
+    );
+  if (tail.some((a) => /sfexec_|sfsuper_|sfcli_|sfworker_/.test(a)))
+    throw new UsageError(
+      "Hosted commands never accept raw credentials in argv; use private credential file paths.",
+    );
+  const base = { kind: "hosted" as const, json: false };
+  if (action === "supervisor") {
+    const command: HostedCommand = {
+      ...base,
+      action: "supervisor",
+    };
+    const iterator = tail[Symbol.iterator]();
+    for (const arg of iterator) {
+      if (arg === "--supervisor-credentials")
+        command.supervisorCredentials = hostedValue(iterator, arg, "a path");
+      else if (arg === "--state-path")
+        command.statePath = hostedValue(iterator, arg, "a path");
+      else if (arg === "--server-url")
+        command.serverUrl = hostedValue(iterator, arg, "a server origin");
+      else if (arg === "--max-tasks")
+        command.maxTasks = Number(hostedValue(iterator, arg, "a task count"));
+      else if (arg === "--json") command.json = true;
+      else throw new UsageError("Unknown hosted supervisor option.");
+    }
+    if (
+      command.maxTasks !== undefined &&
+      (!Number.isSafeInteger(command.maxTasks) || command.maxTasks < 1)
+    )
+      throw new UsageError("hosted supervisor --max-tasks must be >= 1.");
+    return command;
+  }
+  const command: HostedCommand = {
+    ...base,
+    action: action as "submit" | "status" | "cancel",
+  };
+  const iterator = tail[Symbol.iterator]();
+  for (const arg of iterator) {
+    if (arg === "--task-credentials")
+      command.taskCredentials = hostedValue(iterator, arg, "a path");
+    else if (arg === "--task")
+      command.taskId = hostedValue(iterator, arg, "a task ID");
+    else if (arg === "--worker")
+      command.workerId = hostedValue(iterator, arg, "a worker ID");
+    else if (arg === "--runtime-ms")
+      command.runtimeMs = Number(hostedValue(iterator, arg, "milliseconds"));
+    else if (arg === "--duration-ms")
+      command.durationMs = Number(hostedValue(iterator, arg, "milliseconds"));
+    else if (arg === "--server-url")
+      command.serverUrl = hostedValue(iterator, arg, "a server origin");
+    else if (arg === "--json") command.json = true;
+    else throw new UsageError("Unknown hosted task option.");
+  }
+  if (action === "submit") {
+    if (
+      !command.workerId ||
+      !Number.isSafeInteger(command.runtimeMs) ||
+      !Number.isSafeInteger(command.durationMs) ||
+      (command.runtimeMs ?? 0) > 3_600_000 ||
+      (command.durationMs ?? 0) <= 0 ||
+      (command.durationMs ?? 0) > (command.runtimeMs ?? 0)
+    )
+      throw new UsageError(
+        "hosted submit requires --worker ID with bounded --runtime-ms/--duration-ms (duration <= runtime).",
+      );
+  } else if (!command.taskId) {
+    throw new UsageError(`hosted ${action} requires --task ID.`);
+  }
+  const uuid =
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+  if (
+    (command.taskId && !uuid.test(command.taskId)) ||
+    (command.workerId && !uuid.test(command.workerId))
+  )
+    throw new UsageError("Hosted task and worker IDs must be UUIDs.");
   return command;
 }

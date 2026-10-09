@@ -15,8 +15,10 @@ export interface ControlledProcessRecord {
   pid: number;
   /** Linux process starttime (clock ticks since boot, /proc/<pid>/stat field 22). */
   starttime: string;
-  /** Resolved /proc/<pid>/exe at spawn; must prefix-match our own binary. */
+  /** Resolved /proc/<pid>/exe at spawn; must equal our own binary. */
   exe: string;
+  /** Kernel boot identity prevents PID/starttime collisions across host reboot. */
+  bootId?: string;
   durationMs: number;
   /** Monotonic (performance.now) start in the SPAWNING process only. */
   startedAtMonoMs: number;
@@ -26,8 +28,12 @@ function pidAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
     return true;
-  } catch {
-    return false;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ESRCH") return false;
+    throw new Error(
+      "Controlled process liveness is uncertain; no OS absence proof.",
+      { cause: error },
+    );
   }
 }
 
@@ -53,6 +59,32 @@ export function procExe(pid: number): string | null {
   }
 }
 
+export function procBootId(): string | null {
+  try {
+    return readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
+  } catch {
+    return null;
+  }
+}
+
+function processExited(pid: number, record?: ControlledProcessRecord): boolean {
+  if (!pidAlive(pid)) return true;
+  // An orphan can remain a zombie under PID 1; it cannot execute any work.
+  // Require the same captured identity before treating that PID as stopped.
+  try {
+    const raw = readFileSync(`/proc/${pid}/stat`, "utf8");
+    const state = raw.slice(raw.lastIndexOf(") ") + 2).split(" ")[0];
+    return (
+      state === "Z" &&
+      record !== undefined &&
+      record.bootId === procBootId() &&
+      procStarttime(pid) === record.starttime
+    );
+  } catch {
+    return false;
+  }
+}
+
 function ownExe(): string | null {
   return procExe(process.pid);
 }
@@ -66,6 +98,7 @@ function ownExe(): string | null {
 export function identityMatches(record: ControlledProcessRecord): boolean {
   if (!Number.isSafeInteger(record.pid) || record.pid <= 0) return false;
   if (!/^\d+$/.test(record.starttime)) return false;
+  if (record.bootId !== procBootId() || !record.bootId) return false;
   const live = procStarttime(record.pid);
   if (live === null || live !== record.starttime) return false;
   const liveExe = procExe(record.pid);
@@ -120,7 +153,9 @@ export class ControlledProcessProvider implements WorkerProvider {
       // Identity-gated: a reused pid running another binary (or an unreadable
       // /proc entry) never reports as our running worker.
       if (identityMatches(record)) return { id, slug: id, state: "running" };
-      return { id, slug: id, state: "stopped" };
+      if (processExited(record.pid, record))
+        return { id, slug: id, state: "stopped" };
+      return null;
     }
     return null;
   }
@@ -140,8 +175,15 @@ export class ControlledProcessProvider implements WorkerProvider {
   trackExternal(vmId: string, record: ControlledProcessRecord): void {
     if (!Number.isSafeInteger(record.pid) || record.pid <= 0)
       throw new Error("Controlled pid record is invalid.");
-    if (!/^\d+$/.test(record.starttime) || !record.exe)
-      throw new Error("Controlled pid record lacks OS start identity.");
+    if (
+      !/^\d+$/.test(record.starttime) ||
+      !record.exe ||
+      !record.bootId ||
+      !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(
+        record.bootId,
+      )
+    )
+      throw new Error("Controlled pid record lacks OS start-identity.");
     this.records.set(vmId, record);
   }
   forget(vmId: string): void {
@@ -168,19 +210,10 @@ export class ControlledProcessProvider implements WorkerProvider {
     // Runtime-native launch choice: a compiled binary self-spawns
     // process.execPath (the child enters the embedded hosted-child runtime
     // via the env marker); source execution runs the dev/test script entry.
-    // Bun.isStandaloneExecutable is documented + typed (bun-types/bun.d.ts,
-    // docs/bundler/executables.mdx) and reports false under direct 1.4.2
-    // source execution — no externally set env marker needed. A legacy
-    // SWARMFORGE_HOSTED_ENTRY override is honored only as a test seam for
-    // exercising the compiled branch from source. Bare `bun` with no script
-    // prints usage and exits 0, so source mode must pass an explicit file.
-    const standalone = (
-      Bun as unknown as { isStandaloneExecutable?: unknown }
-    ).isStandaloneExecutable;
-    const compiled =
-      standalone === true ||
-      (standalone !== false &&
-        process.env.SWARMFORGE_HOSTED_ENTRY !== undefined);
+    // Bun's runtime-owned flag distinguishes this executable from source
+    // execution. No ambient entry marker can select the launch path.
+    const compiled = Bun.isStandaloneExecutable;
+    const startedAtMonoMs = performance.now();
     const child = compiled
       ? spawn(process.execPath, [], {
           env: {
@@ -193,7 +226,11 @@ export class ControlledProcessProvider implements WorkerProvider {
         })
       : spawn(
           process.execPath,
-          [new URL("./hosted-child-script.ts", import.meta.url).pathname],
+          [
+            "--no-env-file",
+            "--config=/dev/null",
+            new URL("./hosted-child-script.ts", import.meta.url).pathname,
+          ],
           {
             env: {
               PATH: "/usr/bin:/bin",
@@ -220,8 +257,8 @@ export class ControlledProcessProvider implements WorkerProvider {
     let exe: string | null = null;
     for (let i = 0; i < 40; i++) {
       starttime = procStarttime(child.pid!);
-      exe = procExe(child.pid!) ?? procExe(process.pid) ?? null;
-      if (starttime !== null && exe !== null) break;
+      exe = procExe(child.pid!);
+      if (starttime !== null && exe === ownExe()) break;
       await Bun.sleep(25);
     }
     const record: ControlledProcessRecord = {
@@ -229,9 +266,14 @@ export class ControlledProcessProvider implements WorkerProvider {
       starttime: starttime ?? "unknown",
       exe: exe ?? "unknown",
       durationMs,
-      startedAtMonoMs: performance.now(),
+      startedAtMonoMs,
+      bootId: procBootId() ?? undefined,
     };
-    if (!/^\d+$/.test(record.starttime) || record.exe === "unknown") {
+    if (
+      !/^\d+$/.test(record.starttime) ||
+      record.exe !== ownExe() ||
+      !record.bootId
+    ) {
       // No OS start identity (non-/proc platform): stop the child at once —
       // never run an unjournaled, unidentifiable process.
       try {
@@ -246,7 +288,14 @@ export class ControlledProcessProvider implements WorkerProvider {
     this.records.set(id, record);
     try {
       this.onSpawn?.(id, record);
-    } catch {}
+    } catch (error) {
+      try {
+        child.kill("SIGKILL");
+      } catch {}
+      await new Promise<void>((resolve) => child.once("exit", () => resolve()));
+      this.children.delete(id);
+      throw error;
+    }
     child.on("exit", (code) => {
       this.children.delete(id);
       onExit(code);
@@ -273,10 +322,14 @@ export class ControlledProcessProvider implements WorkerProvider {
         "Controlled runtime is unknown to this provider; refusing stop proof without a durable pid record.",
       );
     }
-    if (!pidAlive(pid)) {
+    if (processExited(pid, record)) {
       this.children.delete(id);
       return;
     }
+    if (record && !identityMatches(record))
+      throw new Error(
+        "Controlled pid record fails OS start-identity; holding.",
+      );
     if (child) {
       const exited = new Promise<void>((resolve) => {
         child.once("exit", () => resolve());
@@ -292,6 +345,10 @@ export class ControlledProcessProvider implements WorkerProvider {
         Bun.sleep(2000).then(() => false),
       ]);
       if (!grace) {
+        if (!record || !identityMatches(record))
+          throw new Error(
+            "Controlled pid changed before stop escalation; holding OS start-identity uncertainty.",
+          );
         try {
           child.kill("SIGKILL");
         } catch {
@@ -318,17 +375,23 @@ export class ControlledProcessProvider implements WorkerProvider {
         throw new Error("Controlled runtime stop is uncertain; holding state.");
       }
       const deadline = Date.now() + 2000;
-      while (pidAlive(pid) && Date.now() < deadline) await Bun.sleep(50);
-      if (pidAlive(pid)) {
+      while (!processExited(pid, record) && Date.now() < deadline)
+        await Bun.sleep(50);
+      if (!processExited(pid, record)) {
+        if (!record || !identityMatches(record))
+          throw new Error(
+            "Controlled pid changed before stop escalation; holding OS start-identity uncertainty.",
+          );
         try {
           process.kill(pid, "SIGKILL");
         } catch {}
         const killDeadline = Date.now() + 2000;
-        while (pidAlive(pid) && Date.now() < killDeadline) await Bun.sleep(50);
+        while (!processExited(pid, record) && Date.now() < killDeadline)
+          await Bun.sleep(50);
       }
     }
     // Confirm the pid is really gone (no zombie executing agent work).
-    if (pidAlive(pid))
+    if (!processExited(pid, record))
       throw new Error("Controlled runtime stop is uncertain; holding state.");
   }
   /**
@@ -356,9 +419,13 @@ export class ControlledProcessProvider implements WorkerProvider {
       return;
     }
     this.trackExternal(vmId, record);
+    if (record.exe !== ownExe())
+      throw new Error(
+        "Controlled pid record fails OS start-identity: untrusted executable; holding.",
+      );
     // Identity BEFORE signal: never touch an unrelated live process.
     if (!identityMatches(record)) {
-      if (!pidAlive(record.pid)) return; // ghost: proven absent via OS.
+      if (processExited(record.pid, record)) return; // trusted journal identity, proven OS exit.
       throw new Error(
         "Controlled pid record fails OS start-identity; holding instead of signalling an unrelated process.",
       );
@@ -370,16 +437,21 @@ export class ControlledProcessProvider implements WorkerProvider {
       throw new Error("Controlled runtime stop is uncertain; holding state.");
     }
     const deadline = Date.now() + 4000;
-    while (pidAlive(record.pid) && Date.now() < deadline) await Bun.sleep(50);
-    if (pidAlive(record.pid)) {
+    while (!processExited(record.pid, record) && Date.now() < deadline)
+      await Bun.sleep(50);
+    if (!processExited(record.pid, record)) {
+      if (!identityMatches(record))
+        throw new Error(
+          "Controlled pid changed before stop escalation; holding OS start-identity uncertainty.",
+        );
       try {
         process.kill(record.pid, "SIGKILL");
       } catch {}
       const killDeadline = Date.now() + 4000;
-      while (pidAlive(record.pid) && Date.now() < killDeadline)
+      while (!processExited(record.pid, record) && Date.now() < killDeadline)
         await Bun.sleep(50);
     }
-    if (pidAlive(record.pid))
+    if (!processExited(record.pid, record))
       throw new Error("Controlled runtime stop is uncertain; holding state.");
     // Keep the pid record: getWorker reports stopped (exit proof) from it.
   }

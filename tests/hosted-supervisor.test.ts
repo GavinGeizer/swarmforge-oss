@@ -1,21 +1,23 @@
-import { expect, test } from "bun:test";
+import { Database } from "bun:sqlite";
+import { expect, spyOn, test } from "bun:test";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   createHostedSupervisor,
   parseHostedArgs,
   runHosted,
+  runSupervisorLoop,
 } from "../src/cli/hosted";
 import { loadConfig } from "../src/config";
 import { Coordinator } from "../src/coordinator";
 import {
   HostedApiError,
   type HostedTask,
-  HostedTaskClient,
+  HostedTaskClient as ProductionHostedTaskClient,
+  SupervisorClient as ProductionSupervisorClient,
   remainingAuthorityMs,
-  SupervisorClient,
 } from "../src/hosted-client";
 import {
   hostedSupervisorCredentialSchema,
@@ -30,7 +32,7 @@ import {
   ControlledProcessProvider,
   identityMatches,
 } from "../src/hosted-runtime";
-import { HostedStore } from "../src/hosted-store";
+import { HOSTED_MONO_ORIGIN, HostedStore } from "../src/hosted-store";
 import { HostedSupervisor } from "../src/hosted-supervisor";
 import { Store } from "../src/store";
 
@@ -50,7 +52,579 @@ const LEASE = randomUUID();
 const RESERVATION = randomUUID();
 const NOW = Date.now();
 
+async function processReport(child: ReturnType<typeof Bun.spawn>) {
+  const [code, stdout, stderr] = await Promise.all([
+    child.exited,
+    new Response(child.stdout as ReadableStream).text(),
+    new Response(child.stderr as ReadableStream).text(),
+  ]);
+  expect(stderr).toBe("");
+  expect(code).toBe(0);
+  return JSON.parse(stdout.trim().split("\n").at(-1)!);
+}
+
+test("actual process A child >=300ms then NEW process B proves OS stop with foreign clock and full reserved consumption (transport mock)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "hosted-real-restart-"));
+  const statePath = join(dir, "mapping.sqlite");
+  const planPath = join(dir, "plan.json");
+  const task = taskBody({
+    deadline_at: Date.now() + 60000,
+    lease_expires_at: Date.now() + 30000,
+  });
+  await Bun.write(planPath, JSON.stringify({ task, lostReply: false }));
+  const script = new URL("./hosted-recovery-writer.ts", import.meta.url)
+    .pathname;
+  const a = Bun.spawn(
+    [
+      process.execPath,
+      "--no-env-file",
+      "--config=/dev/null",
+      script,
+      "runtime-phase",
+      "a",
+      statePath,
+      planPath,
+    ],
+    {
+      stdin: "pipe",
+      stdout: "pipe",
+      stderr: "pipe",
+      env: { PATH: "/usr/bin:/bin" },
+    },
+  );
+  try {
+    const reader = a.stdout.getReader();
+    let output = "";
+    while (!output.includes("\n")) {
+      const chunk = await reader.read();
+      if (chunk.done)
+        throw new Error("Process A exited before the live-child report.");
+      output += new TextDecoder().decode(chunk.value);
+    }
+    reader.releaseLock();
+    const reportA = JSON.parse(output.trim().split("\n")[0]!);
+    expect(reportA.event).toBe("live");
+    expect(reportA.mapping.runtime_mono_origin).toBe(reportA.origin);
+    expect(reportA.mapping.child_pid).toBeGreaterThan(0);
+    const b = Bun.spawn(
+      [
+        process.execPath,
+        "--no-env-file",
+        "--config=/dev/null",
+        script,
+        "runtime-phase",
+        "b",
+        statePath,
+        planPath,
+      ],
+      {
+        stdin: "ignore",
+        stdout: "pipe",
+        stderr: "pipe",
+        env: { PATH: "/usr/bin:/bin" },
+      },
+    );
+    const reportB = await processReport(b);
+    expect(reportB.origin).not.toBe(reportA.origin);
+    expect(reportB.before.runtime_mono_origin).toBe(reportA.origin);
+    expect(reportB.result.settled).toEqual([TASK]);
+    expect(reportB.result.held).toEqual([]);
+    expect(reportB.mapping.stop_confirmed).toBe(true);
+    expect(reportB.mapping.consumed_runtime_unknown).toBe(true);
+    expect(reportB.mapping.consumed_runtime_ms).toBe(task.runtime_ms);
+    expect(reportB.spawned).toBe(0);
+    expect(() => process.kill(reportA.pid, 0)).toThrow();
+  } finally {
+    a.stdin.end();
+    await a.exited;
+    rmSync(dir, { recursive: true, force: true });
+  }
+}, 30000);
+
+test("lost COMPLETED response + actual NEW process retries identical frozen request/key once (transport mock)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "hosted-lost-response-"));
+  try {
+    const statePath = join(dir, "mapping.sqlite");
+    const planPath = join(dir, "plan.json");
+    await Bun.write(
+      planPath,
+      JSON.stringify({
+        task: taskBody({
+          deadline_at: Date.now() + 60000,
+          lease_expires_at: Date.now() + 30000,
+        }),
+        lostReply: true,
+      }),
+    );
+    const script = new URL("./hosted-recovery-writer.ts", import.meta.url)
+      .pathname;
+    const invoke = (phase: string) =>
+      Bun.spawn(
+        [
+          process.execPath,
+          "--no-env-file",
+          "--config=/dev/null",
+          script,
+          "runtime-phase",
+          phase,
+          statePath,
+          planPath,
+        ],
+        {
+          stdin: "pipe",
+          stdout: "pipe",
+          stderr: "pipe",
+          env: { PATH: "/usr/bin:/bin" },
+        },
+      );
+    const reportA = await processReport(invoke("a"));
+    expect(reportA.event).toBe("lost-response");
+    expect(reportA.intent.outcome).toBe("completed");
+    expect(reportA.intent.consumed_runtime_ms).toBeGreaterThanOrEqual(300);
+    const reportB = await processReport(invoke("b"));
+    expect(reportB.origin).not.toBe(reportA.origin);
+    expect(reportB.result.settled).toEqual([TASK]);
+    expect(reportB.intent).toEqual(reportA.intent);
+    expect(reportB.mapping.consumed_runtime_unknown).toBe(false);
+    expect(reportB.spawned).toBe(0);
+    const server = new Database(`${statePath}.transport-mock.sqlite`);
+    try {
+      const attempts = server
+        .query("SELECT key,payload FROM attempts ORDER BY rowid")
+        .all();
+      expect(attempts).toHaveLength(2);
+      expect(attempts[0]).toEqual(attempts[1]);
+      expect(
+        server.query("SELECT count(*) AS count FROM operations").get(),
+      ).toEqual({ count: 1 });
+    } finally {
+      server.close();
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}, 30000);
+
+test("settlement 409 plus same-outcome terminal status cannot establish consumption receipt", async () => {
+  let statusReads = 0;
+  const fixture = api((request) => {
+    if (request.url.endsWith("/settle")) return json({}, 409);
+    statusReads++;
+    return json({
+      task: taskBody({ state: "completed" }),
+      directive: "stop",
+      server_time: Date.now(),
+    });
+  });
+  const h = harness();
+  try {
+    h.hostedStore.claimMapping({
+      task_id: TASK,
+      tenant_id: TENANT,
+      worker_id: WORKER,
+      local_worker_id: `pending-${TASK}`,
+      lease_id: LEASE,
+      fence: 7,
+      supervisor_id: SUPERVISOR,
+      reservation_id: RESERVATION,
+      stop_confirmed: false,
+      consumed_runtime_ms: 0,
+      idempotency_key: randomUUID(),
+      rotation_key: null,
+      settlement_key: null,
+    });
+    h.hostedStore.markStoppedZeroUse(TASK, randomUUID());
+    const supervisor = supervisorUnderTest(h, fixture.origin);
+    await expect(supervisor.settle(TASK, "completed")).rejects.toThrow(
+      /conflicts/i,
+    );
+    expect(h.hostedStore.get(TASK)?.state).toBe("held");
+    expect(h.hostedStore.get(TASK)?.stop_confirmed).toBe(true);
+    expect(h.hostedStore.settlementIntent(TASK)?.outcome).toBe("completed");
+    expect(statusReads).toBe(0);
+    await expect(supervisor.settle(TASK, "cancelled")).rejects.toThrow(
+      /Frozen settlement intent conflicts/i,
+    );
+  } finally {
+    fixture.close();
+    h.store.close();
+    h.hostedStore.close();
+  }
+});
+
+test("actual measured runtime freezes a completed settlement before a lost reply and retries the identical receipt (transport mock)", async () => {
+  const assignment = taskBody();
+  const attempts: { key: string; payload: string }[] = [];
+  const effects = new Map<string, string>();
+  const h = harness();
+  const fixture = api(async (request) => {
+    if (request.url.endsWith("/claim"))
+      return json({ task: assignment, server_time: Date.now() });
+    if (request.url.endsWith("/ack"))
+      return json({
+        task: { ...assignment, state: "running" },
+        directive: "continue",
+        server_time: Date.now(),
+      });
+    const key = request.headers.get("idempotency-key")!;
+    const payload = await request.text();
+    const frozen = h.hostedStore.settlementIntent(TASK)!;
+    expect(frozen.key).toBe(key);
+    expect(JSON.parse(payload).consumed_runtime_ms).toBe(
+      frozen.consumed_runtime_ms,
+    );
+    expect(h.hostedStore.get(TASK)?.stop_confirmed).toBe(true);
+    attempts.push({ key, payload });
+    if (!effects.has(key)) effects.set(key, payload);
+    if (attempts.length === 1)
+      return new Response("reply lost after effect", {
+        headers: { "content-type": "application/json" },
+      });
+    expect(effects.get(key)).toBe(payload);
+    return json({
+      task: { ...assignment, state: JSON.parse(payload).outcome },
+    });
+  });
+  try {
+    const supervisor = supervisorUnderTest(h, fixture.origin);
+    await supervisor.ackAndStart((await supervisor.claimOnce())!);
+    await Bun.sleep(350);
+    await supervisor.stopAndConfirm(TASK, "completed");
+    await expect(supervisor.settle(TASK, "completed")).rejects.toThrow(
+      /response is invalid/i,
+    );
+    const intent = h.hostedStore.settlementIntent(TASK)!;
+    expect(intent.outcome).toBe("completed");
+    expect(intent.consumed_runtime_ms).toBeGreaterThanOrEqual(300);
+    expect(() =>
+      h.hostedStore.db
+        .query("UPDATE hosted_settlement_intents SET intent=? WHERE task_id=?")
+        .run("{}", TASK),
+    ).toThrow(/immutable/i);
+    expect(() =>
+      h.hostedStore.db
+        .query("DELETE FROM hosted_settlement_intents WHERE task_id=?")
+        .run(TASK),
+    ).toThrow(/immutable/i);
+    expect(() =>
+      h.hostedStore.freezeSettlement(TASK, "cancelled", randomUUID()),
+    ).toThrow(/conflicts/i);
+    const recovered = supervisorUnderTest(h, fixture.origin);
+    recovered.recover();
+    expect((await recovered.reconcile()).settled).toEqual([TASK]);
+    expect(attempts).toHaveLength(2);
+    expect(attempts[0]).toEqual(attempts[1]);
+    expect(effects.size).toBe(1);
+    expect(h.hostedStore.settlementIntent(TASK)).toEqual(intent);
+  } finally {
+    fixture.close();
+    h.store.close();
+    h.hostedStore.close();
+  }
+}, 10000);
+
+test("recovery cannot settle an acknowledged launch with no captured PID as zero use", async () => {
+  const fixture = supervisorFixture();
+  const h = harness();
+  try {
+    const supervisor = supervisorUnderTest(h, fixture.origin);
+    await supervisor.claimOnce();
+    h.hostedStore.grantStartRight(TASK, { lease_id: LEASE, fence: 7 });
+    // A crash between spawn and the PID journal is ambiguous. Recovery must
+    // preserve that fact even when the visible state becomes held.
+    supervisor.recover();
+    const result = await supervisor.reconcile();
+    expect(result.held).toEqual([TASK]);
+    expect(result.settled).toEqual([]);
+    expect(h.hostedStore.get(TASK)?.stop_confirmed).toBe(false);
+    expect(h.hostedStore.get(TASK)?.consumed_runtime_unknown).toBe(true);
+    expect(h.hostedStore.get(TASK)?.consumed_runtime_ms).toBe(60000);
+  } finally {
+    fixture.close();
+    h.store.close();
+    h.hostedStore.close();
+  }
+});
+
+test("a durable mapping whose start right was never granted can settle zero use", async () => {
+  const fixture = supervisorFixture();
+  const h = harness();
+  try {
+    const supervisor = supervisorUnderTest(h, fixture.origin);
+    await supervisor.claimOnce();
+    const stopped = await supervisor.stopAndConfirm(TASK, "never launched");
+    expect(stopped.stop_confirmed).toBe(true);
+    expect(stopped.consumed_runtime_ms).toBe(0);
+    expect(stopped.consumed_runtime_unknown).toBe(false);
+    expect(h.provider.spawnedCommands).toEqual([]);
+  } finally {
+    fixture.close();
+    h.store.close();
+    h.hostedStore.close();
+  }
+});
+
+test("OS permission failure never proves a live controlled process stopped", async () => {
+  const h = harness();
+  const worker = h.store.create({
+    team_id: "hosted",
+    task_id: "permission-proof",
+    role: "hosted-controlled",
+    prompt: "hosted controlled inert probe",
+    timeout_seconds: 30,
+  });
+  const vm = await h.provider.createWorker(worker);
+  const tracked = h.store.patch(worker.worker_id, { vm_id: vm.id });
+  await h.provider.startControlled(tracked, 5000, () => {});
+  const signal = process.kill.bind(process);
+  const denied = spyOn(process, "kill").mockImplementation((pid, kind) => {
+    if (kind === 0 && pid === h.provider.recordFor(vm.id)?.pid)
+      throw Object.assign(new Error("permission denied"), { code: "EPERM" });
+    return signal(pid, kind);
+  });
+  try {
+    await expect(h.provider.stopWorkerRuntime(tracked)).rejects.toThrow(
+      /permission|uncertain|identity/i,
+    );
+  } finally {
+    denied.mockRestore();
+    expect((await h.provider.getWorker(vm.id))?.state).toBe("running");
+    await h.provider.stopWorkerRuntime(tracked);
+    h.store.close();
+    h.hostedStore.close();
+  }
+});
+
+test("an unmatched live PID is unknown and must remain alive", async () => {
+  const h = harness();
+  const worker = h.store.create({
+    team_id: "hosted",
+    task_id: "identity-proof",
+    role: "hosted-controlled",
+    prompt: "hosted controlled inert probe",
+    timeout_seconds: 30,
+  });
+  const vm = await h.provider.createWorker(worker);
+  const tracked = h.store.patch(worker.worker_id, { vm_id: vm.id });
+  await h.provider.startControlled(tracked, 5000, () => {});
+  const fresh = new ControlledProcessProvider();
+  const captured = h.provider.recordFor(vm.id)!;
+  try {
+    fresh.trackExternal(vm.id, {
+      ...captured,
+      starttime: String(Number(captured.starttime) + 1),
+    });
+    expect(await fresh.getWorker(vm.id)).toBeNull();
+    await expect(fresh.stopWorkerRuntime(tracked)).rejects.toThrow(/identity/i);
+    expect(identityMatches(captured)).toBe(true);
+  } finally {
+    await h.provider.stopWorkerRuntime(tracked);
+    h.store.close();
+    h.hostedStore.close();
+  }
+});
+
+test("stop escalation rechecks OS identity before SIGKILL when the captured identity changes", async () => {
+  const h = harness();
+  const worker = h.store.create({
+    team_id: "hosted",
+    task_id: "escalation-proof",
+    role: "hosted-controlled",
+    prompt: "hosted controlled inert probe",
+    timeout_seconds: 30,
+  });
+  const vm = await h.provider.createWorker(worker);
+  const tracked = h.store.patch(worker.worker_id, { vm_id: vm.id });
+  await h.provider.startControlled(tracked, 10000, () => {});
+  const fresh = new ControlledProcessProvider();
+  const record = { ...h.provider.recordFor(vm.id)! };
+  const signal = process.kill.bind(process);
+  let kills = 0;
+  const changed = spyOn(process, "kill").mockImplementation((pid, kind) => {
+    if (pid === record.pid && kind === "SIGTERM") {
+      // Synthetic identity change tests the escalation gate without reusing
+      // a real PID or sending any signal to an unrelated process.
+      record.starttime = String(Number(record.starttime) + 1);
+      return true;
+    }
+    if (pid === record.pid && kind === "SIGKILL") kills++;
+    return signal(pid, kind);
+  });
+  try {
+    await expect(fresh.stopPidWithProof(vm.id, record)).rejects.toThrow(
+      /identity|uncertain/i,
+    );
+    expect(kills).toBe(0);
+  } finally {
+    changed.mockRestore();
+    await h.provider.stopWorkerRuntime(tracked);
+    h.store.close();
+    h.hostedStore.close();
+  }
+}, 15000);
+
+test("actual 31s task outlives the initial 30s lease through timely renewal and completes in full (transport mock)", async () => {
+  const durationMs = 31000;
+  const assignment = taskBody({
+    controlled_duration_ms: durationMs,
+    deadline_at: Date.now() + 120000,
+    lease_expires_at: Date.now() + 30000,
+  });
+  let settlement: { outcome: string; consumed_runtime_ms: number } | null =
+    null;
+  const fixture = api(async (request) => {
+    if (request.url.endsWith("/claim"))
+      return json({ task: assignment, server_time: Date.now() });
+    if (request.url.endsWith("/ack") || request.url.endsWith("/renew"))
+      return json({
+        task: {
+          ...assignment,
+          state: "running",
+          lease_expires_at: Date.now() + 30000,
+        },
+        directive: "continue",
+        server_time: Date.now(),
+      });
+    settlement = (await request.json()) as typeof settlement;
+    return json({ task: { ...assignment, state: settlement!.outcome } });
+  });
+  const h = harness();
+  const supervisor = supervisorUnderTest(h, fixture.origin);
+  try {
+    const summary = await runSupervisorLoop(supervisor);
+    expect(summary.completed).toEqual([TASK]);
+    expect(summary.held).toEqual([]);
+    expect(settlement!.outcome).toBe("completed");
+    expect(settlement!.consumed_runtime_ms).toBeGreaterThanOrEqual(durationMs);
+  } finally {
+    fixture.close();
+    await supervisor.close();
+    await h.coordinator.stop();
+    h.store.close();
+  }
+}, 45000);
+
+test("a partition before renewal stops the full requested child early and settles cancelled (transport mock)", async () => {
+  const assignment = taskBody({
+    controlled_duration_ms: 3500,
+    deadline_at: Date.now() + 60000,
+    lease_expires_at: Date.now() + 2000,
+  });
+  const observed: { outcome: string | null } = { outcome: null };
+  const fixture = api(async (request) => {
+    if (request.url.endsWith("/claim"))
+      return json({ task: assignment, server_time: Date.now() });
+    if (request.url.endsWith("/ack"))
+      return json({
+        task: { ...assignment, state: "running" },
+        directive: "continue",
+        server_time: Date.now(),
+      });
+    if (request.url.endsWith("/renew")) return json({}, 503);
+    observed.outcome = ((await request.json()) as { outcome: string }).outcome;
+    return json({ task: { ...assignment, state: observed.outcome } });
+  });
+  const h = harness();
+  const supervisor = supervisorUnderTest(h, fixture.origin);
+  try {
+    const result = await runSupervisorLoop(supervisor);
+    expect(h.hostedStore.get(TASK)?.runtime_duration_ms).toBe(3500);
+    expect(h.hostedStore.get(TASK)?.consumed_runtime_ms).toBeLessThan(3500);
+    expect(observed.outcome).toBe("cancelled");
+    expect(result.cancelled).toEqual([TASK]);
+    expect(result.completed).toEqual([]);
+    expect(result.held).toEqual([]);
+  } finally {
+    fixture.close();
+    await supervisor.close();
+    await h.coordinator.stop();
+    h.store.close();
+  }
+}, 10000);
+
+test("a delayed renewal denial cannot reopen an already stopped and settled task", async () => {
+  const assignment = taskBody({
+    controlled_duration_ms: 1500,
+    deadline_at: Date.now() + 60000,
+    lease_expires_at: Date.now() + 2000,
+  });
+  const fixture = api(async (request) => {
+    if (request.url.endsWith("/claim"))
+      return json({ task: assignment, server_time: Date.now() });
+    if (request.url.endsWith("/ack"))
+      return json({
+        task: { ...assignment, state: "running" },
+        directive: "continue",
+        server_time: Date.now(),
+      });
+    if (request.url.endsWith("/renew")) {
+      await Bun.sleep(2000);
+      return json({}, 503);
+    }
+    return json({
+      task: {
+        ...assignment,
+        state: ((await request.json()) as { outcome: string }).outcome,
+      },
+    });
+  });
+  const h = harness();
+  const supervisor = supervisorUnderTest(h, fixture.origin);
+  try {
+    expect((await runSupervisorLoop(supervisor)).completed).toEqual([TASK]);
+    await Bun.sleep(2000);
+    expect(h.hostedStore.get(TASK)?.state).toBe("settled");
+    expect(h.hostedStore.get(TASK)?.stop_confirmed).toBe(true);
+  } finally {
+    fixture.close();
+    await supervisor.close();
+    await h.coordinator.stop();
+    h.store.close();
+  }
+}, 10000);
+
+test("server stop during the actual CLI supervisor loop settles cancelled, never completed (transport mock)", async () => {
+  const assignment = taskBody({
+    controlled_duration_ms: 5000,
+    deadline_at: Date.now() + 60000,
+    lease_expires_at: Date.now() + 4000,
+  });
+  const observed: { outcome: string | null } = { outcome: null };
+  const fixture = api(async (request) => {
+    if (request.url.endsWith("/claim"))
+      return json({ task: assignment, server_time: Date.now() });
+    if (request.url.endsWith("/ack"))
+      return json({
+        task: { ...assignment, state: "running" },
+        directive: "continue",
+        server_time: Date.now(),
+      });
+    if (request.url.endsWith("/renew"))
+      return json({
+        task: { ...assignment, state: "stop_requested" },
+        directive: "stop",
+        server_time: Date.now(),
+      });
+    observed.outcome = ((await request.json()) as { outcome: string }).outcome;
+    return json({ task: { ...assignment, state: observed.outcome } });
+  });
+  const h = harness();
+  const supervisor = supervisorUnderTest(h, fixture.origin);
+  try {
+    const summary = await runSupervisorLoop(supervisor);
+    expect(observed.outcome).toBe("cancelled");
+    expect(summary.completed).toEqual([]);
+    expect(summary.held).toEqual([]);
+  } finally {
+    fixture.close();
+    await supervisor.close();
+    await h.coordinator.stop();
+    h.store.close();
+  }
+}, 15000);
+
 function taskBody(overrides: Record<string, unknown> = {}) {
+  const now = Date.now();
   return {
     task_id: TASK,
     tenant_id: TENANT,
@@ -61,31 +635,60 @@ function taskBody(overrides: Record<string, unknown> = {}) {
     policy_version: 3,
     runtime_ms: 60000,
     controlled_duration_ms: 5000,
-    created_at: NOW - 1000,
-    deadline_at: NOW + 60000,
+    created_at: now - 1000,
+    deadline_at: now + 60000,
     lease_id: LEASE,
     supervisor_id: SUPERVISOR,
     fence: 7,
-    lease_expires_at: NOW + 30000,
+    lease_expires_at: now + 30000,
     ...overrides,
   };
 }
 
+// Socket-denied environments use an explicit injected fetch transport mock.
+// Unrestricted CI still exercises the HTTP listener and the native fetch path.
+const mockTransports = new Map<string, typeof fetch>();
+class SupervisorClient extends ProductionSupervisorClient {
+  constructor(origin: string, credential: string, tenantId: string) {
+    super(origin, credential, tenantId, mockTransports.get(origin));
+  }
+}
+class HostedTaskClient extends ProductionHostedTaskClient {
+  constructor(origin: string, credential: string, tenantId: string) {
+    super(origin, credential, tenantId, mockTransports.get(origin));
+  }
+}
 function api(handler: (request: Request) => Response | Promise<Response>) {
-  const server = Bun.serve({
-    hostname: "127.0.0.1",
-    port: 0,
-    fetch: handler,
-  });
-  return {
-    origin: `http://127.0.0.1:${server.port}`,
-    close: () => server.stop(true),
-  };
+  try {
+    const server = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch: handler,
+    });
+    return {
+      origin: `http://127.0.0.1:${server.port}`,
+      close: () => server.stop(true),
+    };
+  } catch (error) {
+    if ((error as { code?: string }).code !== "EPERM") throw error;
+    const origin = `http://localhost:${20000 + mockTransports.size}`;
+    mockTransports.set(origin, (async (
+      input: RequestInfo | URL,
+      init?: RequestInit,
+    ) => handler(new Request(input, init))) as typeof fetch);
+    return {
+      origin,
+      close: () => {
+        mockTransports.delete(origin);
+      },
+    };
+  }
 }
 const json = (value: unknown, status = 200) => Response.json(value, { status });
 
 function supervisorFixture() {
-  return api((request) => {
+  const assignment = taskBody();
+  return api(async (request) => {
     const url = new URL(request.url);
     const auth = request.headers.get("authorization") ?? "";
     if (auth !== `Bearer sfsuper_${"b".repeat(43)}`)
@@ -105,32 +708,39 @@ function supervisorFixture() {
         authorization_expires_at: NOW + 86_400_000,
       });
     if (url.pathname === "/v1/supervisor/claim")
-      return json({ task: taskBody(), server_time: Date.now() });
+      return json({ task: assignment, server_time: Date.now() });
     const ack = url.pathname.match(/^\/v1\/supervisor\/tasks\/(.+)\/ack$/);
     if (ack)
       return json({
-        task: taskBody({ state: "running" }),
+        task: { ...assignment, state: "running" },
         directive: "continue",
         server_time: Date.now(),
       });
     const renew = url.pathname.match(/^\/v1\/supervisor\/tasks\/(.+)\/renew$/);
     if (renew)
       return json({
-        task: taskBody({ state: "running" }),
+        task: {
+          ...assignment,
+          state: "running",
+          lease_expires_at: Date.now() + 30000,
+        },
         directive: "continue",
         server_time: Date.now(),
       });
     const status = url.pathname.match(/^\/v1\/supervisor\/tasks\/(.+)$/);
     if (status && request.method === "GET")
       return json({
-        task: taskBody({ state: "running" }),
+        task: { ...assignment, state: "running" },
         directive: "continue",
         server_time: Date.now(),
       });
     const settle = url.pathname.match(
       /^\/v1\/supervisor\/tasks\/(.+)\/settle$/,
     );
-    if (settle) return json({ task: taskBody({ state: "completed" }) });
+    if (settle) {
+      const body = (await request.json()) as { outcome: string };
+      return json({ task: { ...assignment, state: body.outcome } });
+    }
     return json({ error: "not found" }, 404);
   });
 }
@@ -747,7 +1357,9 @@ test("D3 stale identity never signals an unrelated live victim (no unsafe reuse 
       startedAtMonoMs: 0,
       durationMs: 1000,
     };
-    await fresh.stopPidWithProof("controlled-ghost", ghost);
+    await expect(
+      fresh.stopPidWithProof("controlled-ghost", ghost),
+    ).rejects.toThrow(/start-identity/i);
     await h.provider.stopWorkerRuntime(trackedVictim);
   } finally {
     h.store.close();
@@ -755,10 +1367,9 @@ test("D3 stale identity never signals an unrelated live victim (no unsafe reuse 
   }
 }, 30000);
 
-test("D2 restart accounting: foreign monotonic start settles reserved budget + unknown", async () => {
-  // A persisted performance.now from a PRIOR process cannot be subtracted
-  // from the new process clock: markStopped rejects the foreign origin and
-  // the row settles conservatively via markHeldUnknown (reserved budget).
+test("legacy origin unit: reopening a journal cannot authorize a foreign-clock measurement", async () => {
+  // This seeded store unit covers legacy origin rejection. The actual
+  // process A/B runtime and lost-reply tests above cover real recovery.
   const h = harness();
   const dir = mkdtempSync(join(tmpdir(), "hosted-d2-"));
   const dbPath = join(dir, "mapping.sqlite");
@@ -789,7 +1400,7 @@ test("D2 restart accounting: foreign monotonic start settles reserved budget + u
       exe: "/proc/self/exe-test",
     });
     store.close();
-    // New process reopens the SAME on-disk DB: the persisted clock is now foreign.
+    // Reopen the file in the same process; the legacy literal remains foreign.
     const reopened = new HostedStore(dbPath);
     try {
       const row = reopened.get(TASK)!;
@@ -800,7 +1411,7 @@ test("D2 restart accounting: foreign monotonic start settles reserved budget + u
           TASK,
           {
             elapsedMs: performance.now() - row.runtime_started_at_mono_ms!,
-            monoOrigin: "unknown",
+            monoOrigin: HOSTED_MONO_ORIGIN,
           },
           randomUUID(),
         ),
@@ -1032,11 +1643,13 @@ test("compiled launcher + hook from empty cwd: actual provider self-spawn via Bu
       "const worker = { worker_id: 'probe', vm_id: 'controlled-probe' } as never;",
       "let exited: number | null | undefined;",
       "await provider.startControlled(worker, Number(process.argv[3] ?? '400'), (c) => { exited = c; });",
+      'const recAtStart = provider.recordFor("controlled-probe");',
+      "const starttimeOk = recAtStart ? procStarttime(recAtStart.pid) === recAtStart.starttime : null;",
       "const t0 = Date.now();",
       "while (exited === undefined && Date.now() - t0 < 15000) await Bun.sleep(50);",
       'const vm = await provider.getWorker("controlled-probe");',
       'const rec = provider.recordFor("controlled-probe");',
-      "console.log(JSON.stringify({ standalone: Bun.isStandaloneExecutable, exited, vmState: vm?.state ?? null, pid: rec?.pid ?? null, starttimeOk: rec ? procStarttime(rec.pid) === rec.starttime : null, exeSelf: rec?.exe ?? null }));",
+      "console.log(JSON.stringify({ standalone: Bun.isStandaloneExecutable, exited, vmState: vm?.state ?? null, pid: rec?.pid ?? null, starttimeOk, exeSelf: rec?.exe ?? null }));",
       'provider.forget("controlled-probe");',
       'process.exit(exited === 0 && vm?.state === "stopped" ? 0 : 1);',
       "",
@@ -1346,17 +1959,17 @@ test("cancellation race and uncertain stop: settle requires confirmed exit", asy
     // Duplicate/lost settlement retries use the same key.
     const key = randomUUID();
     const first = await supervisor.settle(TASK, "cancelled", key);
-    expect(first.state).toBe("completed");
+    expect(first.state).toBe("cancelled");
     expect(h.hostedStore.get(TASK)?.state).toBe("settled");
     const remembered = h.hostedStore.readIdempotentResponse<HostedTask>(key, {
       tenant_id: TENANT,
       principal: SUPERVISOR,
       resource: TASK,
       operation: "settle",
-      fingerprint: `${LEASE}:7:cancelled`,
+      fingerprint: h.hostedStore.settlementIntent(TASK)!.fingerprint,
     });
     expect(remembered).not.toBeNull();
-    expect(remembered!.state).toBe("completed");
+    expect(remembered!.state).toBe("cancelled");
   } finally {
     fixture.close();
     h.store.close();
@@ -1567,6 +2180,14 @@ test("held capacity: uncertain execution is quarantined, never released or reuse
 
 test("runtime env and logs carry no bearer, provider, repo or model credentials", async () => {
   const h = harness();
+  const originals = Object.fromEntries(
+    [
+      "SWARMFORGE_API_TOKEN",
+      "FREESTYLE_API_TOKEN",
+      "SWARMFORGE_MODEL_API_KEY",
+      "GITHUB_TOKEN",
+    ].map((key) => [key, process.env[key]]),
+  );
   try {
     const worker = h.store.create({
       team_id: "hosted",
@@ -1581,39 +2202,31 @@ test("runtime env and logs carry no bearer, provider, repo or model credentials"
     process.env.SWARMFORGE_API_TOKEN = `sfsuper_${"c".repeat(43)}`;
     process.env.FREESTYLE_API_TOKEN = "provider-secret";
     process.env.SWARMFORGE_MODEL_API_KEY = "model-secret";
-    let output = "";
-    const { spawn } = await import("node:child_process");
-    const script = new URL(
-      "../scripts/hosted-controlled-runtime.ts",
-      import.meta.url,
-    ).pathname;
-    const child = spawn(process.execPath, [script, "300"], {
-      env: { PATH: "/usr/bin:/bin", TZ: "UTC" },
-      stdio: ["pipe", "pipe", "pipe"],
-    });
-    child.stdout?.on("data", (chunk: Buffer) => {
-      output += chunk.toString("utf8");
-    });
-    child.stderr?.on("data", (chunk: Buffer) => {
-      output += chunk.toString("utf8");
-    });
-    const code: number | null = await new Promise((resolve) => {
-      child.on("exit", resolve);
-      child.stdin?.end("hold");
-    });
-    // stdin "hold" keeps the pipe open until exit; child completes normally.
-    void tracked;
-    expect(code === 0 || code === 3).toBe(true);
-    expect(output).not.toMatch(
-      /sfsuper_|sfexec_|provider-secret|model-secret/i,
-    );
-    expect(JSON.stringify(h.provider.spawnedCommands)).not.toMatch(
-      /sfsuper_|sfexec_|provider-secret|model-secret/i,
-    );
+    process.env.GITHUB_TOKEN = "repo-secret";
+    await h.provider.startControlled(tracked, 5000, () => {});
+    try {
+      const record = h.provider.recordFor(vm.id)!;
+      expect(identityMatches(record)).toBe(true);
+      const environment = readFileSync(`/proc/${record.pid}/environ`, "utf8");
+      expect(environment.split("\0").filter(Boolean).sort()).toEqual([
+        "PATH=/usr/bin:/bin",
+        "SWARMFORGE_HOSTED_DURATION=5000",
+        "TZ=UTC",
+      ]);
+      expect(environment).not.toMatch(
+        /sfsuper_|sfexec_|provider-secret|model-secret|repo-secret/i,
+      );
+      expect(JSON.stringify(h.provider.spawnedCommands)).not.toMatch(
+        /sfsuper_|sfexec_|provider-secret|model-secret|repo-secret/i,
+      );
+    } finally {
+      await h.provider.stopWorkerRuntime(tracked);
+    }
   } finally {
-    delete process.env.SWARMFORGE_API_TOKEN;
-    delete process.env.FREESTYLE_API_TOKEN;
-    delete process.env.SWARMFORGE_MODEL_API_KEY;
+    for (const [key, value] of Object.entries(originals)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
     h.store.close();
     h.hostedStore.close();
   }
@@ -1658,7 +2271,7 @@ test("hosted CLI parses supervisor/submit/status/cancel and rejects raw secrets"
       { kind: "hosted", action: "status", taskId: TASK, json: true },
       () => {},
     ),
-  ).rejects.toThrow(/runtime dependencies/i);
+  ).rejects.toThrow(/credential not found/i);
 });
 
 test("production handler: hosted submit/status/cancel via real TaskClient", async () => {
@@ -1830,7 +2443,16 @@ test("production handler: supervisor loop claims, runs, stops and settles", asyn
         json: true,
       },
       (text) => lines.push(text),
-      { config: h.config, store: h.store, coordinator: h.coordinator },
+      {
+        config: h.config,
+        store: h.store,
+        coordinator: h.coordinator,
+        supervisorClient: new SupervisorClient(
+          fixture.origin,
+          `sfsuper_${"b".repeat(43)}`,
+          TENANT,
+        ),
+      },
     );
     expect([0, 2]).toContain(code);
     const summary = JSON.parse(lines[0]!);

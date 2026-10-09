@@ -159,6 +159,7 @@ abstract class HostedHttpClient {
     origin: string,
     protected readonly bearer: string,
     pattern: RegExp,
+    private readonly transport: typeof fetch = fetch,
   ) {
     this.origin = cloudOrigin(origin);
     if (!pattern.test(bearer)) throw new Error("Hosted credential is invalid.");
@@ -176,7 +177,7 @@ abstract class HostedHttpClient {
       const started = Date.now();
       let response: Response;
       try {
-        response = await fetch(this.origin + path, {
+        response = await this.transport(this.origin + path, {
           method,
           redirect: "error",
           credentials: "omit",
@@ -277,8 +278,9 @@ export class HostedTaskClient extends HostedHttpClient {
     origin: string,
     credential: string,
     readonly tenantId: string,
+    transport?: typeof fetch,
   ) {
-    super(origin, credential, execPattern);
+    super(origin, credential, execPattern, transport);
     parse(id, tenantId, "tenant");
   }
   private tenant(path: string): string {
@@ -365,8 +367,9 @@ export class SupervisorClient extends HostedHttpClient {
     origin: string,
     credential: string,
     readonly tenantId: string,
+    transport?: typeof fetch,
   ) {
-    super(origin, credential, superPattern);
+    super(origin, credential, superPattern, transport);
     parse(id, tenantId, "tenant");
   }
   async identity() {

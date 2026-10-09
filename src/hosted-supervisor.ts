@@ -13,7 +13,11 @@ import type {
   ControlledAgent,
   ControlledProcessProvider,
 } from "./hosted-runtime";
-import type { HostedMapping, HostedStore } from "./hosted-store";
+import {
+  HOSTED_MONO_ORIGIN,
+  type HostedMapping,
+  type HostedStore,
+} from "./hosted-store";
 import type { Store } from "./store";
 
 export interface SupervisorCredentialView {
@@ -46,6 +50,9 @@ export interface ActiveRun {
   task: HostedTask;
   authorityMs: number;
   startedAt: number;
+  completion: Promise<"completed" | "failed" | "cancelled">;
+  leaseDeadlineMonoMs: number;
+  absoluteDeadlineMonoMs: number;
 }
 
 /**
@@ -59,6 +66,12 @@ export class HostedSupervisor {
   private runs = new Map<string, ActiveRun>();
   private renewTimers = new Map<string, Timer>();
   private watchdogs = new Map<string, Timer>();
+  private finishRuns = new Map<
+    string,
+    (outcome: "completed" | "failed" | "cancelled") => void
+  >();
+  private renewalOperations = new Set<Promise<unknown>>();
+  private stopOperations = new Map<string, Promise<HostedMapping>>();
   constructor(private readonly options: HostedSupervisorOptions) {}
 
   private credential(): SupervisorCredentialView {
@@ -108,6 +121,7 @@ export class HostedSupervisor {
       idempotency_key: idempotencyKey,
       rotation_key: null,
       settlement_key: null,
+      runtime_budget_ms: task.runtime_ms,
     });
     void created;
     // Bind the canonical Store worker id once the local worker exists so the
@@ -150,10 +164,22 @@ export class HostedSupervisor {
         idempotency_key: ackKey,
         rotation_key: null,
         settlement_key: null,
+        runtime_budget_ms: task.runtime_ms,
       }).mapping;
     }
     if (!task.lease_id)
       throw new Error("Claim without lease; holding without execution.");
+    if (
+      mapping.tenant_id !== task.tenant_id ||
+      mapping.worker_id !== task.worker_id ||
+      mapping.supervisor_id !== task.supervisor_id ||
+      mapping.reservation_id !== task.reservation_id ||
+      mapping.lease_id !== task.lease_id ||
+      mapping.fence !== task.fence
+    )
+      throw new Error(
+        "Claim conflicts with the durable task binding; holding without execution.",
+      );
     // Full actual ACK RTT measured AFTER the await with the monotonic clock:
     // clock jumps cannot extend authority, and a delayed response (server_time
     // captured before transport delay) shortens authority or rejects start.
@@ -178,7 +204,12 @@ export class HostedSupervisor {
       reply.task.task_id !== task.task_id ||
       reply.task.tenant_id !== task.tenant_id ||
       reply.task.lease_id !== task.lease_id ||
-      reply.task.fence !== task.fence
+      reply.task.fence !== task.fence ||
+      reply.task.worker_id !== task.worker_id ||
+      reply.task.reservation_id !== task.reservation_id ||
+      reply.task.supervisor_id !== this.credential().supervisor_id ||
+      reply.task.execution_class !== "controlled" ||
+      reply.task.state !== "running"
     )
       throw new Error(
         "Ack binds a different task/tenant/lease; refusing to execute.",
@@ -202,7 +233,15 @@ export class HostedSupervisor {
     const minimum = this.options.minLifetimeMs ?? 5000;
     if (!Number.isSafeInteger(authority) || authority < minimum)
       throw new Error("Too little remaining authority; refusing to start.");
-    const duration = Math.min(authority, reply.task.controlled_duration_ms);
+    const duration = reply.task.controlled_duration_ms;
+    const absoluteAuthority = remainingAuthorityMs({
+      leaseExpiresAt: reply.task.deadline_at,
+      deadlineAt: reply.task.deadline_at,
+      serverTime: reply.server_time,
+      requestRttMs: rtt,
+      safetyMarginMs: this.options.safetyMarginMs ?? 2000,
+    });
+    const absoluteDeadlineMonoMs = performance.now() + absoluteAuthority;
     void mapping;
     // B duplicate-task fix: durable start-right-once CAS grant AFTER the
     // server ack but BEFORE any staging/spawn. Granted exactly once per
@@ -268,7 +307,7 @@ export class HostedSupervisor {
     // The CAS grant above already transitioned mapped -> acknowledged
     // atomically; re-read the granted row instead of a second transition.
     const acknowledged = this.options.hostedStore.get(task.task_id);
-    if (!acknowledged || acknowledged.state !== "acknowledged")
+    if (acknowledged?.state !== "acknowledged")
       throw new Error(
         "Hosted start right lost before staging; refusing start.",
       );
@@ -291,6 +330,7 @@ export class HostedSupervisor {
         `Hosted worker left paused state before start (state=${pausedAgain.state}); refusing start.`,
       );
     }
+    this.credential();
     // D4: re-budget immediately before start — subtract the staging that
     // already elapsed (monotonic) plus a final safety margin, and refuse when
     // the remainder cannot cover a minimal useful execution.
@@ -299,13 +339,22 @@ export class HostedSupervisor {
       performance.now() - stagingStartMonoMs,
     );
     const startBudgetMs = Math.floor(
-      duration - stagingElapsedMs - (this.options.safetyMarginMs ?? 2000) / 2,
+      authority - stagingElapsedMs - (this.options.safetyMarginMs ?? 2000) / 2,
     );
     if (startBudgetMs < Math.min(1000, duration))
       throw new Error(
         "Hosted staging consumed the remaining authority; refusing start.",
       );
-    const launchDurationMs = Math.min(duration, Math.max(1, startBudgetMs));
+    // The requested workload remains whole across renewable leases. A short
+    // first lease cannot shorten the workload and then claim completion.
+    if (
+      duration > reply.task.runtime_ms ||
+      duration > absoluteDeadlineMonoMs - performance.now()
+    )
+      throw new Error(
+        "Too little absolute task authority for the full controlled duration; refusing start.",
+      );
+    const launchDurationMs = duration;
     // Fail-closed journal: BOTH the on-spawn hook and the post-spawn persist
     // must succeed. A DB-write failure after process start stops the runtime
     // at once and holds — never a running unjournaled process.
@@ -316,14 +365,16 @@ export class HostedSupervisor {
       pid: number;
       starttime: string;
       exe: string;
+      bootId?: string;
     }) => {
       this.options.hostedStore.markRuntimeStarted(task.task_id, {
         startedAtMonoMs: record.startedAtMonoMs,
-        monoOrigin: "spawn-process",
+        monoOrigin: HOSTED_MONO_ORIGIN,
         durationMs: record.durationMs,
         pid: record.pid,
         starttime: record.starttime,
         exe: record.exe,
+        bootId: record.bootId,
       });
       journaled = true;
     };
@@ -331,27 +382,45 @@ export class HostedSupervisor {
       journalStart(record);
       void vmId;
     };
-    await this.options.provider.startControlled(staged, launchDurationMs, () => {
-      this.options.agent.completeSession(staged);
-    });
-    this.options.provider.onSpawn = null;
-    // Persist actual start even if the hook raced: resolve from the provider.
-    // Any DB-write failure here is fatal to the launch: stop the runtime
-    // immediately and hold instead of running unjournaled.
+    const completion = new Promise<"completed" | "failed" | "cancelled">(
+      (resolve) => {
+        this.finishRuns.set(task.task_id, resolve);
+      },
+    );
+    const spawnStartedMonoMs = performance.now();
     try {
+      await this.options.provider.startControlled(
+        staged,
+        launchDurationMs,
+        (code) => {
+          this.options.agent.completeSession(staged);
+          const finish = this.finishRuns.get(task.task_id);
+          // A requested stop resolves cancelled before any signal. Only a
+          // natural child exit may produce completed.
+          finish?.(
+            code === 0 && performance.now() - spawnStartedMonoMs >= duration
+              ? "completed"
+              : "failed",
+          );
+        },
+      );
       const vmNow = store.get(local.worker_id).vm_id;
       const rec = vmNow ? this.options.provider.recordFor(vmNow) : null;
       if (rec && !journaled) journalStart(rec);
       if (!journaled)
         throw new Error("Hosted launch journal missing after start.");
-    } catch (e) {
+    } catch (error) {
       try {
         await this.options.provider.stopWorkerRuntime(staged);
       } catch {}
+      this.finishRuns.get(task.task_id)?.("failed");
+      this.finishRuns.delete(task.task_id);
       this.options.hostedStore.markHeldUnknown(taskIdSafe(task));
       throw new Error(
-        `Hosted launch journal failed; runtime stopped and held. ${(e as Error).message}`,
+        `Hosted launch journal failed; runtime stop attempted and held. ${(error as Error).message}`,
       );
+    } finally {
+      this.options.provider.onSpawn = null;
     }
     const running: ActiveRun = {
       mapping: this.options.hostedStore.updateLease(
@@ -360,37 +429,53 @@ export class HostedSupervisor {
         "running",
       ),
       task: reply.task,
-      authorityMs: duration,
+      authorityMs: launchDurationMs,
       startedAt: Date.now(),
+      completion,
+      leaseDeadlineMonoMs: spawnStartedMonoMs + startBudgetMs,
+      absoluteDeadlineMonoMs: Math.min(
+        absoluteDeadlineMonoMs,
+        spawnStartedMonoMs + reply.task.runtime_ms,
+      ),
     };
     void acknowledged;
     this.runs.set(task.task_id, running);
-    // Independent watchdog: stops the child at the duration deadline even if
-    // renewal/parent IPC fails.
-    const watchdog = setTimeout(() => {
-      void this.stopAndConfirm(task.task_id, "watchdog deadline").catch(
-        () => {},
-      );
-    }, duration);
-    watchdog.unref?.();
-    this.watchdogs.set(task.task_id, watchdog);
-    // Renewal only refreshes the same task/lease/fence; absolute runtime never extends.
-    this.scheduleRenew(task.task_id, duration);
+    // The child owns its workload duration. This independent authority
+    // watchdog leaves room for natural exit while stopping at the lease
+    // budget even when startup, renewal or IPC is delayed.
+    this.armLeaseWatchdog(task.task_id, running.leaseDeadlineMonoMs);
+    // Renew the current lease before its authority expires. The child's
+    // absolute workload duration and task deadline never move.
+    this.scheduleRenew(
+      task.task_id,
+      running.leaseDeadlineMonoMs - performance.now(),
+    );
     return running;
+  }
+
+  private armLeaseWatchdog(taskId: string, deadlineMonoMs: number): void {
+    const previous = this.watchdogs.get(taskId);
+    if (previous) clearTimeout(previous);
+    const watchdog = setTimeout(
+      () => {
+        void this.stopAndConfirm(taskId, "watchdog deadline").catch(() => {});
+      },
+      Math.max(0, deadlineMonoMs - performance.now()),
+    );
+    watchdog.unref?.();
+    this.watchdogs.set(taskId, watchdog);
   }
 
   private scheduleRenew(taskId: string, authorityMs: number): void {
     const existing = this.renewTimers.get(taskId);
     if (existing) clearTimeout(existing);
-    const delay = Math.max(1000, Math.floor(authorityMs / 2));
+    const delay = Math.max(1, Math.floor(authorityMs / 2));
     const timer = setTimeout(() => {
-      void this.renewOnce(taskId).catch((e) => {
-        if (
-          /stop intent|revoked|expired|denied|lease/i.test((e as Error).message)
-        ) {
-          void this.stopAndConfirm(taskId, "renewal failed").catch(() => {});
-        }
-      });
+      const operation = this.renewOnce(taskId).catch(() =>
+        this.stopAndConfirm(taskId, "renewal failed").catch(() => {}),
+      );
+      this.renewalOperations.add(operation);
+      void operation.finally(() => this.renewalOperations.delete(operation));
     }, delay);
     timer.unref?.();
     this.renewTimers.set(taskId, timer);
@@ -404,6 +489,7 @@ export class HostedSupervisor {
     const mapping = this.options.hostedStore.get(taskId);
     if (!mapping) throw new Error("Unknown hosted task; refusing renewal.");
     let reply: LeaseReply;
+    const startedMonoMs = performance.now();
     try {
       reply = await this.options.client.renew(
         taskId,
@@ -413,14 +499,27 @@ export class HostedSupervisor {
     } catch (e) {
       // Failed heartbeat/network/401/409/stale fence: durable stop intent,
       // hold the uncertain reservation, retry settlement later with same key.
-      this.options.hostedStore.markStopIntended(taskId);
+      const latest = this.options.hostedStore.get(taskId);
+      if (latest && !latest.stop_confirmed)
+        this.options.hostedStore.markStopIntended(taskId);
       throw e;
     }
+    if (this.options.hostedStore.get(taskId)?.stop_confirmed)
+      throw new Error(
+        "Renewal arrived after independently confirmed stop; refusing to reopen task.",
+      );
     if (
       reply.task.fence !== mapping.fence ||
-      reply.task.lease_id !== mapping.lease_id
-    )
+      reply.task.lease_id !== mapping.lease_id ||
+      reply.task.task_id !== mapping.task_id ||
+      reply.task.tenant_id !== mapping.tenant_id ||
+      reply.task.worker_id !== mapping.worker_id ||
+      reply.task.supervisor_id !== mapping.supervisor_id ||
+      reply.task.reservation_id !== mapping.reservation_id
+    ) {
+      this.options.hostedStore.markStopIntended(taskId);
       throw new Error("Stale fence on renew; recording stop intent.");
+    }
     if (
       reply.directive === "stop" ||
       reply.task.state === "stop_requested" ||
@@ -430,11 +529,44 @@ export class HostedSupervisor {
       await this.stopAndConfirm(taskId, "server stop directive");
       return reply;
     }
+    const running = this.runs.get(taskId);
+    if (
+      !running ||
+      this.options.hostedStore.get(taskId)?.state !== "running" ||
+      performance.now() >= running.leaseDeadlineMonoMs
+    )
+      throw new Error(
+        "Renewal arrived after local stop or authority expiry; refusing to restart.",
+      );
+    if (
+      reply.task.state !== "running" ||
+      reply.task.lease_expires_at === null ||
+      reply.task.deadline_at !== running.task.deadline_at ||
+      reply.task.runtime_ms !== running.task.runtime_ms ||
+      reply.task.controlled_duration_ms !== running.task.controlled_duration_ms
+    )
+      throw new Error("Renewal changes the fixed task authority; refusing.");
+    const remaining = remainingAuthorityMs({
+      leaseExpiresAt: reply.task.lease_expires_at,
+      deadlineAt: reply.task.deadline_at,
+      serverTime: reply.server_time,
+      requestRttMs: Math.ceil(performance.now() - startedMonoMs),
+      safetyMarginMs: this.options.safetyMarginMs ?? 2000,
+    });
+    if (remaining <= 0)
+      throw new Error("Renewal provides no remaining authority; refusing.");
+    this.credential();
     this.options.hostedStore.updateLease(
       taskId,
       { lease_id: mapping.lease_id, fence: mapping.fence },
       "running",
     );
+    running.leaseDeadlineMonoMs = Math.min(
+      performance.now() + remaining,
+      running.absoluteDeadlineMonoMs,
+    );
+    this.armLeaseWatchdog(taskId, running.leaseDeadlineMonoMs);
+    this.scheduleRenew(taskId, running.leaseDeadlineMonoMs - performance.now());
     return reply;
   }
 
@@ -442,9 +574,29 @@ export class HostedSupervisor {
    * Independently confirmed stop: provider stopWorkerRuntime must verify exit.
    * A Coordinator cancelled/paused label alone is never accepted as proof.
    */
-  async stopAndConfirm(taskId: string, reason: string): Promise<HostedMapping> {
+  stopAndConfirm(taskId: string, reason: string): Promise<HostedMapping> {
+    const pending = this.stopOperations.get(taskId);
+    if (pending) return pending;
+    const operation = this.performStop(taskId, reason);
+    this.stopOperations.set(taskId, operation);
+    void operation.then(
+      () => this.stopOperations.delete(taskId),
+      () => this.stopOperations.delete(taskId),
+    );
+    return operation;
+  }
+
+  private async performStop(
+    taskId: string,
+    reason: string,
+  ): Promise<HostedMapping> {
     const mapping = this.options.hostedStore.get(taskId);
     if (!mapping) throw new Error("Unknown hosted task; refusing stop.");
+    if (mapping.stop_confirmed) {
+      this.clearTaskTimers(taskId);
+      return mapping;
+    }
+    this.finishRuns.get(taskId)?.("cancelled");
     this.options.hostedStore.markStopIntended(taskId);
     // Placeholder rows (never staged, no process ever started): there is no
     // runtime to stop, but without durable proof the row must stay HELD, not
@@ -453,6 +605,7 @@ export class HostedSupervisor {
     const staged = !mapping.local_worker_id.startsWith("pending-");
     if (!staged) {
       if (
+        !mapping.start_right_granted &&
         mapping.child_pid === null &&
         mapping.runtime_started_at_mono_ms === null &&
         mapping.runtime_mono_origin === "unknown" &&
@@ -494,6 +647,7 @@ export class HostedSupervisor {
               pid: mapping.child_pid,
               starttime: mapping.child_starttime,
               exe: mapping.child_exe,
+              bootId: mapping.child_boot_id ?? undefined,
               startedAtMonoMs: mapping.runtime_started_at_mono_ms ?? 0,
               durationMs: mapping.runtime_duration_ms,
             }
@@ -516,9 +670,9 @@ export class HostedSupervisor {
         // start — the persisted clock is foreign. Settle conservatively with
         // the reserved budget + unknown flag instead of a fake measurement.
         this.clearTaskTimers(taskId);
-        this.options.hostedStore.markHeldUnknown(taskId);
-        throw new Error(
-          `Controlled stop uncertain (${reason}); canonical row missing, stopped via pid proof but holding with reserved budget.`,
+        return this.options.hostedStore.markStoppedConservative(
+          taskId,
+          mapping.settlement_key ?? randomUUID(),
         );
       }
       this.options.hostedStore.markHeldUnknown(taskId);
@@ -540,6 +694,7 @@ export class HostedSupervisor {
             pid: mapping.child_pid,
             starttime: mapping.child_starttime,
             exe: mapping.child_exe,
+            bootId: mapping.child_boot_id ?? undefined,
             startedAtMonoMs: mapping.runtime_started_at_mono_ms ?? 0,
             durationMs: mapping.runtime_duration_ms,
           }
@@ -576,12 +731,12 @@ export class HostedSupervisor {
     // prior process (or unknown origin) can NEVER be subtracted from this
     // process clock — hold with the conservative reserved budget instead.
     if (
-      mapping.runtime_mono_origin !== "spawn-process" ||
+      mapping.runtime_mono_origin !== HOSTED_MONO_ORIGIN ||
       mapping.runtime_started_at_mono_ms === null
     ) {
-      this.options.hostedStore.markHeldUnknown(taskId);
-      throw new Error(
-        `Controlled stop uncertain (${reason}); foreign monotonic origin, holding with reserved budget.`,
+      return this.options.hostedStore.markStoppedConservative(
+        taskId,
+        mapping.settlement_key ?? randomUUID(),
       );
     }
     const elapsed = Math.max(
@@ -590,7 +745,7 @@ export class HostedSupervisor {
     );
     return this.options.hostedStore.markStopped(
       taskId,
-      { elapsedMs: elapsed, monoOrigin: "spawn-process" },
+      { elapsedMs: elapsed, monoOrigin: HOSTED_MONO_ORIGIN },
       mapping.settlement_key ?? randomUUID(),
     );
   }
@@ -602,6 +757,7 @@ export class HostedSupervisor {
       map.delete(taskId);
     }
     this.runs.delete(taskId);
+    this.finishRuns.delete(taskId);
   }
 
   /**
@@ -646,33 +802,73 @@ export class HostedSupervisor {
     if (!mapping) throw new Error("Unknown hosted task; refusing settlement.");
     if (!mapping.stop_confirmed)
       throw new Error("Settlement requires independently confirmed stop.");
-    const key = (settlementKey ??
-      mapping.settlement_key ??
-      randomUUID()) as `${string}-${string}-${string}-${string}-${string}`;
-    const settled = await this.options.client.settle(
-      taskId,
-      {
-        lease_id: mapping.lease_id,
-        fence: mapping.fence,
-        outcome,
-        stop_confirmed: true,
-        consumed_runtime_ms: mapping.consumed_runtime_ms,
-      },
-      key,
-    );
-    this.options.hostedStore.rememberIdempotentResponse(
-      key,
-      {
-        tenant_id: mapping.tenant_id,
-        principal: this.credential().supervisor_id,
-        resource: taskId,
-        operation: "settle",
-        fingerprint: `${mapping.lease_id}:${mapping.fence}:${outcome}`,
-      },
-      settled,
-    );
-    this.options.hostedStore.markSettled(taskId);
-    return settled;
+    const previous = this.options.hostedStore.settlementIntent(taskId);
+    const key =
+      settlementKey ?? previous?.key ?? mapping.settlement_key ?? randomUUID();
+    if (
+      previous &&
+      (previous.key !== key ||
+        previous.outcome !== outcome ||
+        previous.lease_id !== mapping.lease_id ||
+        previous.fence !== mapping.fence ||
+        previous.task_id !== mapping.task_id ||
+        previous.tenant_id !== mapping.tenant_id ||
+        previous.worker_id !== mapping.worker_id ||
+        previous.reservation_id !== mapping.reservation_id ||
+        previous.supervisor_id !== mapping.supervisor_id)
+    )
+      throw new Error(
+        "Frozen settlement intent conflicts with a different payload or key.",
+      );
+    const intent =
+      previous ??
+      this.options.hostedStore.freezeSettlement(taskId, outcome, key);
+    if (intent.supervisor_id !== this.credential().supervisor_id)
+      throw new Error("Frozen settlement belongs to a different supervisor.");
+    // Only a successful response to THIS exact-key request is a receipt.
+    // A 409 followed by terminal status is insufficient consumption evidence.
+    try {
+      const settled = await this.options.client.settle(
+        taskId,
+        {
+          lease_id: intent.lease_id,
+          fence: intent.fence,
+          outcome: intent.outcome,
+          stop_confirmed: true,
+          consumed_runtime_ms: intent.consumed_runtime_ms,
+        },
+        intent.key as `${string}-${string}-${string}-${string}-${string}`,
+      );
+      if (
+        settled.task_id !== intent.task_id ||
+        settled.tenant_id !== intent.tenant_id ||
+        settled.worker_id !== intent.worker_id ||
+        settled.reservation_id !== intent.reservation_id ||
+        settled.supervisor_id !== intent.supervisor_id ||
+        settled.lease_id !== intent.lease_id ||
+        settled.fence !== intent.fence ||
+        settled.state !== intent.outcome
+      )
+        throw new Error(
+          "Settlement receipt does not bind the frozen request; holding.",
+        );
+      this.options.hostedStore.rememberIdempotentResponse(
+        intent.key,
+        {
+          tenant_id: intent.tenant_id,
+          principal: intent.supervisor_id,
+          resource: intent.task_id,
+          operation: "settle",
+          fingerprint: intent.fingerprint,
+        },
+        settled,
+      );
+      this.options.hostedStore.markSettled(taskId);
+      return settled;
+    } catch (error) {
+      this.options.hostedStore.markHeld(taskId);
+      throw error;
+    }
   }
 
   /**
@@ -726,9 +922,13 @@ export class HostedSupervisor {
           this.options.hostedStore.markHeld(mapping.task_id);
         } catch {}
       }
-      if (mapping.state === "stopped") {
+      if (mapping.stop_confirmed) {
         try {
-          await this.settle(mapping.task_id, outcome);
+          await this.settle(
+            mapping.task_id,
+            this.options.hostedStore.settlementIntent(mapping.task_id)
+              ?.outcome ?? outcome,
+          );
           settled.push(mapping.task_id);
         } catch {
           held.push(mapping.task_id);
@@ -743,13 +943,33 @@ export class HostedSupervisor {
         continue;
       }
       try {
-        await this.settle(mapping.task_id, outcome);
+        await this.settle(
+          mapping.task_id,
+          this.options.hostedStore.settlementIntent(mapping.task_id)?.outcome ??
+            outcome,
+        );
         settled.push(mapping.task_id);
       } catch {
         held.push(mapping.task_id);
       }
     }
     return { stopped, settled, held };
+  }
+
+  /** Close owned journal after all timers and local child stop attempts finish. */
+  async close(): Promise<void> {
+    try {
+      for (const taskId of [...this.runs.keys()])
+        await this.stopAndConfirm(taskId, "shutdown").catch(() => {});
+      await Promise.allSettled([...this.renewalOperations]);
+    } finally {
+      for (const taskId of new Set([
+        ...this.renewTimers.keys(),
+        ...this.watchdogs.keys(),
+      ]))
+        this.clearTaskTimers(taskId);
+      this.options.hostedStore.close();
+    }
   }
 
   get activeRuns(): ReadonlyMap<string, ActiveRun> {
