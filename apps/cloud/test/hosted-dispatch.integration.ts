@@ -462,10 +462,10 @@ test("dispatch: settlement consumes meter exactly once; duplicate same-payload i
   const { h, a, supervisor } = await setup();
   try {
     await h.seedQueuedTask(a.tenant, supervisor.worker_id, a.user, {
-      quantity: "100",
+      quantity: "10000",
       withAllowance: {
         allowed_quantity: "60000",
-        reserved_quantity: "100",
+        reserved_quantity: "10000",
         consumed_quantity: "0",
       },
     });
@@ -615,10 +615,10 @@ test("dispatch: failed meter CAS rejects without partial terminal state", async 
   const { h, a, supervisor } = await setup();
   try {
     await h.seedQueuedTask(a.tenant, supervisor.worker_id, a.user, {
-      quantity: "100",
+      quantity: "10000",
       withAllowance: {
         allowed_quantity: "60000",
-        reserved_quantity: "100",
+        reserved_quantity: "10000",
         consumed_quantity: "0",
       },
     });

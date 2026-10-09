@@ -358,7 +358,9 @@ export async function dispatchFixture(origin = "https://api.example.invalid") {
           "controlled",
           overrides.withAllowance.allowed_quantity ?? "60000",
           overrides.withAllowance.consumed_quantity ?? "0",
-          overrides.withAllowance.reserved_quantity ?? "1",
+          overrides.withAllowance.reserved_quantity ??
+            overrides.quantity ??
+            String(runtime),
           now,
           now + 86400000,
           now,
@@ -401,7 +403,7 @@ export async function dispatchFixture(origin = "https://api.example.invalid") {
           workerId,
           allowanceId,
           "task_execution",
-          overrides.quantity ?? "1",
+          overrides.quantity ?? String(runtime),
           "active",
           now,
           now + 60000,

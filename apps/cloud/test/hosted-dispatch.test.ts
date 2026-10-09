@@ -1628,3 +1628,146 @@ test("dispatch SQL: independently verified operator recovery fits D1 limits and 
     x.h.close();
   }
 });
+
+test("dispatch SQL: worker original enroller loss denies every execution election even under a different valid supervisor admin", async () => {
+  for (const op of ["claim", "ack", "renew"] as const) {
+    const x = await setup();
+    try {
+      const admin = await x.h.login(200),
+        now = Date.now();
+      await x.h.db
+        .prepare("INSERT INTO memberships VALUES(?,?,'admin','active',?,?)")
+        .bind(x.a.tenant, admin.user, now, now)
+        .run();
+      x.s = await x.h.registerSupervisor(
+        { ...admin, tenant: x.a.tenant },
+        x.w.worker_id,
+      );
+      const v = await seed(x),
+        t = op === "claim" ? null : await claim(x),
+        lease = t ? { lease_id: t.lease_id, fence: t.fence } : null;
+      let before: Awaited<ReturnType<typeof persisted>> | undefined;
+      x.h.db.beforeBatch = async () => {
+        x.h.db.beforeBatch = undefined;
+        await x.h.db
+          .prepare(
+            "UPDATE memberships SET role='member' WHERE organization_id=? AND user_id=?",
+          )
+          .bind(x.a.tenant, x.a.user)
+          .run();
+        before = await persisted(x);
+      };
+      const response = await x.h.request(
+        op === "claim"
+          ? "/v1/supervisor/claim"
+          : `/v1/supervisor/tasks/${v.task}/${op}`,
+        headers(x),
+        "POST",
+        lease ?? {},
+      );
+      assert.equal(response.status, op === "claim" ? 200 : 409);
+      if (op === "claim")
+        assert.equal(claimReplySchema.parse(await response.json()).task, null);
+      assert.deepEqual(await persisted(x), before);
+      if (lease) {
+        const status = await x.h.request(
+          `/v1/supervisor/tasks/${v.task}`,
+          headers(x),
+        );
+        assert.equal(
+          leaseReplySchema.parse(await status.json()).directive,
+          "stop",
+        );
+        assert.equal(
+          (
+            await x.h.request(
+              `/v1/supervisor/tasks/${v.task}/settle`,
+              headers(x),
+              "POST",
+              report({ lease }),
+            )
+          ).status,
+          200,
+        );
+      }
+    } finally {
+      x.h.close();
+    }
+  }
+});
+
+test("dispatch SQL: election refuses a proposed lease whose captured timestamp is already expired on the SQL clock", async () => {
+  for (const op of ["claim", "renew"] as const) {
+    const x = await setup(),
+      realNow = Date.now;
+    try {
+      const v = await seed(x),
+        t = op === "claim" ? null : await claim(x),
+        lease = t ? { lease_id: t.lease_id, fence: t.fence } : null;
+      await x.h.db
+        .prepare(
+          "UPDATE hosted_entitlements SET valid_from=valid_from-60000 WHERE organization_id=?",
+        )
+        .bind(x.a.tenant)
+        .run();
+      const before = await persisted(x);
+      // Request timestamp captured 31 seconds before the SQL election; existing
+      // renew lease and task deadline are still live on the actual SQL clock.
+      Date.now = () => realNow() - 31000;
+      const response = await x.h.request(
+        op === "claim"
+          ? "/v1/supervisor/claim"
+          : `/v1/supervisor/tasks/${v.task}/renew`,
+        headers(x),
+        "POST",
+        lease ?? {},
+      );
+      Date.now = realNow;
+      assert.equal(response.status, op === "claim" ? 200 : 409);
+      if (op === "claim")
+        assert.equal(claimReplySchema.parse(await response.json()).task, null);
+      assert.deepEqual(await persisted(x), before);
+    } finally {
+      Date.now = realNow;
+      x.h.close();
+    }
+  }
+});
+
+test("dispatch SQL: reservation runtime or worker drift denies settlement without hiding inconsistent reserved capacity", async () => {
+  for (const drift of ["quantity", "worker"] as const) {
+    const x = await setup();
+    try {
+      const v = await running(x);
+      if (drift === "quantity")
+        await x.h.db
+          .prepare(
+            "UPDATE hosted_reservations SET quantity='1' WHERE task_id=?",
+          )
+          .bind(v.task)
+          .run();
+      else {
+        const other = await x.h.enrolledWorker(x.a);
+        await x.h.db
+          .prepare("UPDATE hosted_reservations SET worker_id=? WHERE task_id=?")
+          .bind(other.worker_id, v.task)
+          .run();
+      }
+      const before = await persisted(x);
+      assert.equal(
+        (
+          await x.h.request(
+            `/v1/supervisor/tasks/${v.task}/settle`,
+            headers(x),
+            "POST",
+            report(v, 0),
+          )
+        ).status,
+        409,
+      );
+      assert.deepEqual(await persisted(x), before);
+    } finally {
+      x.h.close();
+    }
+  }
+});

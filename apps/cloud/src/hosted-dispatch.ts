@@ -299,7 +299,7 @@ async function executionGuard(
     taskAuthorizerGuard(t, now),
     await policyGuard(ctx, auth.organization_id, now, t.runtime_ms),
     {
-      sql: `EXISTS(SELECT 1 FROM cloud_workers WHERE worker_id=? AND organization_id=? AND status='registered' AND authorization_expires_at>? AND authorization_expires_at>${sqlNow})`,
+      sql: `EXISTS(SELECT 1 FROM cloud_workers w JOIN users u ON u.user_id=w.authorizing_user_id JOIN memberships m ON m.user_id=u.user_id AND m.organization_id=w.organization_id JOIN organizations o ON o.organization_id=w.organization_id WHERE w.worker_id=? AND w.organization_id=? AND w.status='registered' AND w.authorization_expires_at>? AND w.authorization_expires_at>${sqlNow} AND u.status='active' AND m.status='active' AND m.role IN ('owner','admin') AND o.status='active')`,
       args: [t.worker_id, t.organization_id, now],
     },
   );
@@ -456,10 +456,15 @@ async function claim(ctx: Context, auth: HostedSupervisorPrincipal) {
   const lease = crypto.randomUUID(),
     expires = t ? Math.min(t.deadline_at, now + dispatchLeaseTtl) : 0;
   const g = t
-    ? combine(await executionGuard(ctx, auth, t, now), taskWitness(t), {
-        sql: `EXISTS(SELECT 1 FROM hosted_outbox o JOIN hosted_tasks t ON t.task_id=o.task_id AND t.organization_id=o.organization_id WHERE o.task_id=? AND o.organization_id=? AND o.state='queued' AND o.lease_id IS NULL AND o.claimed_by IS NULL AND o.fence=? AND o.fence<9007199254740991 AND o.attempts<9007199254740991 AND t.deadline_at>${sqlNow})`,
-        args: [t.task_id, t.organization_id, t.fence],
-      })
+    ? combine(
+        await executionGuard(ctx, auth, t, now),
+        taskWitness(t),
+        { sql: `?>${sqlNow}`, args: [expires] },
+        {
+          sql: `EXISTS(SELECT 1 FROM hosted_outbox o JOIN hosted_tasks t ON t.task_id=o.task_id AND t.organization_id=o.organization_id WHERE o.task_id=? AND o.organization_id=? AND o.state='queued' AND o.lease_id IS NULL AND o.claimed_by IS NULL AND o.fence=? AND o.fence<9007199254740991 AND o.attempts<9007199254740991 AND t.deadline_at>${sqlNow})`,
+          args: [t.task_id, t.organization_id, t.fence],
+        },
+      )
     : combine(trustedSupervisorGuard(auth, now, "execution"), p);
   const op = await operation(
     ctx,
@@ -609,7 +614,7 @@ async function advance(
     k,
     fp,
     id,
-    g,
+    kind === "renew" ? combine(g, { sql: `?>${sqlNow}`, args: [expires] }) : g,
     now,
   );
   await ctx.env.DB.batch([
@@ -663,7 +668,12 @@ async function settlementPlan(
   )
     .bind(t.reservation_id, t.organization_id, t.task_id)
     .first<ReservationRow>();
-  if (!r || !["active", "quarantined"].includes(r.state))
+  if (
+    !r ||
+    !["active", "quarantined"].includes(r.state) ||
+    r.worker_id !== t.worker_id ||
+    parseQuantity(r.quantity) !== BigInt(t.runtime_ms)
+  )
     conflict("settlement_conflict");
   const quantity = parseQuantity(r.quantity),
     measured = BigInt(consumption);
@@ -991,7 +1001,7 @@ interface CleanupRow extends DispatchTaskRow {
   outbox_supervisor: string | null;
 }
 const cleanupSelect =
-  "SELECT t.*,r.state reservation_state,r.quantity,r.allowance_id,a.reserved_quantity,a.consumed_quantity,a.resource,a.unit,a.resource_class,o.state outbox_state,o.fence outbox_fence,o.lease_id outbox_lease,o.claimed_by outbox_supervisor FROM hosted_tasks t JOIN hosted_reservations r ON r.task_id=t.task_id AND r.organization_id=t.organization_id JOIN hosted_outbox o ON o.task_id=t.task_id AND o.organization_id=t.organization_id LEFT JOIN hosted_allowances a ON a.allowance_id=r.allowance_id AND a.organization_id=t.organization_id";
+  "SELECT t.*,r.state reservation_state,r.quantity,r.allowance_id,a.reserved_quantity,a.consumed_quantity,a.resource,a.unit,a.resource_class,o.state outbox_state,o.fence outbox_fence,o.lease_id outbox_lease,o.claimed_by outbox_supervisor FROM hosted_tasks t JOIN hosted_reservations r ON r.reservation_id=t.reservation_id AND r.task_id=t.task_id AND r.organization_id=t.organization_id AND r.worker_id=t.worker_id JOIN hosted_outbox o ON o.task_id=t.task_id AND o.organization_id=t.organization_id LEFT JOIN hosted_allowances a ON a.allowance_id=r.allowance_id AND a.organization_id=t.organization_id";
 export async function cleanupHosted(env: Context["env"], now = Date.now()) {
   if (!Number.isSafeInteger(now) || now < 0)
     throw new Error("Invalid cleanup boundary");
@@ -1013,6 +1023,7 @@ export async function cleanupHosted(env: Context["env"], now = Date.now()) {
     released: string[] = [];
   const ctx = { env, request_id: crypto.randomUUID() } as Context;
   for (const t of [...heldRows, ...queuedRows]) {
+    if (parseQuantity(t.quantity) !== BigInt(t.runtime_ms)) continue;
     const queued = t.state === "queued";
     let newReserved: string | null = null;
     const guards = [
@@ -1027,11 +1038,12 @@ export async function cleanupHosted(env: Context["env"], now = Date.now()) {
             args: [t.task_id, t.organization_id, now, now, now],
           } as Guard),
       {
-        sql: "EXISTS(SELECT 1 FROM hosted_reservations WHERE reservation_id=? AND organization_id=? AND task_id=? AND state='active' AND allowance_id IS ? AND quantity=?)",
+        sql: "EXISTS(SELECT 1 FROM hosted_reservations WHERE reservation_id=? AND organization_id=? AND task_id=? AND worker_id=? AND state='active' AND allowance_id IS ? AND quantity=?)",
         args: [
           t.reservation_id,
           t.organization_id,
           t.task_id,
+          t.worker_id,
           t.allowance_id,
           t.quantity,
         ],
