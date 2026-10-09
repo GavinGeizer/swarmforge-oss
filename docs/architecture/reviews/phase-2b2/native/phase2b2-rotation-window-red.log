@@ -1,0 +1,37 @@
+bun test v1.4.2 (744846f84)
+
+apps/cloud/test/hosted-rotation-window.test.ts:
+29 |         h.db.sqlite.query("UPDATE hosted_supervisor_rotations SET expires_at=? WHERE previous_credential_id=?").run(Date.now()+100, s.credential_id);
+30 |       }
+31 |       const before = h.db.sqlite.query("SELECT * FROM hosted_supervisor_credentials ORDER BY credential_id").all();
+32 |       const retry = await h.request("/v1/supervisor/me/rotate", headers, "POST", {});
+33 |       expect(intercepted).toBe(true);
+34 |       expect(retry.status).toBe(401);
+                                ^
+error: expect(received).toBe(expected)
+
+Expected: 401
+Received: 200
+
+      at <anonymous> (/tmp/swarmforge-phase2b2-rotation-window/apps/cloud/test/hosted-rotation-window.test.ts:34:28)
+(fail) rotation replay rejects credential expiry at SQL execution after a delayed query [323.03ms]
+29 |         h.db.sqlite.query("UPDATE hosted_supervisor_rotations SET expires_at=? WHERE previous_credential_id=?").run(Date.now()+100, s.credential_id);
+30 |       }
+31 |       const before = h.db.sqlite.query("SELECT * FROM hosted_supervisor_credentials ORDER BY credential_id").all();
+32 |       const retry = await h.request("/v1/supervisor/me/rotate", headers, "POST", {});
+33 |       expect(intercepted).toBe(true);
+34 |       expect(retry.status).toBe(401);
+                                ^
+error: expect(received).toBe(expected)
+
+Expected: 401
+Received: 200
+
+      at <anonymous> (/tmp/swarmforge-phase2b2-rotation-window/apps/cloud/test/hosted-rotation-window.test.ts:34:28)
+(fail) rotation replay rejects recovery expiry at SQL execution after a delayed query [313.32ms]
+(pass) lost rotation reply remains recoverable within both current finite windows [8.53ms]
+
+ 1 pass
+ 2 fail
+ 10 expect() calls
+Ran 3 tests across 1 file. [667.00ms]

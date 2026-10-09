@@ -1,0 +1,11 @@
+bun test v1.4.2 (744846f84)
+
+apps/cloud/test/hosted-rotation-window.test.ts:
+(pass) rotation replay rejects credential expiry at SQL execution after a delayed query [323.58ms]
+(pass) rotation replay rejects recovery expiry at SQL execution after a delayed query [313.47ms]
+(pass) lost rotation reply remains recoverable within both current finite windows [10.09ms]
+
+ 3 pass
+ 0 fail
+ 16 expect() calls
+Ran 3 tests across 1 file. [669.00ms]

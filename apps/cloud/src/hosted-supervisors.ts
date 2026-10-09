@@ -467,7 +467,7 @@ async function rotationReplay(ctx: Context) {
   const k = key(ctx),
     now = Date.now();
   const row = await ctx.env.DB.prepare(
-    "SELECT r.result_ciphertext FROM hosted_supervisor_rotations r JOIN hosted_supervisor_credentials c ON c.credential_id=r.previous_credential_id WHERE c.token_hash=? AND c.audience='hosted-supervisor' AND c.expires_at>? AND r.idempotency_key=? AND r.expires_at>?",
+    `SELECT r.result_ciphertext FROM hosted_supervisor_rotations r JOIN hosted_supervisor_credentials c ON c.credential_id=r.previous_credential_id WHERE c.token_hash=? AND c.audience='hosted-supervisor' AND c.expires_at>MAX(?,${hostedSqlNow}) AND r.idempotency_key=? AND r.expires_at>MAX(?,${hostedSqlNow})`,
   )
     .bind(await hash(raw.slice(7)), now, k, now)
     .first<{ result_ciphertext: string }>();
