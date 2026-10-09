@@ -77,6 +77,51 @@ test("execution grant issuance: browser-only own installation, fixed scopes, ide
   }
 });
 
+test("concurrent same-key issuance serializes: one grant, identical replay bodies", async () => {
+  // Reviewer A is right that sequential [201,200] does not prove the race:
+  // D1 serializes batch writes, and the UNIQUE(installation,session,key)
+  // loser inserts zero rows, but two issuanceReplay misses racing before
+  // EITHER insert could double-issue. This test fires N concurrent same-key
+  // requests at real D1 and asserts exactly one grant row and byte-identical
+  // replay bodies, plus that the winner's ciphertext decrypts to a live
+  // credential. If D1 ever interleaves two inserts, the UNIQUE rejects the
+  // loser (batch atomic) and the final SELECT returns the winner — still one
+  // row. A second row would fail this test RED.
+  const h = await hostedFixture();
+  try {
+    const a = await h.login();
+    const device = await h.linkedDevice(a);
+    const k = crypto.randomUUID();
+    const results = await Promise.all(
+      Array.from({ length: 6 }, () =>
+        h.authorizeExecution(a, a.tenant, device.installation_id, k),
+      ),
+    );
+    const statuses = results.map((r) => r.status).sort();
+    assert.deepEqual(statuses, [200, 200, 200, 200, 200, 201]);
+    const bodies = await Promise.all(results.map((r) => r.json()));
+    for (const b of bodies.slice(1)) assert.deepEqual(b, bodies[0]);
+    const rows = (await h.db
+      .prepare(
+        "SELECT count(*) n FROM hosted_execution_grants WHERE organization_id=? AND installation_id=? AND idempotency_key=?",
+      )
+      .bind(a.tenant, device.installation_id, k)
+      .first<{ n: number }>())!;
+    assert.equal(rows.n, 1);
+    const winner = bodies[0] as { credential: string };
+    assert.equal(
+      (
+        await h.request(`/v1/tenants/${a.tenant}/entitlements`, {
+          authorization: `Bearer ${winner.credential}`,
+        })
+      ).status,
+      200,
+    );
+  } finally {
+    await h.mf.dispose();
+  }
+});
+
 test("execution grant denial: wrong installation/user/tenant, missing CSRF, machine credentials", async () => {
   const h = await hostedFixture();
   try {
