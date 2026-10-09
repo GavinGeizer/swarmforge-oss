@@ -1,10 +1,62 @@
 import { expect, test } from "bun:test";
+import { randomUUID } from "node:crypto";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { connectSwarmForge } from "../src/cli/client";
 import { emptyFilters } from "../src/cli/filters";
 import { Coordinator } from "../src/coordinator";
+import { readOauthCredential } from "../src/github-oauth";
 import { createHttpHandler } from "../src/http";
 import { Store } from "../src/store";
 import { harness, task } from "./helpers";
+
+test("dashboard revisions include newly discovered repository credential redaction", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "swarmforge-dashboard-auth-"));
+  const h = harness();
+  const worker = h.store.create({ ...task, timeout_seconds: 60 });
+  const server = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    fetch: createHttpHandler(h.coordinator),
+  });
+  const client = await connectSwarmForge(`http://127.0.0.1:${server.port}/mcp`);
+  try {
+    const first = (await client.dashboard(emptyFilters(), "age"))!;
+    const token = `dashboard_fixture_${randomUUID().replaceAll("-", "")}`;
+    const path = join(directory, "github-oauth.json");
+    writeFileSync(
+      path,
+      JSON.stringify({
+        version: 1,
+        clientId: "test_client",
+        repository: "test/repository",
+        login: "testuser",
+        accessToken: token,
+      }),
+      { mode: 0o600 },
+    );
+    readOauthCredential(path);
+    h.store.patch(worker.worker_id, { error: `repository rejected ${token}` });
+    const update = (await client.dashboard(
+      emptyFilters(),
+      "age",
+      0,
+      first.revision,
+    ))!;
+    expect(update.workers[0]?.error).not.toContain(token);
+    expect(update.revision).toBe(h.store.revision());
+    expect(
+      await client.dashboard(emptyFilters(), "age", 0, update.revision),
+    ).toBeNull();
+  } finally {
+    await client.close();
+    await server.stop(true);
+    await h.coordinator.stop();
+    h.store.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
 
 test("dashboard transfers bounded pages, detects unchanged data, applies deltas and resynchronizes query changes", async () => {
   const h = harness();
