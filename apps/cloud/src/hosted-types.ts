@@ -6,6 +6,19 @@ import { idSchema } from "./schemas.ts";
 
 // --- Policy ---
 
+// Technical cost-safety ceiling: 1h in milliseconds. max_task_runtime is a
+// finite technical guard, NOT a commercial quota: non-nullable, always present
+// on every policy row, and mirrored on every task's runtime_ms. Counts stay
+// nullable = explicit unlimited. No policy rows are seeded here.
+export const maxTaskRuntimeMs = 3600000;
+
+// Canonical meter bound as a decimal string: Number.MAX_SAFE_INTEGER.
+// SQLite CAST is lossy past int64 (rounds to 9223372036854776000), and JS
+// Number silently rounds past 2^53, so quantities stay canonical strings and
+// the bound is enforced lexically: lengths <= 15 are auto-below; length 16
+// needs q <= MAX. Mirrors the DDL template; never parse to Number.
+export const maxMeterQuantity = "9007199254740991";
+
 export const hostedCapabilities = [
   "hosted_control_plane",
   "remote_worker_enrollment",
@@ -22,7 +35,7 @@ export const hostedPolicySchema = z
     capabilities: z.record(hostedCapabilitySchema, z.boolean()),
     max_concurrent_workers: z.number().int().min(0).nullable(),
     max_active_tasks: z.number().int().min(0).nullable(),
-    max_task_runtime: z.number().int().positive().nullable(),
+    max_task_runtime: z.number().int().min(1).max(maxTaskRuntimeMs),
     maximum_resource_reservations: z.number().int().min(0).nullable(),
     valid_from: z.number().int(),
     valid_until: z.number().int(),
@@ -31,9 +44,16 @@ export const hostedPolicySchema = z
   .strict();
 export type HostedPolicy = z.infer<typeof hostedPolicySchema>;
 
-// Canonical bounded integer-string quantity: digits only, no leading zeros
-// unless "0", max 19 digits (safe exact arithmetic, no floats).
-export const hostedQuantitySchema = z.string().regex(/^(0|[1-9][0-9]{0,18})$/);
+// Canonical bounded integer-string quantity: digits only (NOT GLOB
+// '[0-9]*', which wrongly matches '1.5'/'12x'), no leading zeros unless "0",
+// length 1..16, value <= Number.MAX_SAFE_INTEGER. Exact arithmetic only.
+export const hostedQuantitySchema = z
+  .string()
+  .regex(/^(0|[1-9][0-9]{0,15})$/)
+  .refine(
+    (v) => v.length <= 15 || v <= maxMeterQuantity,
+    "quantity exceeds Number.MAX_SAFE_INTEGER",
+  );
 
 export const hostedAllowanceSchema = z
   .object({
@@ -133,7 +153,7 @@ export const taskSubmitSchema = z
     request_id: idSchema,
     worker_id: idSchema,
     execution_class: z.literal("controlled"),
-    runtime_ms: z.number().int().positive(),
+    runtime_ms: z.number().int().min(1).max(maxTaskRuntimeMs),
     controlled_duration_ms: z.number().int().positive(),
   })
   .strict()
@@ -164,7 +184,7 @@ export const hostedTaskSchema = z
     state: hostedTaskStateSchema,
     reservation_id: idSchema,
     policy_version: z.number().int().positive(),
-    runtime_ms: z.number().int().positive(),
+    runtime_ms: z.number().int().min(1).max(maxTaskRuntimeMs),
     controlled_duration_ms: z.number().int().positive(),
     created_at: z.number().int(),
     deadline_at: z.number().int(),
@@ -224,7 +244,7 @@ export interface HostedEntitlementRow {
   hosted_task_execution: number;
   max_concurrent_workers: number | null;
   max_active_tasks: number | null;
-  max_task_runtime: number | null;
+  max_task_runtime: number;
   maximum_resource_reservations: number | null;
   valid_from: number;
   valid_until: number;
@@ -283,6 +303,7 @@ export interface HostedSupervisorCredentialRow {
   credential_id: string;
   token_hash: string;
   supervisor_id: string;
+  organization_id: string;
   audience: "hosted-supervisor";
   scopes: string;
   epoch: number;
@@ -303,6 +324,10 @@ export interface HostedTaskRow {
   task_id: string;
   organization_id: string;
   worker_id: string;
+  authorizing_user_id: string;
+  installation_id: string | null;
+  execution_grant_id: string | null;
+  authorizing_session_id: string | null;
   request_id: string;
   operation: string;
   principal_kind: "account" | "cli" | "execution";
@@ -327,8 +352,14 @@ export interface HostedReservationRow {
   reservation_id: string;
   organization_id: string;
   task_id: string;
+  worker_id: string | null;
+  allowance_id: string | null;
   kind: "task_execution";
+  worker_slots: number;
+  task_slots: number;
   quantity: string;
+  consumed_quantity: string | null;
+  consumed_runtime_ms: number | null;
   state: "active" | "quarantined" | "consumed" | "released";
   created_at: number;
   expires_at: number;
