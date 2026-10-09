@@ -15,6 +15,7 @@ import {
   evaluatePolicy,
   parseQuantity,
 } from "./hosted-entitlements.ts";
+import { hostedSupervisorScopes } from "./hosted-types.ts";
 import { idSchema } from "./schemas.ts";
 
 // PRIVATE hosted operational visibility only. No router/lifecycle edits here:
@@ -66,6 +67,8 @@ const supervisorEntrySchema = z
     worker_status: z.enum(["registered", "revoked"]),
     worker_epoch: z.number().int(),
     admin_chain_user_id: idSchema,
+    execution_eligible: z.boolean(),
+    cleanup_eligible: z.boolean(),
   })
   .strict();
 
@@ -105,12 +108,8 @@ export const hostedStatusSchema = z
     lease_page: z.array(statusItemSchema),
     supervisors: z.array(supervisorEntrySchema),
     next_cursor: z.string().nullable(),
-    // Query-cost budget: counted statements + rows touched + wall time.
-    query_cost: z.object({
-      statements: z.number().int(),
-      rows: z.number().int(),
-      worst_ms: z.number().int(),
-    }),
+    // Supervisor IDs have a separate signed cursor scope.
+    next_supervisor_cursor: z.string().nullable(),
   })
   .strict();
 
@@ -120,6 +119,7 @@ const statusQuerySchema = z
   .object({
     limit: z.coerce.number().int().min(1).max(50).default(20),
     cursor: z.string().min(1).max(2048).optional(),
+    supervisor_cursor: z.string().min(1).max(2048).optional(),
   })
   .strict();
 
@@ -207,16 +207,8 @@ export async function hostedStatusRoute(ctx: Context) {
   }
   void principal;
 
-  const started = Date.now();
-  let statements = 0;
-  let rows = 0;
-  const counted = async <T>(work: Promise<T> | T): Promise<T> => {
-    statements++;
-    const value = await work;
-    if (Array.isArray(value)) rows += value.length;
-    else rows++;
-    return value;
-  };
+  // These observations do not pretend to measure D1 rows read or CPU.
+  const counted = async <T>(work: Promise<T> | T): Promise<T> => await work;
   const now = Date.now();
 
   // Emergency read: policy absence/expiry/revocation classifies
@@ -286,125 +278,161 @@ export async function hostedStatusRoute(ctx: Context) {
       [tenant],
     ),
   );
-  const attemptRows = await counted(
-    (
-      await ctx.env.DB.prepare(
-        "SELECT attempts FROM hosted_outbox WHERE organization_id=? AND state IN ('queued','claimed')",
-      )
-        .bind(tenant)
-        .all<{ attempts: number }>()
-    ).results,
-  );
-  let outboxAttempts = 0;
-  for (const r of attemptRows) outboxAttempts += r.attempts;
-
-  const auditCount = (action: string) =>
-    counted(
-      scalar(
-        ctx,
-        "SELECT count(*) n FROM audit_events WHERE organization_id=? AND action=?",
-        [tenant, action],
-      ),
-    );
-  const failureAudits = await auditCount("hosted.task_failed");
-  const cleanupAudits = await auditCount("hosted.cleanup");
-  const stopAudits = await auditCount("hosted.stop_requested");
-  const lastDispatch = await counted(
-    ctx.env.DB.prepare(
-      "SELECT action,at FROM audit_events WHERE organization_id=? AND action LIKE 'hosted.%' ORDER BY at DESC LIMIT 1",
-    )
-      .bind(tenant)
-      .first<{ action: string; at: number }>(),
-  );
-
-  // Bounded operator-cleanup pages: existing page/cursor pattern, one shared
-  // cursor scope so all pages advance together, stable task_id ordering, no
-  // arbitrary SQL. Only safe reference columns (ids/fences/lease expiries).
-  const { limit, after } = await page(ctx, tenant, "hosted-status");
-  const bounded = Math.min(limit, 50);
-  const stopDuty = await counted(
-    taskPage(ctx, tenant, "state='stop_requested'", [], bounded, after),
-  );
-  const heldPage = await counted(
-    taskPage(ctx, tenant, "state='held'", [], bounded, after),
-  );
-  const leasePage = await counted(
-    taskPage(
+  const outboxAttempts = await counted(
+    scalar(
       ctx,
-      tenant,
-      "state IN ('queued','claimed','running','stop_requested','held') AND lease_expires_at IS NOT NULL AND lease_expires_at<=?",
-      [now],
-      bounded,
-      after,
+      "SELECT COALESCE(sum(attempts),0) n FROM hosted_outbox WHERE organization_id=? AND state IN ('queued','claimed')",
+      [tenant],
     ),
   );
-  const nextTask = stopDuty.next ?? heldPage.next ?? leasePage.next;
 
-  // Authorized supervisors with the admin chain: tenant-qualified joins only.
-  // Credential authority is derived from the newest hosted-supervisor
-  // credential row (valid/expired/revoked/absent); observed availability from
-  // the newest attributed audit row, labeled separately. No token hashes,
-  // ciphertext, or capability secrets leave the store.
-  const supervisorRows = await counted(
-    (
-      await ctx.env.DB.prepare(
-        `SELECT s.supervisor_id,s.worker_id,s.name,s.status,s.epoch,w.status worker_status,w.epoch worker_epoch,w.authorizing_user_id admin_chain_user_id,
-          (SELECT c.expires_at FROM hosted_supervisor_credentials c WHERE c.organization_id=s.organization_id AND c.supervisor_id=s.supervisor_id AND c.revoked_at IS NULL ORDER BY c.expires_at DESC LIMIT 1) credential_expires_at,
-          (SELECT count(*) FROM hosted_supervisor_credentials c WHERE c.organization_id=s.organization_id AND c.supervisor_id=s.supervisor_id AND c.revoked_at IS NOT NULL) revoked_credentials,
-          (SELECT a.action FROM audit_events a WHERE a.organization_id=s.organization_id AND a.resource LIKE 'supervisor:' || s.supervisor_id || '%' ORDER BY a.at DESC LIMIT 1) last_observed_action,
-          (SELECT a.at FROM audit_events a WHERE a.organization_id=s.organization_id AND a.resource LIKE 'supervisor:' || s.supervisor_id || '%' ORDER BY a.at DESC LIMIT 1) last_observed_at
-        FROM hosted_supervisors s JOIN cloud_workers w ON w.organization_id=s.organization_id AND w.worker_id=s.worker_id
-        WHERE s.organization_id=? AND s.supervisor_id>? ORDER BY s.supervisor_id LIMIT ?`,
-      )
-        .bind(tenant, after, bounded + 1)
-        .all<{
-          supervisor_id: string;
-          worker_id: string;
-          name: string;
-          status: string;
-          epoch: number;
-          worker_status: string;
-          worker_epoch: number;
-          admin_chain_user_id: string;
-          credential_expires_at: number | null;
-          revoked_credentials: number;
-          last_observed_action: string | null;
-          last_observed_at: number | null;
-        }>()
-    ).results,
+  // Counts name actual production events. Settlement records confirmed stop;
+  // its outcome metadata distinguishes failed execution from cleanup success.
+  const failureAudits = await scalar(
+    ctx,
+    "SELECT count(*) n FROM audit_events WHERE organization_id=? AND action='dispatch.settled' AND json_extract(metadata,'$.outcome')='failed'",
+    [tenant],
   );
+  const cleanupAudits = await scalar(
+    ctx,
+    "SELECT count(*) n FROM audit_events WHERE organization_id=? AND action IN ('dispatch.settled','dispatch.operator_recovered')",
+    [tenant],
+  );
+  const stopAudits = await scalar(
+    ctx,
+    "SELECT count(*) n FROM audit_events WHERE organization_id=? AND action IN ('hosted.task_cancelled','dispatch.expired','supervisor.revoked')",
+    [tenant],
+  );
+  const lastDispatch = await ctx.env.DB.prepare(
+    "SELECT action,at FROM audit_events WHERE organization_id=? AND action IN ('dispatch.claimed','dispatch.acked','dispatch.renewed','dispatch.settled','dispatch.expired','dispatch.operator_recovered','supervisor.registered','supervisor.revoked','supervisor.rotated','hosted.task_admitted','hosted.task_cancelled') ORDER BY at DESC,event_id DESC LIMIT 1",
+  )
+    .bind(tenant)
+    .first<{ action: string; at: number }>();
+
+  // A single ordered union page advances task IDs once. Category projections
+  // share that page, so disjoint UUID ranges cannot skip one another.
+  const paginationContext = (selected: string | null): Context => {
+    const queryUrl = new URL(ctx.request.url);
+    queryUrl.searchParams.delete("supervisor_cursor");
+    queryUrl.searchParams.delete("cursor");
+    if (selected) queryUrl.searchParams.set("cursor", selected);
+    return {
+      ...ctx,
+      request: new Request(queryUrl, { headers: ctx.request.headers }),
+    };
+  };
+  const { limit, after } = await page(
+    paginationContext(url.searchParams.get("cursor")),
+    tenant,
+    "hosted-status-tasks",
+  );
+  const supervisorPagination = await page(
+    paginationContext(url.searchParams.get("supervisor_cursor")),
+    tenant,
+    "hosted-status-supervisors",
+  );
+  if (after) idSchema.parse(after);
+  if (supervisorPagination.after) idSchema.parse(supervisorPagination.after);
+  const bounded = Math.min(limit, 50);
+  const combined = await taskPage(
+    ctx,
+    tenant,
+    "(state IN ('stop_requested','held') OR (state IN ('queued','claimed','running') AND lease_expires_at IS NOT NULL AND lease_expires_at<=?))",
+    [now],
+    bounded,
+    after,
+  );
+  const stopDuty = combined.items.filter((t) => t.state === "stop_requested");
+  const heldPage = combined.items.filter((t) => t.state === "held");
+  const leasePage = combined.items.filter(
+    (t) => t.lease_expires_at !== null && t.lease_expires_at <= now,
+  );
+
+  // A credential must match the current supervisor epoch, audience and
+  // exact scopes. Cleanup retains the current owner/admin chain while worker
+  // revocation denies execution. Neither field claims an online process.
+  const observedPredicate = `(a.action='supervisor.rotated' AND a.resource='supervisor:' || s.supervisor_id) OR (a.action IN ('dispatch.claimed','dispatch.acked','dispatch.renewed','dispatch.settled','dispatch.expired','dispatch.operator_recovered') AND EXISTS(SELECT 1 FROM hosted_tasks t WHERE t.organization_id=s.organization_id AND t.supervisor_id=s.supervisor_id AND a.resource='task:' || t.task_id))`;
+  const supervisorRows = (
+    await ctx.env.DB.prepare(
+      `SELECT s.supervisor_id,s.worker_id,s.name,s.status,s.revoked_at,s.authorization_expires_at,w.status worker_status,w.epoch worker_epoch,w.authorization_expires_at worker_authorization_expires_at,s.authorizing_user_id admin_chain_user_id,
+      EXISTS(SELECT 1 FROM users u JOIN memberships m ON m.user_id=u.user_id JOIN organizations o ON o.organization_id=m.organization_id WHERE u.user_id=s.authorizing_user_id AND u.status='active' AND m.organization_id=s.organization_id AND m.status='active' AND m.role IN ('owner','admin') AND o.status='active') admin_chain_active,
+      (SELECT c.expires_at FROM hosted_supervisor_credentials c WHERE c.organization_id=s.organization_id AND c.supervisor_id=s.supervisor_id AND c.audience='hosted-supervisor' AND c.epoch=s.epoch AND c.scopes=? AND c.revoked_at IS NULL ORDER BY c.expires_at DESC LIMIT 1) credential_expires_at,
+      (SELECT count(*) FROM hosted_supervisor_credentials c WHERE c.organization_id=s.organization_id AND c.supervisor_id=s.supervisor_id) credential_count,
+      (SELECT a.action FROM audit_events a WHERE a.organization_id=s.organization_id AND (${observedPredicate}) ORDER BY a.at DESC,a.event_id DESC LIMIT 1) last_observed_action,
+      (SELECT a.at FROM audit_events a WHERE a.organization_id=s.organization_id AND (${observedPredicate}) ORDER BY a.at DESC,a.event_id DESC LIMIT 1) last_observed_at
+      FROM hosted_supervisors s JOIN cloud_workers w ON w.organization_id=s.organization_id AND w.worker_id=s.worker_id
+      WHERE s.organization_id=? AND s.supervisor_id>? ORDER BY s.supervisor_id LIMIT ?`,
+    )
+      .bind(
+        JSON.stringify(hostedSupervisorScopes),
+        tenant,
+        supervisorPagination.after,
+        bounded + 1,
+      )
+      .all<{
+        supervisor_id: string;
+        worker_id: string;
+        name: string;
+        status: "registered" | "revoked";
+        revoked_at: number | null;
+        authorization_expires_at: number;
+        worker_status: "registered" | "revoked";
+        worker_epoch: number;
+        worker_authorization_expires_at: number;
+        admin_chain_user_id: string;
+        admin_chain_active: number;
+        credential_expires_at: number | null;
+        credential_count: number;
+        last_observed_action: string | null;
+        last_observed_at: number | null;
+      }>()
+  ).results;
   const supSlice = supervisorRows.slice(0, bounded);
-  const supervisors = supSlice.map((r) =>
-    supervisorEntrySchema.parse({
+  const supervisors = supSlice.map((r) => {
+    const credential_authority =
+      r.status === "revoked" || r.revoked_at !== null
+        ? "revoked"
+        : r.credential_expires_at === null
+          ? r.credential_count > 0
+            ? "revoked"
+            : "absent"
+          : r.credential_expires_at <= now || r.authorization_expires_at <= now
+            ? "expired"
+            : "valid";
+    const cleanup_eligible =
+      credential_authority === "valid" && r.admin_chain_active === 1;
+    return supervisorEntrySchema.parse({
       supervisor_id: r.supervisor_id,
       worker_id: r.worker_id,
       name: r.name,
       status: r.status,
-      credential_authority:
-        r.credential_expires_at === null
-          ? r.revoked_credentials > 0
-            ? "revoked"
-            : "absent"
-          : r.credential_expires_at <= now
-            ? "expired"
-            : "valid",
+      credential_authority,
       credential_expires_at: r.credential_expires_at,
       last_observed_action: r.last_observed_action,
       last_observed_at: r.last_observed_at,
       worker_status: r.worker_status,
       worker_epoch: r.worker_epoch,
       admin_chain_user_id: r.admin_chain_user_id,
-    }),
-  );
-  const nextSup =
+      cleanup_eligible,
+      execution_eligible:
+        cleanup_eligible &&
+        r.worker_status === "registered" &&
+        r.worker_authorization_expires_at > now &&
+        decision.allowed,
+    });
+  });
+  const next_cursor = combined.next
+    ? await cursor(ctx, tenant, "hosted-status-tasks", combined.next)
+    : null;
+  const next_supervisor_cursor =
     supervisorRows.length > bounded
-      ? supSlice[supSlice.length - 1]!.supervisor_id
+      ? await cursor(
+          ctx,
+          tenant,
+          "hosted-status-supervisors",
+          supSlice.at(-1)!.supervisor_id,
+        )
       : null;
-  const nextAfter = nextTask ?? nextSup ?? (after ? null : null);
-  const next_cursor =
-    nextAfter === null
-      ? null
-      : await cursor(ctx, tenant, "hosted-status", nextAfter);
 
   return json(hostedStatusSchema, {
     tenant_id: tenant,
@@ -431,15 +459,11 @@ export async function hostedStatusRoute(ctx: Context) {
     stop_audits: stopAudits,
     last_dispatch_action: lastDispatch?.action ?? null,
     last_dispatch_at: lastDispatch?.at ?? null,
-    stop_duty: stopDuty.items,
-    held_page: heldPage.items,
-    lease_page: leasePage.items,
+    stop_duty: stopDuty,
+    held_page: heldPage,
+    lease_page: leasePage,
     supervisors,
     next_cursor,
-    query_cost: {
-      statements,
-      rows,
-      worst_ms: Math.max(0, Date.now() - started),
-    },
+    next_supervisor_cursor,
   });
 }

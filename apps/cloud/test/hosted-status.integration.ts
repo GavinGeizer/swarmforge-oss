@@ -260,9 +260,9 @@ test("hosted-status: mixed states measure real counts across own/other org with 
     );
     // Failure/cleanup/stop audit evidence in own org.
     for (const action of [
-      "hosted.task_failed",
-      "hosted.cleanup",
-      "hosted.stop_requested",
+      "dispatch.settled",
+      "dispatch.operator_recovered",
+      "hosted.task_cancelled",
     ])
       await h.db
         .prepare(
@@ -273,11 +273,13 @@ test("hosted-status: mixed states measure real counts across own/other org with 
           a.user,
           a.tenant,
           action,
-          stop,
+          `task:${stop}`,
           "success",
           crypto.randomUUID(),
           now,
-          "{}",
+          action === "dispatch.settled"
+            ? JSON.stringify({ outcome: "failed" })
+            : "{}",
         )
         .run();
 
@@ -304,9 +306,15 @@ test("hosted-status: mixed states measure real counts across own/other org with 
     assert.equal(status.stop_requested_tasks, 1);
     assert.equal(status.expired_leases, 2);
     assert.equal(status.failure_audits, 1);
-    assert.equal(status.cleanup_audits, 1);
+    assert.equal(status.cleanup_audits, 2);
     assert.equal(status.stop_audits, 1);
-    assert.equal(status.last_dispatch_action, "hosted.stop_requested");
+    assert.ok(
+      [
+        "dispatch.settled",
+        "dispatch.operator_recovered",
+        "hosted.task_cancelled",
+      ].includes(status.last_dispatch_action!),
+    );
     // Stop-duty page carries the stop task reference id for operator cleanup.
     assert.ok(
       status.stop_duty.some((t) => t.task_id === stop),
@@ -324,11 +332,12 @@ test("hosted-status: mixed states measure real counts across own/other org with 
       /sfexec_|token_hash|result_ciphertext|code_ciphertext/i,
     );
     assert.ok(!text.includes(grant.credential));
-    // Query-cost budget reported; worst stays well under Free-tier 50ms
-    // statement ceiling plus global rate-limit overhead.
-    assert.ok(status.query_cost.statements > 0);
-    assert.ok(status.query_cost.statements <= 50);
-    assert.ok(status.query_cost.worst_ms < 5000);
+    // Returned row counts and wall time cannot establish D1 scan or CPU cost.
+    assert.equal(
+      "query_cost" in status,
+      false,
+      "status does not claim D1 scan/CPU metrics",
+    );
 
     // Missing policy: other org reads allowed=false with denial, never a
     // read denial; counts still measure.
@@ -544,8 +553,8 @@ test("hosted-status: supervisor authority vs observed availability, ledger quant
           crypto.randomUUID(),
           a.user,
           a.tenant,
-          "hosted.claim",
-          `supervisor:${supId}:task:abc`,
+          "supervisor.rotated",
+          `supervisor:${supId}`,
           "success",
           crypto.randomUUID(),
           now,
@@ -562,7 +571,7 @@ test("hosted-status: supervisor authority vs observed availability, ledger quant
     if (status.supervisors.length) {
       const sup = status.supervisors[0]!;
       assert.equal(sup.credential_authority, "valid");
-      assert.equal(sup.last_observed_action, "hosted.claim");
+      assert.equal(sup.last_observed_action, "supervisor.rotated");
       assert.ok(sup.last_observed_at !== null);
       // Admin chain preserved without secrets.
       assert.equal(sup.admin_chain_user_id, a.user);

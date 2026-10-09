@@ -6,7 +6,11 @@ import {
   json,
   membership,
 } from "./common.ts";
-import { type HostedPrincipal, hostedAuth } from "./hosted-authority.ts";
+import {
+  type HostedPrincipal,
+  hostedAuth,
+  hostedSqlNow,
+} from "./hosted-authority.ts";
 import {
   type HostedAllowance,
   type HostedEntitlementRow,
@@ -23,7 +27,8 @@ import { idSchema } from "./schemas.ts";
 // Absent, expired, revoked, or out-of-window policy denies new work by
 // default. Allowance quantities use canonical bounded integer strings with
 // exact BigInt arithmetic (bounded by Number.MAX_SAFE_INTEGER); Number() and
-// SQLite CAST are never used for quantities (CAST rounds past int64).
+// direct JS Number arithmetic is never used for quantities. SQL callers may
+// use int64 arithmetic only where the canonical DDL bound proves exactness.
 
 export interface PolicyInput {
   capabilities: {
@@ -153,7 +158,7 @@ export function activePolicyGuard(
   if (expected.hosted_task_execution) caps.push("e.hosted_task_execution=1");
   const capSql = caps.length ? ` AND ${caps.join(" AND ")}` : "";
   return {
-    sql: `EXISTS(SELECT 1 FROM hosted_entitlements e WHERE e.organization_id=? AND e.version=? AND e.revoked_at IS NULL AND e.valid_from<=? AND e.valid_until>?${capSql} AND e.version=(SELECT MAX(version) FROM hosted_entitlements WHERE organization_id=?))`,
+    sql: `EXISTS(SELECT 1 FROM hosted_entitlements e WHERE e.organization_id=? AND e.version=? AND e.revoked_at IS NULL AND e.valid_from<=MAX(?,${hostedSqlNow}) AND e.valid_until>MAX(?,${hostedSqlNow})${capSql} AND e.version=(SELECT MAX(version) FROM hosted_entitlements WHERE organization_id=?))`,
     args: [tenant, expected.version, now, now, tenant],
   };
 }
@@ -233,7 +238,12 @@ export function evaluatePolicy(
       policy_version: policy.version,
       denial: "policy_expired",
     };
-  if (!policy.capabilities[capability])
+  if (
+    !policy.capabilities[capability] ||
+    (capability === "hosted_task_execution" &&
+      (!policy.capabilities.hosted_control_plane ||
+        !policy.capabilities.remote_worker_enrollment))
+  )
     return {
       allowed: false,
       policy_version: policy.version,
@@ -342,7 +352,15 @@ function validateAllowanceCasOptions(o: AllowanceCasOptions) {
   parseQuantity(o.newConsumed);
   if (!isControlledMeter(o.resource, o.unit, o.resourceClass))
     throw new Error("unsupported meter for controlled admission");
-  if (!(o.periodEnd > o.periodStart))
+  if (
+    ![
+      o.periodStart,
+      o.periodEnd,
+      o.measuredStart ?? o.periodStart,
+      o.measuredEnd ?? o.periodEnd,
+    ].every(Number.isSafeInteger) ||
+    !(o.periodEnd > o.periodStart)
+  )
     throw new Error("allowance period is not a finite window");
   const start = o.measuredStart ?? o.periodStart;
   const end = o.measuredEnd ?? o.periodEnd;
@@ -357,9 +375,10 @@ export function allowanceReserveStatement(
   o: AllowanceCasOptions,
 ) {
   const now = o.now ?? Date.now();
+  if (!Number.isSafeInteger(now)) throw new Error("invalid authority time");
   validateAllowanceCasOptions(o);
   return ctx.env.DB.prepare(
-    `UPDATE hosted_allowances SET reserved_quantity=?,consumed_quantity=? WHERE allowance_id=? AND organization_id=? AND entitlement_id=? AND resource=? AND unit=? AND resource_class=? AND period_start=? AND period_end=? AND reserved_quantity=? AND consumed_quantity=? AND EXISTS(SELECT 1 FROM hosted_entitlements e WHERE e.entitlement_id=hosted_allowances.entitlement_id AND e.organization_id=? AND e.revoked_at IS NULL AND e.valid_from<=? AND e.valid_until>?)`,
+    `UPDATE hosted_allowances SET reserved_quantity=?,consumed_quantity=? WHERE allowance_id=? AND organization_id=? AND entitlement_id=? AND resource=? AND unit=? AND resource_class=? AND period_start=? AND period_end=? AND reserved_quantity=? AND consumed_quantity=? AND EXISTS(SELECT 1 FROM hosted_entitlements e WHERE e.entitlement_id=hosted_allowances.entitlement_id AND e.organization_id=? AND e.revoked_at IS NULL AND e.valid_from<=MAX(?,${hostedSqlNow}) AND e.valid_until>MAX(?,${hostedSqlNow}))`,
   ).bind(
     o.newReserved,
     o.newConsumed,
@@ -418,24 +437,12 @@ export function allowanceCasStatement(
   parseQuantity(expectedConsumed);
   parseQuantity(newReserved);
   parseQuantity(newConsumed);
-  // Resolve the allowance row's own identity so the alias enforces the same
-  // ownership/triple/period checks as the reserve-only helper. This keeps the
-  // alias exact without widening it into a settlement bypass.
-  const rowValidator = (r: {
-    resource: string;
-    unit: string;
-    resource_class: string;
-    period_start: number;
-    period_end: number;
-  }) => {
-    if (!isControlledMeter(r.resource, r.unit, r.resource_class))
-      throw new Error("unsupported meter for controlled admission");
-    if (!(r.period_end > r.period_start))
-      throw new Error("allowance period is not a finite window");
-  };
-  void rowValidator;
+  if (!Number.isSafeInteger(now)) throw new Error("invalid authority time");
+  // Legacy reserve-only shape cannot bind an explicit period. Enforce the
+  // controlled triple, finite safe-integer period containing now, and owning
+  // live policy in SQL; explicit callers use the stronger period-bound helper.
   return ctx.env.DB.prepare(
-    `UPDATE hosted_allowances SET reserved_quantity=?,consumed_quantity=? WHERE allowance_id=? AND organization_id=? AND entitlement_id=? AND reserved_quantity=? AND consumed_quantity=? AND EXISTS(SELECT 1 FROM hosted_entitlements e WHERE e.entitlement_id=hosted_allowances.entitlement_id AND e.organization_id=? AND e.revoked_at IS NULL AND e.valid_from<=? AND e.valid_until>?)`,
+    `UPDATE hosted_allowances SET reserved_quantity=?,consumed_quantity=? WHERE allowance_id=? AND organization_id=? AND entitlement_id=? AND reserved_quantity=? AND consumed_quantity=? AND resource='compute_ms' AND unit='millisecond' AND resource_class='controlled' AND typeof(period_start)='integer' AND typeof(period_end)='integer' AND period_start BETWEEN -9007199254740991 AND 9007199254740991 AND period_end BETWEEN -9007199254740991 AND 9007199254740991 AND period_start<=MAX(?,${hostedSqlNow}) AND period_end>MAX(?,${hostedSqlNow}) AND EXISTS(SELECT 1 FROM hosted_entitlements e WHERE e.entitlement_id=hosted_allowances.entitlement_id AND e.organization_id=? AND e.revoked_at IS NULL AND e.valid_from<=MAX(?,${hostedSqlNow}) AND e.valid_until>MAX(?,${hostedSqlNow}))`,
   ).bind(
     newReserved,
     newConsumed,
@@ -444,6 +451,8 @@ export function allowanceCasStatement(
     entitlementId,
     expectedReserved,
     expectedConsumed,
+    now,
+    now,
     tenant,
     now,
     now,
@@ -564,12 +573,16 @@ export async function putPolicy(
     } catch (error) {
       if (
         error instanceof HttpError ||
-        !/UNIQUE constraint failed: hosted_entitlements\.organization_id/.test(
+        !/UNIQUE constraint failed: (hosted_entitlements|hosted_allowances)\.organization_id/.test(
           String((error as Error)?.message ?? error),
         )
       )
         throw error;
       lastConflict = version;
+      // Allowance periods are unique across policy history. A second policy
+      // put in the same millisecond must retry with a fresh real clock value;
+      // failed batches roll back the revocation, policy, allowance and audit.
+      await new Promise((resolve) => setTimeout(resolve, 1));
     }
   }
   throw new HttpError(

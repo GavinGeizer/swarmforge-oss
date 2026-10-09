@@ -40,25 +40,38 @@ export interface HostedPrincipal {
   authorization_expires_at: number;
 }
 
+// SQLite evaluates 'now' at statement execution, closing expiry races while
+// a request waits to acquire the serialized D1 batch. Pinned JS times remain
+// a conservative lower bound rather than the sole authority clock.
+export const hostedSqlNow =
+  "(CAST(strftime('%s','now') AS INTEGER)*1000+CAST(substr(strftime('%f','now'),4,3) AS INTEGER))";
+
 // Live-grant predicate: unrevoked, unexpired, installation active in the same
 // org, epoch match, CURRENT installation authorization window (not a stale
 // copy: g.authorization_expires_at must equal the installation's live value),
 // and the grant's user is the installation's CURRENT user with active
 // membership in the active org. CLI rotation (epoch), reassignment (user),
 // revocation (status), or authorization-window change all invalidate grants.
-const hostedLiveGrant = `g.revoked_at IS NULL AND g.expires_at>? AND i.status='active' AND i.organization_id=g.organization_id AND g.epoch=i.epoch AND g.user_id=i.user_id AND g.authorization_expires_at=i.authorization_expires_at AND g.authorization_expires_at>? AND EXISTS(SELECT 1 FROM users u JOIN memberships m USING(user_id) JOIN organizations o USING(organization_id) WHERE u.user_id=g.user_id AND m.organization_id=g.organization_id AND u.status='active' AND m.status='active' AND o.status='active')`;
+const hostedLiveGrant = `g.revoked_at IS NULL AND g.expires_at>MAX(?,${hostedSqlNow}) AND i.status='active' AND i.organization_id=g.organization_id AND g.epoch=i.epoch AND g.user_id=i.user_id AND g.authorization_expires_at=i.authorization_expires_at AND g.authorization_expires_at>MAX(?,${hostedSqlNow}) AND EXISTS(SELECT 1 FROM users u JOIN memberships m USING(user_id) JOIN organizations o USING(organization_id) WHERE u.user_id=g.user_id AND m.organization_id=g.organization_id AND u.status='active' AND m.status='active' AND o.status='active')`;
 
 // Downstream single-batch admission/claim CAS must recheck the underlying
 // grant + CLI installation epoch/user/membership/org at mutation time. This
 // guard composes into conditional DML; it is never a preflight-only check.
-export function hostedPrincipalGuard(p: HostedPrincipal, now = Date.now()) {
+export function hostedPrincipalGuard(
+  p: Pick<
+    HostedPrincipal,
+    "grant_id" | "organization_id" | "user_id" | "installation_id"
+  >,
+  now = Date.now(),
+) {
   return {
-    sql: `EXISTS(SELECT 1 FROM hosted_execution_grants g JOIN cli_installations i USING(installation_id) WHERE g.grant_id=? AND g.organization_id=? AND g.user_id=? AND g.installation_id=? AND ${hostedLiveGrant})`,
+    sql: `EXISTS(SELECT 1 FROM hosted_execution_grants g JOIN cli_installations i USING(installation_id) WHERE g.grant_id=? AND g.organization_id=? AND g.user_id=? AND g.installation_id=? AND g.scopes=? AND ${hostedLiveGrant})`,
     args: [
       p.grant_id,
       p.organization_id,
       p.user_id,
       p.installation_id,
+      JSON.stringify(hostedCliScopes),
       now,
       now,
     ],

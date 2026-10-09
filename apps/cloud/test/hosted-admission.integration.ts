@@ -303,9 +303,7 @@ test("idempotency: same-key race one row + identical replies; retry safe; change
       ),
     );
     const ok = results.filter((r) => r.status === 202).length;
-    const replay = results.filter((r) => r.status === 200).length;
-    assert.equal(ok, 1);
-    assert.equal(replay, 5);
+    assert.equal(ok, 6);
     const bodies = await Promise.all(results.map((r) => r.json()));
     for (const b of bodies.slice(1)) assert.deepEqual(b, bodies[0]);
     const rows = (await h.db
@@ -315,7 +313,7 @@ test("idempotency: same-key race one row + identical replies; retry safe; change
     assert.equal(rows.n, 1);
     // Exact retry is safe.
     const again = await h.submitTask(a.headers, a.tenant, data, k);
-    assert.equal(again.status, 200);
+    assert.equal(again.status, 202);
     assert.deepEqual(await again.json(), bodies[0]);
     // Changed payload, same key -> 409.
     const changed = await h.submitTask(
