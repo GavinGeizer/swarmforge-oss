@@ -24,3 +24,10 @@ Mandatory final reviews remain:
 
 An author report, lead test, earlier component review or failed review session is not
 final integrated approval. No review is marked complete solely because workers stopped.
+
+Implementation/test candidate `f7931cd` and operational sample `00d8eb1` are committed
+on `phase2b2-hosted-dispatch`. A final direct Node invocation of the unchanged schema
+suite produced one DTO pass and four explicit `listen EPERM 127.0.0.1` failures;
+its detailed log is preserved separately from the file-level Node runner summary.
+Linux build/package verification was also rerun successfully at exact `00d8eb1`.
+The following evidence-only commit does not alter production code or tests.

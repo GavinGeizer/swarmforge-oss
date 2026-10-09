@@ -1,0 +1,67 @@
+✔ hosted schema checkpoint: frozen DTOs expose exact protocol names (17.951684ms)
+✖ hosted schema checkpoint: FK orphans rejected direct and batch with valid other fields (24.665181ms)
+✖ hosted schema checkpoint: quantity CHECKs fire on valid-parent rows (1.254276ms)
+✖ hosted schema checkpoint: cross-org resource binding, worker exclusivity, rollback (0.607588ms)
+✖ hosted schema checkpoint: clean install and 2B.1 upgrade (0.515321ms)
+ℹ tests 5
+ℹ suites 0
+ℹ pass 1
+ℹ fail 4
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 56.077793
+
+✖ failing tests:
+
+test at test/hosted-schema.integration.ts:331:1
+✖ hosted schema checkpoint: FK orphans rejected direct and batch with valid other fields (24.665181ms)
+  Error: listen EPERM: operation not permitted 127.0.0.1
+      at Server.setupListenHandle [as _listen2] (node:net:2145:21)
+      at listenInCluster (node:net:2224:12)
+      at node:net:2448:7
+      at process.processTicksAndRejections (node:internal/process/task_queues:90:21) {
+    code: 'EPERM',
+    errno: -1,
+    syscall: 'listen',
+    address: '127.0.0.1'
+  }
+
+test at test/hosted-schema.integration.ts:452:1
+✖ hosted schema checkpoint: quantity CHECKs fire on valid-parent rows (1.254276ms)
+  Error: listen EPERM: operation not permitted 127.0.0.1
+      at Server.setupListenHandle [as _listen2] (node:net:2145:21)
+      at listenInCluster (node:net:2224:12)
+      at node:net:2448:7
+      at process.processTicksAndRejections (node:internal/process/task_queues:90:21) {
+    code: 'EPERM',
+    errno: -1,
+    syscall: 'listen',
+    address: '127.0.0.1'
+  }
+
+test at test/hosted-schema.integration.ts:639:1
+✖ hosted schema checkpoint: cross-org resource binding, worker exclusivity, rollback (0.607588ms)
+  Error: listen EPERM: operation not permitted 127.0.0.1
+      at Server.setupListenHandle [as _listen2] (node:net:2145:21)
+      at listenInCluster (node:net:2224:12)
+      at node:net:2448:7
+      at process.processTicksAndRejections (node:internal/process/task_queues:90:21) {
+    code: 'EPERM',
+    errno: -1,
+    syscall: 'listen',
+    address: '127.0.0.1'
+  }
+
+test at test/hosted-schema.integration.ts:790:1
+✖ hosted schema checkpoint: clean install and 2B.1 upgrade (0.515321ms)
+  Error: listen EPERM: operation not permitted 127.0.0.1
+      at Server.setupListenHandle [as _listen2] (node:net:2145:21)
+      at listenInCluster (node:net:2224:12)
+      at node:net:2448:7
+      at process.processTicksAndRejections (node:internal/process/task_queues:90:21) {
+    code: 'EPERM',
+    errno: -1,
+    syscall: 'listen',
+    address: '127.0.0.1'
+  }
