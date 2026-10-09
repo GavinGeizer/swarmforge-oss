@@ -16,7 +16,7 @@ test("local cf migrations finish and can be repeated without reapplying schema",
       );
       assert.ifError(result.error);
       assert.equal(result.status, 0, result.stderr);
-      assert.match(result.stdout, first ? /0002_machine_identity.sql/ : /\[\]/);
+      assert.match(result.stdout, first ? /0003_hosted_execution.sql/ : /\[\]/);
       assert.doesNotMatch(result.stdout, /❌/);
     }
     const cleanup = spawnSync(

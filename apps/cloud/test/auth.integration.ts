@@ -20,7 +20,7 @@ async function fixture() {
   const sql = `${await readFile(
     new URL("../migrations/0001_identity.sql", import.meta.url),
     "utf8",
-  )};${await readFile(new URL("../migrations/0002_machine_identity.sql", import.meta.url), "utf8")}`;
+  )};${await readFile(new URL("../migrations/0002_machine_identity.sql", import.meta.url), "utf8")};${await readFile(new URL("../migrations/0003_hosted_execution.sql", import.meta.url), "utf8")}`;
   for (const stmt of sql
     .replace(/--[^\n]*/g, "")
     .split(";")
