@@ -8,23 +8,46 @@ import type {
   Worker,
   WorkerProvider,
 } from "./domain";
+import { HOSTED_CHILD_DURATION_ENV, HOSTED_CHILD_ENV } from "./hosted-child";
+
+export interface ControlledProcessRecord {
+  pid: number;
+  startedAtMonoMs: number;
+  durationMs: number;
+}
+
+function pidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 /**
  * Controlled local process provider for hosted inert execution only.
  * No VM provisioning: a real local subprocess runs the server-defined fixed
- * inert probe/delay workload. Implements stopWorkerRuntime with verified exit
- * (waitpid-style wait + missing-process proof); never treats a Coordinator
- * cancelled/paused label or a network failure as proven stop.
+ * inert probe/delay workload, spawned as the CURRENT binary
+ * (`process.execPath` self-spawn with SWARMFORGE_HOSTED_CHILD=1 marker, which
+ * enters the embedded src/hosted-child.ts runtime). Compiled-binary safe: no
+ * external Bun, no repo .ts file, no $bunfs path.
+ *
+ * Stop proof is OS-level, never an in-memory map: the durable record carries
+ * the child pid + monotonic start; stopWorkerRuntime signals the pid and
+ * confirms OS exit/absence. A provider that never saw the child (fresh
+ * restart) resolves the pid from the HostedStore record via
+ * stopPidWithProof and refuses unknown runtimes instead of claiming a stop
+ * from an empty map. Coordinator cancelled/paused labels and network results
+ * are never stop proof.
  */
 export class ControlledProcessProvider implements WorkerProvider {
   private children = new Map<string, ChildProcess>();
+  private records = new Map<string, ControlledProcessRecord>();
   readonly spawnedCommands: string[] = [];
-  constructor(
-    private readonly runtimeScript = new URL(
-      "../scripts/hosted-controlled-runtime.ts",
-      import.meta.url,
-    ).pathname,
-  ) {}
+  /** Durable pid journal hook: the supervisor persists pid+start per task. */
+  onSpawn: ((vmId: string, record: ControlledProcessRecord) => void) | null =
+    null;
   private vmId(w: Worker): string {
     if (!w.vm_id) throw new Error("Controlled worker has no runtime handle.");
     return w.vm_id;
@@ -33,21 +56,27 @@ export class ControlledProcessProvider implements WorkerProvider {
     const id = `controlled-${w.worker_id}`;
     return { id, slug: w.worker_id, state: "running", worker_id: w.worker_id };
   }
+  /** Liveness from OS state only. Stopped pids report stopped (proof of exit, not absence). */
   async getWorker(id: string): Promise<VmInfo | null> {
     const child = this.children.get(id);
-    if (!child) return null;
-    if (child.exitCode !== null || child.signalCode !== null)
+    if (child) {
+      if (child.exitCode !== null || child.signalCode !== null)
+        return { id, slug: id, state: "stopped" };
+      if (child.pid !== undefined && pidAlive(child.pid))
+        return { id, slug: id, state: "running" };
       return { id, slug: id, state: "stopped" };
-    try {
-      process.kill(child.pid!, 0);
-      return { id, slug: id, state: "running" };
-    } catch {
-      return null;
     }
+    const record = this.records.get(id);
+    if (record) {
+      if (pidAlive(record.pid)) return { id, slug: id, state: "running" };
+      return { id, slug: id, state: "stopped" };
+    }
+    return null;
   }
   async listWorkers(): Promise<VmInfo[]> {
     const out: VmInfo[] = [];
-    for (const [id] of this.children) {
+    const ids = new Set([...this.children.keys(), ...this.records.keys()]);
+    for (const id of ids) {
       const vm = await this.getWorker(id);
       if (vm) out.push(vm);
     }
@@ -55,6 +84,19 @@ export class ControlledProcessProvider implements WorkerProvider {
   }
   async prepare(_w: Worker): Promise<string> {
     return "controlled-local";
+  }
+  /** Record a pid observed out-of-band (restart recovery from durable journal). */
+  trackExternal(vmId: string, record: ControlledProcessRecord): void {
+    if (!Number.isSafeInteger(record.pid) || record.pid <= 0)
+      throw new Error("Controlled pid record is invalid.");
+    this.records.set(vmId, record);
+  }
+  forget(vmId: string): void {
+    this.records.delete(vmId);
+    this.children.delete(vmId);
+  }
+  recordFor(vmId: string): ControlledProcessRecord | null {
+    return this.records.get(vmId) ?? null;
   }
   /** Starts the fixed inert workload. Duration comes from the server lease math. */
   startControlled(
@@ -70,20 +112,37 @@ export class ControlledProcessProvider implements WorkerProvider {
         "Controlled runtime already started; refusing duplicate.",
       );
     this.spawnedCommands.push(`controlled-probe duration_ms=${durationMs}`);
-    const child = spawn(
-      process.execPath,
-      [this.runtimeScript, String(durationMs)],
-      {
-        // No inherited process.env: strict allowlist without cloud bearer,
-        // provider, repo or model credentials. stdio pipe (never inherit):
-        // the child observes parent death as stdin EOF and stops itself.
-        env: {
-          PATH: "/usr/bin:/bin",
-          TZ: "UTC",
-        },
-        stdio: ["pipe", "pipe", "pipe"],
-      },
-    );
+    // Self-spawn the current binary (works dev + compiled): the child enters
+    // the embedded hosted-child runtime via the env marker. No argv payload,
+    // no external runtime, no repo file. Bun may need an explicit `run`
+    // subcommand when execPath is a bare runtime without a bundled entry
+    // (bare `bun` with no script prints usage and exits 0): detect the
+    // marker-binary form via SWARMFORGE_HOSTED_ENTRY, else fall back to the
+    // current source file (dev/test) which the child runs as a script.
+    const entry = process.env.SWARMFORGE_HOSTED_ENTRY;
+    const child =
+      entry !== undefined
+        ? spawn(process.execPath, [], {
+            env: {
+              PATH: "/usr/bin:/bin",
+              TZ: "UTC",
+              [HOSTED_CHILD_ENV]: "1",
+              [HOSTED_CHILD_DURATION_ENV]: String(durationMs),
+            },
+            stdio: ["pipe", "pipe", "pipe"],
+          })
+        : spawn(
+            process.execPath,
+            [new URL("./hosted-child-script.ts", import.meta.url).pathname],
+            {
+              env: {
+                PATH: "/usr/bin:/bin",
+                TZ: "UTC",
+                [HOSTED_CHILD_DURATION_ENV]: String(durationMs),
+              },
+              stdio: ["pipe", "pipe", "pipe"],
+            },
+          );
     // Hold the parent end open: EOF reaches the child only when the
     // supervisor (and its stdio) is actually gone. Keep flowing so no
     // buffered pause wedges the pipe.
@@ -93,7 +152,16 @@ export class ControlledProcessProvider implements WorkerProvider {
     child.stderr?.on("data", () => {});
     child.stdout?.resume();
     child.stderr?.resume();
+    const record: ControlledProcessRecord = {
+      pid: child.pid!,
+      startedAtMonoMs: performance.now(),
+      durationMs,
+    };
     this.children.set(id, child);
+    this.records.set(id, record);
+    try {
+      this.onSpawn?.(id, record);
+    } catch {}
     child.on("exit", (code) => {
       this.children.delete(id);
       onExit(code);
@@ -103,51 +171,124 @@ export class ControlledProcessProvider implements WorkerProvider {
       onExit(null);
     });
   }
-  /** Verified stop: SIGTERM, escalate to SIGKILL, then confirm exit/absence. */
+  /**
+   * Verified OS-level stop for a locally tracked child: SIGTERM, escalate to
+   * SIGKILL, then confirm the pid is gone. Throws (holds) on any uncertainty.
+   */
   async stopWorkerRuntime(w: Worker): Promise<void> {
     const id = this.vmId(w);
     const child = this.children.get(id);
-    if (!child) {
-      // Independently confirm absence: only a confirmed-missing process counts.
-      const vm = await this.getWorker(id);
-      if (vm === null) return;
-      throw new Error("Controlled runtime stop is uncertain; holding state.");
+    const record = this.records.get(id);
+    const pid = child?.pid ?? record?.pid;
+    if (pid === undefined) {
+      // Unknown runtime to THIS provider: refuse to claim a stop from an
+      // empty map. The caller (stopPidWithProof / supervisor) must resolve
+      // the durable pid record first; only confirmed OS absence resolves.
+      throw new Error(
+        "Controlled runtime is unknown to this provider; refusing stop proof without a durable pid record.",
+      );
     }
-    const exited = new Promise<void>((resolve) => {
-      child.once("exit", () => resolve());
-      child.once("error", () => resolve());
-    });
-    try {
-      child.kill("SIGTERM");
-    } catch {
-      throw new Error("Controlled runtime stop is uncertain; holding state.");
+    if (!pidAlive(pid)) {
+      this.children.delete(id);
+      return;
     }
-    const grace = await Promise.race([
-      exited.then(() => true),
-      Bun.sleep(2000).then(() => false),
-    ]);
-    if (!grace) {
+    if (child) {
+      const exited = new Promise<void>((resolve) => {
+        child.once("exit", () => resolve());
+        child.once("error", () => resolve());
+      });
       try {
-        child.kill("SIGKILL");
+        child.kill("SIGTERM");
       } catch {
         throw new Error("Controlled runtime stop is uncertain; holding state.");
       }
-      const forced = await Promise.race([
+      const grace = await Promise.race([
         exited.then(() => true),
         Bun.sleep(2000).then(() => false),
       ]);
-      if (!forced)
+      if (!grace) {
+        try {
+          child.kill("SIGKILL");
+        } catch {
+          throw new Error(
+            "Controlled runtime stop is uncertain; holding state.",
+          );
+        }
+        const forced = await Promise.race([
+          exited.then(() => true),
+          Bun.sleep(2000).then(() => false),
+        ]);
+        if (!forced)
+          throw new Error(
+            "Controlled runtime stop is uncertain; holding state.",
+          );
+      }
+      this.children.delete(id);
+    } else {
+      // Externally tracked pid (restart recovery): signal via OS and confirm.
+      try {
+        process.kill(pid, "SIGTERM");
+      } catch {
+        if (!pidAlive(pid)) return;
         throw new Error("Controlled runtime stop is uncertain; holding state.");
+      }
+      const deadline = Date.now() + 2000;
+      while (pidAlive(pid) && Date.now() < deadline) await Bun.sleep(50);
+      if (pidAlive(pid)) {
+        try {
+          process.kill(pid, "SIGKILL");
+        } catch {}
+        const killDeadline = Date.now() + 2000;
+        while (pidAlive(pid) && Date.now() < killDeadline) await Bun.sleep(50);
+      }
     }
-    this.children.delete(id);
     // Confirm the pid is really gone (no zombie executing agent work).
-    try {
-      process.kill(child.pid!, 0);
+    if (pidAlive(pid))
       throw new Error("Controlled runtime stop is uncertain; holding state.");
-    } catch (e) {
-      if (e instanceof Error && /uncertain/.test(e.message)) throw e;
+  }
+  /**
+   * Cross-provider/restart stop: resolve the durable pid record and confirm
+   * OS exit. Unknown pid (no record anywhere) rejects/holds — never releases
+   * on map/row absence.
+   */
+  async stopPidWithProof(
+    vmId: string,
+    record: ControlledProcessRecord | null,
+  ): Promise<void> {
+    if (!record || !Number.isSafeInteger(record.pid) || record.pid <= 0)
+      throw new Error(
+        "Controlled runtime has no durable pid record; holding unknown runtime.",
+      );
+    // A live child handle in this provider takes the verified path; else the
+    // durable pid is tracked and signalled via OS below. Either way the pid
+    // record survives so getWorker keeps reporting stopped (exit proof).
+    const child = this.children.get(vmId);
+    if (child) {
+      await this.stopWorkerRuntime({ vm_id: vmId } as Worker);
+      this.trackExternal(vmId, record);
       return;
     }
+    this.trackExternal(vmId, record);
+    if (!pidAlive(record.pid)) return;
+    try {
+      process.kill(record.pid, "SIGTERM");
+    } catch {
+      if (!pidAlive(record.pid)) return;
+      throw new Error("Controlled runtime stop is uncertain; holding state.");
+    }
+    const deadline = Date.now() + 4000;
+    while (pidAlive(record.pid) && Date.now() < deadline) await Bun.sleep(50);
+    if (pidAlive(record.pid)) {
+      try {
+        process.kill(record.pid, "SIGKILL");
+      } catch {}
+      const killDeadline = Date.now() + 4000;
+      while (pidAlive(record.pid) && Date.now() < killDeadline)
+        await Bun.sleep(50);
+    }
+    if (pidAlive(record.pid))
+      throw new Error("Controlled runtime stop is uncertain; holding state.");
+    // Keep the pid record: getWorker reports stopped (exit proof) from it.
   }
   async pushBranch(_w: Worker) {
     // Controlled inert work produces no branch: return a deterministic inert marker.

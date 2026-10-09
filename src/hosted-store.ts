@@ -24,6 +24,15 @@ export const hostedMappingSchema = z
     ]),
     stop_confirmed: z.boolean(),
     consumed_runtime_ms: z.number().int().nonnegative(),
+    consumed_runtime_unknown: z.boolean().default(false),
+    runtime_started_at_mono_ms: z.number().nullable().default(null),
+    runtime_duration_ms: z
+      .number()
+      .int()
+      .nonnegative()
+      .nullable()
+      .default(null),
+    child_pid: z.number().int().positive().nullable().default(null),
     idempotency_key: z.uuid(),
     rotation_key: z.uuid().nullable(),
     settlement_key: z.uuid().nullable(),
@@ -59,6 +68,10 @@ export class HostedStore {
         state TEXT NOT NULL,
         stop_confirmed INTEGER NOT NULL DEFAULT 0,
         consumed_runtime_ms INTEGER NOT NULL DEFAULT 0,
+        consumed_runtime_unknown INTEGER NOT NULL DEFAULT 0,
+        runtime_started_at_mono_ms REAL,
+        runtime_duration_ms INTEGER,
+        child_pid INTEGER,
         idempotency_key TEXT NOT NULL,
         rotation_key TEXT,
         settlement_key TEXT,
@@ -83,12 +96,28 @@ export class HostedStore {
   }
   /** Atomic claim-or-reuse: same task retries return the existing mapping. */
   claimMapping(
-    mapping: Omit<HostedMapping, "created_at" | "updated_at" | "state"> & {
+    mapping: Omit<
+      HostedMapping,
+      | "created_at"
+      | "updated_at"
+      | "state"
+      | "consumed_runtime_unknown"
+      | "runtime_started_at_mono_ms"
+      | "runtime_duration_ms"
+      | "child_pid"
+    > & {
       state?: HostedMapping["state"];
     },
   ): { mapping: HostedMapping; created: boolean } {
     const parsed = hostedMappingSchema
-      .omit({ created_at: true, updated_at: true })
+      .omit({
+        created_at: true,
+        updated_at: true,
+        consumed_runtime_unknown: true,
+        runtime_started_at_mono_ms: true,
+        runtime_duration_ms: true,
+        child_pid: true,
+      })
       .safeParse({ state: "mapped", ...mapping });
     if (!parsed.success) throw new Error("Hosted mapping is invalid.");
     return this.db.transaction(() => {
@@ -115,12 +144,16 @@ export class HostedStore {
       const now = Date.now();
       const full: HostedMapping = {
         ...parsed.data,
+        consumed_runtime_unknown: false,
+        runtime_started_at_mono_ms: null,
+        runtime_duration_ms: null,
+        child_pid: null,
         created_at: now,
         updated_at: now,
       };
       this.db
         .query(
-          "INSERT INTO hosted_mappings(task_id,tenant_id,worker_id,local_worker_id,lease_id,fence,supervisor_id,reservation_id,state,stop_confirmed,consumed_runtime_ms,idempotency_key,rotation_key,settlement_key,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+          "INSERT INTO hosted_mappings(task_id,tenant_id,worker_id,local_worker_id,lease_id,fence,supervisor_id,reservation_id,state,stop_confirmed,consumed_runtime_ms,consumed_runtime_unknown,runtime_started_at_mono_ms,runtime_duration_ms,child_pid,idempotency_key,rotation_key,settlement_key,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         )
         .run(
           full.task_id,
@@ -134,6 +167,10 @@ export class HostedStore {
           full.state,
           full.stop_confirmed ? 1 : 0,
           full.consumed_runtime_ms,
+          full.consumed_runtime_unknown ? 1 : 0,
+          full.runtime_started_at_mono_ms,
+          full.runtime_duration_ms,
+          full.child_pid,
           full.idempotency_key,
           full.rotation_key,
           full.settlement_key,
@@ -229,20 +266,72 @@ export class HostedStore {
       return updated;
     })();
   }
-  markStopped(
+  /** Persist actual process start (monotonic) + pid identity at launch. */
+  markRuntimeStarted(
     taskId: string,
-    consumedRuntimeMs: number,
-    settlementKey: string,
+    start: { startedAtMonoMs: number; durationMs: number; pid: number },
   ): HostedMapping {
     return this.db.transaction(() => {
       const current = this.get(taskId);
       if (!current) throw new Error("Hosted mapping not found.");
       const updated: HostedMapping = {
         ...current,
+        runtime_started_at_mono_ms: start.startedAtMonoMs,
+        runtime_duration_ms: start.durationMs,
+        child_pid: start.pid,
+        consumed_runtime_unknown: false,
+        updated_at: Date.now(),
+      };
+      this.writeFull(updated);
+      return updated;
+    })();
+  }
+  /**
+   * Normal stop records measured ELAPSED EXECUTION (monotonic), bounded by the
+   * server-reserved runtime — never the stop-call latency.
+   */
+  markStopped(
+    taskId: string,
+    elapsed: { elapsedMs: number },
+    settlementKey: string,
+  ): HostedMapping {
+    return this.db.transaction(() => {
+      const current = this.get(taskId);
+      if (!current) throw new Error("Hosted mapping not found.");
+      const bound = current.runtime_duration_ms ?? Number.MAX_SAFE_INTEGER;
+      const consumed = Math.max(
+        0,
+        Math.min(Math.floor(elapsed.elapsedMs), bound),
+      );
+      const updated: HostedMapping = {
+        ...current,
         state: "stopped",
         stop_confirmed: true,
-        consumed_runtime_ms: consumedRuntimeMs,
+        consumed_runtime_ms: consumed,
+        consumed_runtime_unknown: false,
         settlement_key: settlementKey,
+        updated_at: Date.now(),
+      };
+      this.write(updated);
+      return updated;
+    })();
+  }
+  /**
+   * After a crash the exit time is unknown: conservatively record the
+   * reserved budget as consumed and flag unknown — never under-report stop
+   * latency as execution. The row stays held for trusted reconciliation.
+   */
+  markHeldUnknown(taskId: string): HostedMapping {
+    return this.db.transaction(() => {
+      const current = this.get(taskId);
+      if (!current) throw new Error("Hosted mapping not found.");
+      const reserved = current.runtime_duration_ms ?? 0;
+      const updated: HostedMapping = {
+        ...current,
+        state: "held",
+        stop_confirmed: false,
+        consumed_runtime_ms: Math.max(current.consumed_runtime_ms, reserved),
+        consumed_runtime_unknown: true,
         updated_at: Date.now(),
       };
       this.write(updated);
@@ -355,7 +444,7 @@ export class HostedStore {
     hostedMappingSchema.parse(mapping);
     this.db
       .query(
-        "UPDATE hosted_mappings SET lease_id=?,fence=?,state=?,stop_confirmed=?,consumed_runtime_ms=?,rotation_key=?,settlement_key=?,updated_at=? WHERE task_id=?",
+        "UPDATE hosted_mappings SET lease_id=?,fence=?,state=?,stop_confirmed=?,consumed_runtime_ms=?,consumed_runtime_unknown=?,runtime_started_at_mono_ms=?,runtime_duration_ms=?,child_pid=?,rotation_key=?,settlement_key=?,updated_at=? WHERE task_id=?",
       )
       .run(
         mapping.lease_id,
@@ -363,9 +452,61 @@ export class HostedStore {
         mapping.state,
         mapping.stop_confirmed ? 1 : 0,
         mapping.consumed_runtime_ms,
+        mapping.consumed_runtime_unknown ? 1 : 0,
+        mapping.runtime_started_at_mono_ms,
+        mapping.runtime_duration_ms,
+        mapping.child_pid,
         mapping.rotation_key,
         mapping.settlement_key,
         mapping.updated_at,
+        mapping.task_id,
+      );
+  }
+  /** Full-row write for fields (pid/start) the partial writer does not cover. */
+  private writeFull(mapping: HostedMapping): void {
+    hostedMappingSchema.parse(mapping);
+    const columns = [
+      "lease_id",
+      "fence",
+      "local_worker_id",
+      "state",
+      "stop_confirmed",
+      "consumed_runtime_ms",
+      "consumed_runtime_unknown",
+      "runtime_started_at_mono_ms",
+      "runtime_duration_ms",
+      "child_pid",
+      "rotation_key",
+      "settlement_key",
+      "updated_at",
+    ];
+    const values: Record<string, unknown> = {
+      lease_id: mapping.lease_id,
+      fence: mapping.fence,
+      local_worker_id: mapping.local_worker_id,
+      state: mapping.state,
+      stop_confirmed: mapping.stop_confirmed ? 1 : 0,
+      consumed_runtime_ms: mapping.consumed_runtime_ms,
+      consumed_runtime_unknown: mapping.consumed_runtime_unknown ? 1 : 0,
+      runtime_started_at_mono_ms: mapping.runtime_started_at_mono_ms,
+      runtime_duration_ms: mapping.runtime_duration_ms,
+      child_pid: mapping.child_pid,
+      rotation_key: mapping.rotation_key,
+      settlement_key: mapping.settlement_key,
+      updated_at: mapping.updated_at,
+    };
+    this.db
+      .query(
+        `UPDATE hosted_mappings SET ${columns.map((c) => `${c}=?`).join(",")} WHERE task_id=?`,
+      )
+      .run(
+        ...(columns.map((c) => values[c]) as (
+          | string
+          | number
+          | bigint
+          | boolean
+          | null
+        )[]),
         mapping.task_id,
       );
   }
@@ -382,6 +523,10 @@ export class HostedStore {
       state: row.state,
       stop_confirmed: row.stop_confirmed === 1,
       consumed_runtime_ms: row.consumed_runtime_ms,
+      consumed_runtime_unknown: row.consumed_runtime_unknown === 1,
+      runtime_started_at_mono_ms: row.runtime_started_at_mono_ms,
+      runtime_duration_ms: row.runtime_duration_ms,
+      child_pid: row.child_pid,
       idempotency_key: row.idempotency_key,
       rotation_key: row.rotation_key,
       settlement_key: row.settlement_key,
