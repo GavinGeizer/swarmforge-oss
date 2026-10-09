@@ -1,0 +1,11 @@
+231 |       requestRttMs: rtt,
+232 |       safetyMarginMs: this.options.safetyMarginMs ?? 2000,
+233 |     });
+234 |     const minimum = this.options.minLifetimeMs ?? 5000;
+235 |     if (!Number.isSafeInteger(authority) || authority < minimum)
+236 |       throw new Error("Too little remaining authority; refusing to start.");
+                      ^
+error: Too little remaining authority; refusing to start.
+      at ackAndStart (/tmp/swarmforge-phase2b2-integration/src/hosted-supervisor.ts:236:17)
+
+Bun v1.4.2 (Linux x64)

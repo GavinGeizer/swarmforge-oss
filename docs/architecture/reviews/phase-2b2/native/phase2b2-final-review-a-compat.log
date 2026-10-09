@@ -1,0 +1,82 @@
+bun test v1.4.2 (744846f84)
+
+tests/cli-redaction.test.ts:
+13 |   h.coordinator.config.SWARMFORGE_API_TOKEN = token;
+14 |   const worker = h.coordinator.spawn(task);
+15 |   await runToRunning(h, worker.worker_id);
+16 |   const handler = createHttpHandler(h.coordinator);
+17 |   let denial: string | null = null;
+18 |   const server = Bun.serve({
+                          ^
+EPERM: operation not permitted, listen
+ syscall: "listen",
+   errno: -1,
+    code: "EPERM"
+
+      at fixture (/tmp/swarmforge-phase2b2-integration/tests/cli-redaction.test.ts:18:22)
+      at async <anonymous> (/tmp/swarmforge-phase2b2-integration/tests/cli-redaction.test.ts:67:21)
+(fail) dashboard chibi refreshes keep credentials out of every frame [4.76ms]
+13 |   h.coordinator.config.SWARMFORGE_API_TOKEN = token;
+14 |   const worker = h.coordinator.spawn(task);
+15 |   await runToRunning(h, worker.worker_id);
+16 |   const handler = createHttpHandler(h.coordinator);
+17 |   let denial: string | null = null;
+18 |   const server = Bun.serve({
+                          ^
+EPERM: operation not permitted, listen
+ syscall: "listen",
+   errno: -1,
+    code: "EPERM"
+
+      at fixture (/tmp/swarmforge-phase2b2-integration/tests/cli-redaction.test.ts:18:22)
+      at async <anonymous> (/tmp/swarmforge-phase2b2-integration/tests/cli-redaction.test.ts:67:21)
+(fail) dashboard technical refreshes keep credentials out of every frame [1.34ms]
+13 |   h.coordinator.config.SWARMFORGE_API_TOKEN = token;
+14 |   const worker = h.coordinator.spawn(task);
+15 |   await runToRunning(h, worker.worker_id);
+16 |   const handler = createHttpHandler(h.coordinator);
+17 |   let denial: string | null = null;
+18 |   const server = Bun.serve({
+                          ^
+EPERM: operation not permitted, listen
+ syscall: "listen",
+   errno: -1,
+    code: "EPERM"
+
+      at fixture (/tmp/swarmforge-phase2b2-integration/tests/cli-redaction.test.ts:18:22)
+      at async <anonymous> (/tmp/swarmforge-phase2b2-integration/tests/cli-redaction.test.ts:121:19)
+(fail) all client operations scrub echoed credentials using the resolved settings context [1.30ms]
+
+tests/cli.test.ts:
+12 |       ...task,
+13 |       task_id: `task-${index}`,
+14 |       request_id: `request-${index}`,
+15 |       timeout_seconds: 60,
+16 |     });
+17 |   const server = Bun.serve({
+                          ^
+EPERM: operation not permitted, listen
+ syscall: "listen",
+   errno: -1,
+    code: "EPERM"
+
+      at <anonymous> (/tmp/swarmforge-phase2b2-integration/tests/cli.test.ts:17:22)
+(fail) overview client reads every worker page through authenticated MCP [3.91ms]
+41 | test("status command prints JSON or a plain snapshot when piped", async () => {
+42 |   const h = harness();
+43 |   h.coordinator.config.SWARMFORGE_API_TOKEN =
+44 |     "a-test-token-with-enough-characters";
+45 |   h.store.create({ ...task, timeout_seconds: 60 });
+46 |   const server = Bun.serve({
+                          ^
+EPERM: operation not permitted, listen
+ syscall: "listen",
+   errno: -1,
+    code: "EPERM"
+
+      at <anonymous> (/tmp/swarmforge-phase2b2-integration/tests/cli.test.ts:46:22)
+(fail) status command prints JSON or a plain snapshot when piped [0.85ms]
+
+ 0 pass
+ 5 fail
+Ran 5 tests across 2 files. [69.00ms]

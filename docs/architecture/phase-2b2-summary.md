@@ -1,6 +1,7 @@
 # Phase 2B.2 implementation and verification checkpoint
 
-**Status: implemented candidate; Phase 2B.2 acceptance is not complete.** Final
+**Status: changes requested; Phase 2B.2 acceptance is not complete.** A high runtime
+lease-watchdog defect is under correction following the resumed independent review. Final
 independent integrated reviews and unrestricted infrastructure verification are
 outstanding. Untrusted customer execution remains disabled. No production deployment,
 master merge, Stripe, managed inference or production provisioning occurred.
@@ -253,3 +254,36 @@ Original reviewer reports, RED reproductions and lead confirmation logs remain s
 The original protected credential helper, test assertions and live infrastructure
 coverage were retained. A final unrestricted rerun must investigate any remaining
 failures before acceptance.
+
+
+## Resumed final review, 2026-10-09
+
+Reviewer A inspected exact integrated `f1d0526` and reproduced a **High** runtime
+lease defect through the actual default Worker, SupervisorClient, Coordinator and
+child (SQLite cloud storage/in-process transport): the live parent's stalled event
+loop leaves the child executing beyond its current lease. Parent EOF and total
+workload duration alone do not establish an independently enforced lease watchdog.
+A separate isolated implementer is correcting this; acceptance is blocked until
+actual child expiry and renewable full duration are independently verified.
+
+Reviewer C inspected the same integrated commit and found a **Medium** SQL-clock
+rotation recovery defect. Both old credential and recovery-window expiries now use
+`MAX(captured_time, SQL_time)` in correction `1a03be1` (integration `23535d2`). Three
+regressions went RED to GREEN; full cloud SQLite suite passed 87 tests, 322 assertions,
+and cloud checks passed 70 files. Reviewer A independently reran C's original probe
+against the correction: 401, no successor returned, both windows expired at SQL.
+The original C report remains separate from A's narrow correction approval.
+
+Reviewer B's final session stopped when an automated content filter reported
+possible cybersecurity risk; no completed B review was delivered. C preserved its
+original report before a later session interruption by the same filter. These are
+not approvals, and no content-filter bypass was attempted. Three completed final
+integrated reviews remain an unfinished gate. Original reports/probes/current-run
+results live under `reviews/phase-2b2/native/phase2b2-final-review-*`.
+
+The resumed focused cloud/Bun authority/migration suite passed 10 tests, 75 assertions.
+A fresh environment probe reconfirmed socket EPERM and differently owned root/tmp
+ancestors. A further minimal IPC probe confirms nonempty parent pipe writes report
+EPERM and deliver no bytes; this creates an additional real renewable-child test gap.
+IPC errors must fail closed. No authority, credential, helper or assertion is weakened
+to accommodate these restrictions.

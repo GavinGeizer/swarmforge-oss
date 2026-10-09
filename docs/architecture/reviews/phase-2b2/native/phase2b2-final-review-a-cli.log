@@ -1,0 +1,153 @@
+bun test v1.4.2 (744846f84)
+
+tests/cloud-worker-client.test.ts:
+61 |       s.isSymbolicLink() ||
+62 |       !s.isDirectory() ||
+63 |       (s.uid !== 0 && s.uid !== uid) ||
+64 |       (writable && !stickyRootTemp)
+65 |     )
+66 |       throw privateCredentialStorageError();
+                                               ^
+error: Cloud credential storage must use a privately owned regular file (0600) in a private directory (0700), without symlinks.
+      at parentDirectory (/tmp/swarmforge-phase2b2-integration/src/private-credential-file.ts:66:43)
+      at savePrivateCredential (/tmp/swarmforge-phase2b2-integration/src/private-credential-file.ts:134:3)
+      at <anonymous> (/tmp/swarmforge-phase2b2-integration/tests/cloud-worker-client.test.ts:71:5)
+(fail) shared private credential helper round-trips and protects POSIX files [12.61ms]
+61 |       s.isSymbolicLink() ||
+62 |       !s.isDirectory() ||
+63 |       (s.uid !== 0 && s.uid !== uid) ||
+64 |       (writable && !stickyRootTemp)
+65 |     )
+66 |       throw privateCredentialStorageError();
+                                               ^
+error: Cloud credential storage must use a privately owned regular file (0600) in a private directory (0700), without symlinks.
+      at parentDirectory (/tmp/swarmforge-phase2b2-integration/src/private-credential-file.ts:66:43)
+      at savePrivateCredential (/tmp/swarmforge-phase2b2-integration/src/private-credential-file.ts:134:3)
+      at <anonymous> (/tmp/swarmforge-phase2b2-integration/tests/cloud-worker-client.test.ts:94:5)
+(fail) shared private credential helper refuses corrupt, unsafe, oversized or symlink files [0.61ms]
+(pass) shared private credential helper refuses weak Windows storage without fallback [0.33ms]
+61 |       s.isSymbolicLink() ||
+62 |       !s.isDirectory() ||
+63 |       (s.uid !== 0 && s.uid !== uid) ||
+64 |       (writable && !stickyRootTemp)
+65 |     )
+66 |       throw privateCredentialStorageError();
+                                               ^
+error: Cloud credential storage must use a privately owned regular file (0600) in a private directory (0700), without symlinks.
+      at parentDirectory (/tmp/swarmforge-phase2b2-integration/src/private-credential-file.ts:66:43)
+      at savePrivateCredential (/tmp/swarmforge-phase2b2-integration/src/private-credential-file.ts:134:3)
+      at saveCloudWorkerCredential (/tmp/swarmforge-phase2b2-integration/src/cloud-worker-credentials.ts:50:3)
+      at <anonymous> (/tmp/swarmforge-phase2b2-integration/tests/cloud-worker-client.test.ts:172:5)
+(fail) worker credential store persists privately in a separate file from CLI credentials [1.38ms]
+53 |   const { version: _v, server_url: _u, ...reply } = c;
+54 |   return reply;
+55 | }
+56 | 
+57 | function api(handler: (request: Request) => Response | Promise<Response>) {
+58 |   const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: handler });
+                          ^
+EPERM: operation not permitted, listen
+ syscall: "listen",
+   errno: -1,
+    code: "EPERM"
+
+      at api (/tmp/swarmforge-phase2b2-integration/tests/cloud-worker-client.test.ts:58:22)
+      at <anonymous> (/tmp/swarmforge-phase2b2-integration/tests/cloud-worker-client.test.ts:205:18)
+(fail) worker client enrolls with an in-memory enrollment secret on the exact register endpoint [0.24ms]
+53 |   const { version: _v, server_url: _u, ...reply } = c;
+54 |   return reply;
+55 | }
+56 | 
+57 | function api(handler: (request: Request) => Response | Promise<Response>) {
+58 |   const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: handler });
+                          ^
+EPERM: operation not permitted, listen
+ syscall: "listen",
+   errno: -1,
+    code: "EPERM"
+
+      at api (/tmp/swarmforge-phase2b2-integration/tests/cloud-worker-client.test.ts:58:22)
+      at <anonymous> (/tmp/swarmforge-phase2b2-integration/tests/cloud-worker-client.test.ts:240:18)
+(fail) worker client verifies stored identity and rejects same-tenant mismatches locally [0.31ms]
+53 |   const { version: _v, server_url: _u, ...reply } = c;
+54 |   return reply;
+55 | }
+56 | 
+57 | function api(handler: (request: Request) => Response | Promise<Response>) {
+58 |   const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: handler });
+                          ^
+EPERM: operation not permitted, listen
+ syscall: "listen",
+   errno: -1,
+    code: "EPERM"
+
+      at api (/tmp/swarmforge-phase2b2-integration/tests/cloud-worker-client.test.ts:58:22)
+      at <anonymous> (/tmp/swarmforge-phase2b2-integration/tests/cloud-worker-client.test.ts:279:18)
+(fail) worker rotation survives a lost reply by retrying the durable idempotency key [0.53ms]
+53 |   const { version: _v, server_url: _u, ...reply } = c;
+54 |   return reply;
+55 | }
+56 | 
+57 | function api(handler: (request: Request) => Response | Promise<Response>) {
+58 |   const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: handler });
+                          ^
+EPERM: operation not permitted, listen
+ syscall: "listen",
+   errno: -1,
+    code: "EPERM"
+
+      at api (/tmp/swarmforge-phase2b2-integration/tests/cloud-worker-client.test.ts:58:22)
+      at <anonymous> (/tmp/swarmforge-phase2b2-integration/tests/cloud-worker-client.test.ts:307:18)
+(fail) worker client rejects wrong audience, hostile responses, leaked secrets and CLI credentials [0.30ms]
+53 |   const { version: _v, server_url: _u, ...reply } = c;
+54 |   return reply;
+55 | }
+56 | 
+57 | function api(handler: (request: Request) => Response | Promise<Response>) {
+58 |   const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: handler });
+                          ^
+EPERM: operation not permitted, listen
+ syscall: "listen",
+   errno: -1,
+    code: "EPERM"
+
+      at api (/tmp/swarmforge-phase2b2-integration/tests/cloud-worker-client.test.ts:58:22)
+      at <anonymous> (/tmp/swarmforge-phase2b2-integration/tests/cloud-worker-client.test.ts:368:18)
+(fail) worker client follows redirects never, respects 429 and stops on expired or revoked credentials [0.20ms]
+
+tests/hosted-cli.test.ts:
+(pass) explicit hosted parser is pure and refuses secrets, unsafe workload flags and invalid bounds [0.85ms]
+(pass) unmodified real compiled CLI works from foreign cwd and enters only the bounded controlled child hook [698.86ms]
+61 |       s.isSymbolicLink() ||
+62 |       !s.isDirectory() ||
+63 |       (s.uid !== 0 && s.uid !== uid) ||
+64 |       (writable && !stickyRootTemp)
+65 |     )
+66 |       throw privateCredentialStorageError();
+                 ^
+error: Cloud credential storage must use a privately owned regular file (0600) in a private directory (0700), without symlinks.
+      at parentDirectory (/tmp/swarmforge-phase2b2-integration/src/private-credential-file.ts:66:13)
+      at savePrivateCredential (/tmp/swarmforge-phase2b2-integration/src/private-credential-file.ts:134:3)
+      at saveHostedSupervisorCredential (/tmp/swarmforge-phase2b2-integration/src/hosted-credentials.ts:128:3)
+      at credentials (/tmp/swarmforge-phase2b2-integration/tests/hosted-cli.test.ts:53:3)
+      at <anonymous> (/tmp/swarmforge-phase2b2-integration/tests/hosted-cli.test.ts:178:3)
+(fail) compiled actual CLI supervisor + production provider + child from empty cwd (instrumented build, fetch transport mock) [1.27ms]
+322 | // explicit verification gap; this remains executable unchanged in normal CI.
+323 | test("unmodified compiled actual hosted supervisor runs through HTTP fixture from empty cwd", async () => {
+324 |   const assignment = task();
+325 |   let settleBody: { outcome: string; consumed_runtime_ms: number } | null =
+326 |     null;
+327 |   const server = Bun.serve({
+                           ^
+EPERM: operation not permitted, listen
+ syscall: "listen",
+   errno: -1,
+    code: "EPERM"
+
+      at <anonymous> (/tmp/swarmforge-phase2b2-integration/tests/hosted-cli.test.ts:327:22)
+(fail) unmodified compiled actual hosted supervisor runs through HTTP fixture from empty cwd [0.18ms]
+
+ 3 pass
+ 10 fail
+ 23 expect() calls
+Ran 13 tests across 2 files. [753.00ms]

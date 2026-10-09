@@ -1,0 +1,1 @@
+{"probe":"actual_inert_child_minimal_environment","child_environment_keys":["PATH","TZ","SWARMFORGE_HOSTED_DURATION"],"unrelated_live_pid_refused":true,"private_journal_result":"Hosted state requires private directory (0700), without symlinks."}

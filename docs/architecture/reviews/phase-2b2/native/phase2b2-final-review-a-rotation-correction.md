@@ -1,0 +1,11 @@
+# Reviewer A independent narrow rotation correction verification
+
+Reviewed exact isolated candidate `1a03be15c9b18159a69bcef5314e7af951e0cdf9` at `/tmp/swarmforge-phase2b2-rotation-window`. Main integrated review remains against immutable `f1d0526c5f60261f77e8a0c636f8474a5309826d` and is preserved separately at `/tmp/phase2b2-final-review-a.md`. Reviewer C's original report/probe remain unchanged. I did not author or modify this correction.
+
+**APPROVED for this narrow SQL clock correction**, not final integrated certification. Production change is one rotationReplay SELECT: old credential expiry and finite recovery expiry both compare against MAX(request timestamp, current SQL clock). This denies a delayed statement once either finite window closes, while retaining conservative request-clock checks. Successor credential/execution authority is still authenticated before returning its secret. No general authority is returned to the revoked old credential.
+
+I adapted C's original `/tmp/phase2b2-final-review-c-rotation-clock-probe.ts` only by pointing the import at the corrected worktree; the new independent copy and output are `/tmp/phase2b2-final-review-a-rotation-correction-probe.ts` and `/tmp/phase2b2-final-review-a-rotation-correction-probe.log`. Exit 0, `delayed:true`, `status:401`, `same_successor:false`, `old_expired_at_sql:true`, `recovery_expired_at_sql:true`. This independently confirms the previously accepted late secret replay is denied.
+
+Fresh unchanged `bun test apps/cloud/test/hosted-rotation-window.test.ts`: 3 pass, 0 fail, 16 assertions. Durable log `/tmp/phase2b2-final-review-a-rotation-correction-tests.log`. Tests independently isolate old-credential expiry and recovery-window expiry during actual SQL execution, assert no mutation/secret response and current successor usability, and retain timely exact replay behavior. Source/tests reviewed directly.
+
+Final exact HEAD reconfirmed; clean `git status --porcelain`. This is production-handler SQL testing using the complementary SQLite adapter; it does not establish live D1/workerd execution. All broader infrastructure gaps and A-H1 independent child lease watchdog defect remain open in the original review. This narrow verification does not substitute for the required three independent final integrated reviews.

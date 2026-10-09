@@ -1,0 +1,18 @@
+bun test v1.4.2 (744846f84)
+
+tests/hosted-supervisor.test.ts:
+ 98 |     const reader = a.stdout.getReader();
+ 99 |     let output = "";
+100 |     while (!output.includes("\n")) {
+101 |       const chunk = await reader.read();
+102 |       if (chunk.done)
+103 |         throw new Error("Process A exited before the live-child report.");
+                        ^
+error: Process A exited before the live-child report.
+      at <anonymous> (/tmp/swarmforge-phase2b2-integration/tests/hosted-supervisor.test.ts:103:19)
+(fail) actual process A child >=300ms then NEW process B proves OS stop with foreign clock and full reserved consumption (transport mock) [143.24ms]
+
+ 0 pass
+ 57 filtered out
+ 1 fail
+Ran 1 test across 1 file. [181.00ms]

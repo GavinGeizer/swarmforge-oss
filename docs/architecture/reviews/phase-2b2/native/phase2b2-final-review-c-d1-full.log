@@ -1,0 +1,248 @@
+✖ supervisor identity: register then read identity (36.012338ms)
+✖ supervisor identity: registration grants no capabilities or tasks (1.274029ms)
+✖ supervisor identity: cross-tenant registration is not found (0.58332ms)
+✖ supervisor identity: wrong audience credentials rejected (0.608457ms)
+✖ supervisor identity: malformed scopes rejected by strict auth (0.718119ms)
+✖ supervisor identity: non-admin browser cannot register or revoke (0.541062ms)
+✖ supervisor identity: revoked credential and old replay after revoke rejected (0.513373ms)
+✖ supervisor identity: expired credential rejected (0.542161ms)
+✖ supervisor identity: worker revoked blocks execution but permits cleanup (0.682144ms)
+✖ supervisor identity: rotation issues successor and invalidates old key (0.975783ms)
+✖ supervisor identity: rotation exact-key replay recovers successor only while valid (0.474353ms)
+✖ supervisor identity: rotation duplicate guard allows only one successor (concurrent keys) (0.453956ms)
+✖ supervisor identity: registration idempotency replays without duplicates, conflict on changed payload (0.388224ms)
+✖ supervisor identity: revocation holds assignments, retains reservations, never confirms stop (0.422553ms)
+✖ supervisor identity: DB failure rolls back registration (no partial rows, no audit) (0.420091ms)
+✖ supervisor identity: strict schemas and safe error envelope (3.57692ms)
+✖ supervisor identity: supervisorGuard mirrors execution/cleanup auth (0.663369ms)
+ℹ tests 17
+ℹ suites 0
+ℹ pass 0
+ℹ fail 17
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 292.826058
+
+✖ failing tests:
+
+test at apps/cloud/test/hosted-supervisors.integration.ts:41:1
+✖ supervisor identity: register then read identity (36.012338ms)
+  Error: listen EPERM: operation not permitted 127.0.0.1
+      at Server.setupListenHandle [as _listen2] (node:net:2145:21)
+      at listenInCluster (node:net:2224:12)
+      at node:net:2448:7
+      at process.processTicksAndRejections (node:internal/process/task_queues:90:21) {
+    code: 'EPERM',
+    errno: -1,
+    syscall: 'listen',
+    address: '127.0.0.1'
+  }
+
+test at apps/cloud/test/hosted-supervisors.integration.ts:60:1
+✖ supervisor identity: registration grants no capabilities or tasks (1.274029ms)
+  Error: listen EPERM: operation not permitted 127.0.0.1
+      at Server.setupListenHandle [as _listen2] (node:net:2145:21)
+      at listenInCluster (node:net:2224:12)
+      at node:net:2448:7
+      at process.processTicksAndRejections (node:internal/process/task_queues:90:21) {
+    code: 'EPERM',
+    errno: -1,
+    syscall: 'listen',
+    address: '127.0.0.1'
+  }
+
+test at apps/cloud/test/hosted-supervisors.integration.ts:79:1
+✖ supervisor identity: cross-tenant registration is not found (0.58332ms)
+  Error: listen EPERM: operation not permitted 127.0.0.1
+      at Server.setupListenHandle [as _listen2] (node:net:2145:21)
+      at listenInCluster (node:net:2224:12)
+      at node:net:2448:7
+      at process.processTicksAndRejections (node:internal/process/task_queues:90:21) {
+    code: 'EPERM',
+    errno: -1,
+    syscall: 'listen',
+    address: '127.0.0.1'
+  }
+
+test at apps/cloud/test/hosted-supervisors.integration.ts:97:1
+✖ supervisor identity: wrong audience credentials rejected (0.608457ms)
+  Error: listen EPERM: operation not permitted 127.0.0.1
+      at Server.setupListenHandle [as _listen2] (node:net:2145:21)
+      at listenInCluster (node:net:2224:12)
+      at node:net:2448:7
+      at process.processTicksAndRejections (node:internal/process/task_queues:90:21) {
+    code: 'EPERM',
+    errno: -1,
+    syscall: 'listen',
+    address: '127.0.0.1'
+  }
+
+test at apps/cloud/test/hosted-supervisors.integration.ts:124:1
+✖ supervisor identity: malformed scopes rejected by strict auth (0.718119ms)
+  Error: listen EPERM: operation not permitted 127.0.0.1
+      at Server.setupListenHandle [as _listen2] (node:net:2145:21)
+      at listenInCluster (node:net:2224:12)
+      at node:net:2448:7
+      at process.processTicksAndRejections (node:internal/process/task_queues:90:21) {
+    code: 'EPERM',
+    errno: -1,
+    syscall: 'listen',
+    address: '127.0.0.1'
+  }
+
+test at apps/cloud/test/hosted-supervisors.integration.ts:155:1
+✖ supervisor identity: non-admin browser cannot register or revoke (0.541062ms)
+  Error: listen EPERM: operation not permitted 127.0.0.1
+      at Server.setupListenHandle [as _listen2] (node:net:2145:21)
+      at listenInCluster (node:net:2224:12)
+      at node:net:2448:7
+      at process.processTicksAndRejections (node:internal/process/task_queues:90:21) {
+    code: 'EPERM',
+    errno: -1,
+    syscall: 'listen',
+    address: '127.0.0.1'
+  }
+
+test at apps/cloud/test/hosted-supervisors.integration.ts:223:1
+✖ supervisor identity: revoked credential and old replay after revoke rejected (0.513373ms)
+  Error: listen EPERM: operation not permitted 127.0.0.1
+      at Server.setupListenHandle [as _listen2] (node:net:2145:21)
+      at listenInCluster (node:net:2224:12)
+      at node:net:2448:7
+      at process.processTicksAndRejections (node:internal/process/task_queues:90:21) {
+    code: 'EPERM',
+    errno: -1,
+    syscall: 'listen',
+    address: '127.0.0.1'
+  }
+
+test at apps/cloud/test/hosted-supervisors.integration.ts:271:1
+✖ supervisor identity: expired credential rejected (0.542161ms)
+  Error: listen EPERM: operation not permitted 127.0.0.1
+      at Server.setupListenHandle [as _listen2] (node:net:2145:21)
+      at listenInCluster (node:net:2224:12)
+      at node:net:2448:7
+      at process.processTicksAndRejections (node:internal/process/task_queues:90:21) {
+    code: 'EPERM',
+    errno: -1,
+    syscall: 'listen',
+    address: '127.0.0.1'
+  }
+
+test at apps/cloud/test/hosted-supervisors.integration.ts:290:1
+✖ supervisor identity: worker revoked blocks execution but permits cleanup (0.682144ms)
+  Error: listen EPERM: operation not permitted 127.0.0.1
+      at Server.setupListenHandle [as _listen2] (node:net:2145:21)
+      at listenInCluster (node:net:2224:12)
+      at node:net:2448:7
+      at process.processTicksAndRejections (node:internal/process/task_queues:90:21) {
+    code: 'EPERM',
+    errno: -1,
+    syscall: 'listen',
+    address: '127.0.0.1'
+  }
+
+test at apps/cloud/test/hosted-supervisors.integration.ts:324:1
+✖ supervisor identity: rotation issues successor and invalidates old key (0.975783ms)
+  Error: listen EPERM: operation not permitted 127.0.0.1
+      at Server.setupListenHandle [as _listen2] (node:net:2145:21)
+      at listenInCluster (node:net:2224:12)
+      at node:net:2448:7
+      at process.processTicksAndRejections (node:internal/process/task_queues:90:21) {
+    code: 'EPERM',
+    errno: -1,
+    syscall: 'listen',
+    address: '127.0.0.1'
+  }
+
+test at apps/cloud/test/hosted-supervisors.integration.ts:352:1
+✖ supervisor identity: rotation exact-key replay recovers successor only while valid (0.474353ms)
+  Error: listen EPERM: operation not permitted 127.0.0.1
+      at Server.setupListenHandle [as _listen2] (node:net:2145:21)
+      at listenInCluster (node:net:2224:12)
+      at node:net:2448:7
+      at process.processTicksAndRejections (node:internal/process/task_queues:90:21) {
+    code: 'EPERM',
+    errno: -1,
+    syscall: 'listen',
+    address: '127.0.0.1'
+  }
+
+test at apps/cloud/test/hosted-supervisors.integration.ts:407:1
+✖ supervisor identity: rotation duplicate guard allows only one successor (concurrent keys) (0.453956ms)
+  Error: listen EPERM: operation not permitted 127.0.0.1
+      at Server.setupListenHandle [as _listen2] (node:net:2145:21)
+      at listenInCluster (node:net:2224:12)
+      at node:net:2448:7
+      at process.processTicksAndRejections (node:internal/process/task_queues:90:21) {
+    code: 'EPERM',
+    errno: -1,
+    syscall: 'listen',
+    address: '127.0.0.1'
+  }
+
+test at apps/cloud/test/hosted-supervisors.integration.ts:444:1
+✖ supervisor identity: registration idempotency replays without duplicates, conflict on changed payload (0.388224ms)
+  Error: listen EPERM: operation not permitted 127.0.0.1
+      at Server.setupListenHandle [as _listen2] (node:net:2145:21)
+      at listenInCluster (node:net:2224:12)
+      at node:net:2448:7
+      at process.processTicksAndRejections (node:internal/process/task_queues:90:21) {
+    code: 'EPERM',
+    errno: -1,
+    syscall: 'listen',
+    address: '127.0.0.1'
+  }
+
+test at apps/cloud/test/hosted-supervisors.integration.ts:476:1
+✖ supervisor identity: revocation holds assignments, retains reservations, never confirms stop (0.422553ms)
+  Error: listen EPERM: operation not permitted 127.0.0.1
+      at Server.setupListenHandle [as _listen2] (node:net:2145:21)
+      at listenInCluster (node:net:2224:12)
+      at node:net:2448:7
+      at process.processTicksAndRejections (node:internal/process/task_queues:90:21) {
+    code: 'EPERM',
+    errno: -1,
+    syscall: 'listen',
+    address: '127.0.0.1'
+  }
+
+test at apps/cloud/test/hosted-supervisors.integration.ts:547:1
+✖ supervisor identity: DB failure rolls back registration (no partial rows, no audit) (0.420091ms)
+  Error: listen EPERM: operation not permitted 127.0.0.1
+      at Server.setupListenHandle [as _listen2] (node:net:2145:21)
+      at listenInCluster (node:net:2224:12)
+      at node:net:2448:7
+      at process.processTicksAndRejections (node:internal/process/task_queues:90:21) {
+    code: 'EPERM',
+    errno: -1,
+    syscall: 'listen',
+    address: '127.0.0.1'
+  }
+
+test at apps/cloud/test/hosted-supervisors.integration.ts:572:1
+✖ supervisor identity: strict schemas and safe error envelope (3.57692ms)
+  Error: listen EPERM: operation not permitted 127.0.0.1
+      at Server.setupListenHandle [as _listen2] (node:net:2145:21)
+      at listenInCluster (node:net:2224:12)
+      at node:net:2448:7
+      at process.processTicksAndRejections (node:internal/process/task_queues:90:21) {
+    code: 'EPERM',
+    errno: -1,
+    syscall: 'listen',
+    address: '127.0.0.1'
+  }
+
+test at apps/cloud/test/hosted-supervisors.integration.ts:615:1
+✖ supervisor identity: supervisorGuard mirrors execution/cleanup auth (0.663369ms)
+  Error: listen EPERM: operation not permitted 127.0.0.1
+      at Server.setupListenHandle [as _listen2] (node:net:2145:21)
+      at listenInCluster (node:net:2224:12)
+      at node:net:2448:7
+      at process.processTicksAndRejections (node:internal/process/task_queues:90:21) {
+    code: 'EPERM',
+    errno: -1,
+    syscall: 'listen',
+    address: '127.0.0.1'
+  }

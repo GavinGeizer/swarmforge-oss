@@ -1,0 +1,212 @@
+bun test v1.4.2 (744846f84)
+
+tests/hosted-supervisor.test.ts:
+ 98 |     const reader = a.stdout.getReader();
+ 99 |     let output = "";
+100 |     while (!output.includes("\n")) {
+101 |       const chunk = await reader.read();
+102 |       if (chunk.done)
+103 |         throw new Error("Process A exited before the live-child report.");
+                        ^
+error: Process A exited before the live-child report.
+      at <anonymous> (/tmp/swarmforge-phase2b2-integration/tests/hosted-supervisor.test.ts:103:19)
+(fail) actual process A child >=300ms then NEW process B proves OS stop with foreign clock and full reserved consumption (transport mock) [178.36ms]
+58 |   const [code, stdout, stderr] = await Promise.all([
+59 |     child.exited,
+60 |     new Response(child.stdout as ReadableStream).text(),
+61 |     new Response(child.stderr as ReadableStream).text(),
+62 |   ]);
+63 |   expect(stderr).toBe("");
+                      ^
+error: expect(received).toBe(expected)
+
+- ""
++ "109 |       stat.isSymbolicLink() ||
++ 110 |       (stat.uid !== 0 && stat.uid !== uid) ||
++ 111 |       (stat.mode & 0o022 && !rootTemp) ||
++ 112 |       (at === directory && (stat.uid !== uid || stat.mode & 0o077))
++ 113 |     )
++ 114 |       throw new Error(
++                       ^
++ error: Hosted state requires private directory (0700), without symlinks.
++       at ensurePrivateHostedPath (/tmp/swarmforge-phase2b2-integration/src/hosted-store.ts:114:17)
++       at new HostedStore (/tmp/swarmforge-phase2b2-integration/src/hosted-store.ts:140:30)
++       at /tmp/swarmforge-phase2b2-integration/tests/hosted-recovery-writer.ts:99:23
++ 
++ Bun v1.4.2 (Linux x64)
++ "
+
+- Expected  - 1
++ Received  + 14
+
+      at processReport (/tmp/swarmforge-phase2b2-integration/tests/hosted-supervisor.test.ts:63:18)
+      at async <anonymous> (/tmp/swarmforge-phase2b2-integration/tests/hosted-supervisor.test.ts:182:27)
+(fail) lost COMPLETED response + actual NEW process retries identical frozen request/key once (transport mock) [160.80ms]
+(pass) settlement 409 plus same-outcome terminal status cannot establish consumption receipt [8.53ms]
+(pass) actual measured runtime freezes a completed settlement before a lost reply and retries the identical receipt (transport mock) [365.70ms]
+(pass) recovery cannot settle an acknowledged launch with no captured PID as zero use [2.53ms]
+(pass) a durable mapping whose start right was never granted can settle zero use [1.51ms]
+(pass) OS permission failure never proves a live controlled process stopped [2.01ms]
+(pass) an unmatched live PID is unknown and must remain alive [3.68ms]
+(pass) stop escalation rechecks OS identity before SIGKILL when the captured identity changes [4022.82ms]
+(pass) actual 31s task outlives the initial 30s lease through timely renewal and completes in full (transport mock) [31015.36ms]
+(pass) a partition before renewal stops the full requested child early and settles cancelled (transport mock) [1005.80ms]
+(pass) a delayed renewal denial cannot reopen an already stopped and settled task [3522.52ms]
+(pass) server stop during the actual CLI supervisor loop settles cancelled, never completed (transport mock) [2004.18ms]
+(pass) concurrent distinct tasks journal their own actual child identities before launch returns [55.94ms]
+(pass) hosted credential schemas bind tenant and reject cross-audience reuse [1.52ms]
+61 |       s.isSymbolicLink() ||
+62 |       !s.isDirectory() ||
+63 |       (s.uid !== 0 && s.uid !== uid) ||
+64 |       (writable && !stickyRootTemp)
+65 |     )
+66 |       throw privateCredentialStorageError();
+                                               ^
+error: Cloud credential storage must use a privately owned regular file (0600) in a private directory (0700), without symlinks.
+      at parentDirectory (/tmp/swarmforge-phase2b2-integration/src/private-credential-file.ts:66:43)
+      at savePrivateCredential (/tmp/swarmforge-phase2b2-integration/src/private-credential-file.ts:134:3)
+      at saveHostedTaskCredential (/tmp/swarmforge-phase2b2-integration/src/hosted-credentials.ts:119:3)
+      at <anonymous> (/tmp/swarmforge-phase2b2-integration/tests/hosted-supervisor.test.ts:957:5)
+(fail) hosted credential storage round-trips privately via the approved shared helper [0.55ms]
+61 |       s.isSymbolicLink() ||
+62 |       !s.isDirectory() ||
+63 |       (s.uid !== 0 && s.uid !== uid) ||
+64 |       (writable && !stickyRootTemp)
+65 |     )
+66 |       throw privateCredentialStorageError();
+                 ^
+error: Cloud credential storage must use a privately owned regular file (0600) in a private directory (0700), without symlinks.
+      at parentDirectory (/tmp/swarmforge-phase2b2-integration/src/private-credential-file.ts:66:13)
+      at savePrivateCredential (/tmp/swarmforge-phase2b2-integration/src/private-credential-file.ts:134:3)
+      at rotate (/tmp/swarmforge-phase2b2-integration/src/hosted-client.ts:448:7)
+      at <anonymous> (/tmp/swarmforge-phase2b2-integration/tests/hosted-supervisor.test.ts:1010:20)
+(fail) supervisor rotation enforces a durable idempotency key on the supervised path [0.58ms]
+(pass) remaining authority subtracts full RTT and safety margin; rejects thin leases [0.02ms]
+(pass) SIMULATED transport: task client submits/reads/cancels with exact controlled payload [0.88ms]
+(pass) SIMULATED transport: repeated admission key preserves request_id across client instances and still conflicts on changed work [0.33ms]
+(pass) SIMULATED transport: task client stops on cross-tenant and malformed responses [0.28ms]
+(pass) SIMULATED transport: supervisor identity requires the exact production credential and subject fields [0.59ms]
+(pass) SIMULATED transport: supervisor claim/ack/renew/status/settle round-trips strict fields [2.00ms]
+(pass) SIMULATED transport: supervisor surfaces 401/409 without widening credentials [0.12ms]
+(pass) durable mapping precedes execution: same retries reuse, fence changes hold [1.20ms]
+(pass) controlled runtime executes a real inert subprocess and verifies stop [903.99ms]
+(pass) RED-proven false stop: fresh provider without the pid record must NOT resolve [453.97ms]
+(pass) D3 stale identity never signals an unrelated live victim (no unsafe reuse experiment) [304.92ms]
+109 |       stat.isSymbolicLink() ||
+110 |       (stat.uid !== 0 && stat.uid !== uid) ||
+111 |       (stat.mode & 0o022 && !rootTemp) ||
+112 |       (at === directory && (stat.uid !== uid || stat.mode & 0o077))
+113 |     )
+114 |       throw new Error(
+                      ^
+error: Hosted state requires private directory (0700), without symlinks.
+      at ensurePrivateHostedPath (/tmp/swarmforge-phase2b2-integration/src/hosted-store.ts:114:17)
+      at new HostedStore (/tmp/swarmforge-phase2b2-integration/src/hosted-store.ts:140:30)
+      at <anonymous> (/tmp/swarmforge-phase2b2-integration/tests/hosted-supervisor.test.ts:1523:19)
+(fail) legacy origin unit: reopening a journal cannot authorize a foreign-clock measurement [1.75ms]
+(pass) journal fail-closed: injected store failure stops runtime, never unjournaled [3.35ms]
+(pass) a blocking durable start-right grant consumes lease authority before staging and refuses start [1702.39ms]
+(pass) D4 slow staging: staging that consumes authority refuses start [4.02ms]
+1709 |     const child = Bun.spawn([process.execPath, writer, dbPath, TASK], {
+1710 |       env: { PATH: "/usr/bin:/bin", TZ: "UTC" },
+1711 |       stdio: ["ignore", "pipe", "pipe"],
+1712 |     });
+1713 |     const code = await child.exited;
+1714 |     expect(code).toBe(0);
+                        ^
+error: expect(received).toBe(expected)
+
+Expected: 0
+Received: 1
+
+      at <anonymous> (/tmp/swarmforge-phase2b2-integration/tests/hosted-supervisor.test.ts:1714:18)
+(fail) D1 new-PROCESS recovery: on-disk state survives a real process boundary [37.92ms]
+(pass) reconcile retries durable stop + same-key settlement (not held-forever) [3.88ms]
+(pass) compiled binary + empty-cwd: real binary self-spawn runs without repo files [421.54ms]
+(pass) compiled launcher + hook from empty cwd: actual provider self-spawn via Bun.isStandaloneExecutable [549.92ms]
+(pass) controlled stopWorkerRuntime verifies exit; network/label failures are not proof [2.63ms]
+(pass) controlled provider refuses arbitrary exec and filesystem access [1.07ms]
+(pass) claim -> mapping -> ack -> real start; duplicate delivery reuses mapping [3.82ms]
+(pass) B duplicate-task repro: duplicate ACK AFTER child exit + mapping stopped must NOT spawn again [1204.83ms]
+109 |       stat.isSymbolicLink() ||
+110 |       (stat.uid !== 0 && stat.uid !== uid) ||
+111 |       (stat.mode & 0o022 && !rootTemp) ||
+112 |       (at === directory && (stat.uid !== uid || stat.mode & 0o077))
+113 |     )
+114 |       throw new Error(
+                      ^
+error: Hosted state requires private directory (0700), without symlinks.
+      at ensurePrivateHostedPath (/tmp/swarmforge-phase2b2-integration/src/hosted-store.ts:114:17)
+      at new HostedStore (/tmp/swarmforge-phase2b2-integration/src/hosted-store.ts:140:30)
+      at mkHarness (/tmp/swarmforge-phase2b2-integration/tests/hosted-supervisor.test.ts:2013:20)
+      at <anonymous> (/tmp/swarmforge-phase2b2-integration/tests/hosted-supervisor.test.ts:2017:14)
+(fail) concurrent duplicate ACKs on the SAME file from two supervisor instances: only one wins pre-launch [1.60ms]
+109 |       stat.isSymbolicLink() ||
+110 |       (stat.uid !== 0 && stat.uid !== uid) ||
+111 |       (stat.mode & 0o022 && !rootTemp) ||
+112 |       (at === directory && (stat.uid !== uid || stat.mode & 0o077))
+113 |     )
+114 |       throw new Error(
+                      ^
+error: Hosted state requires private directory (0700), without symlinks.
+      at ensurePrivateHostedPath (/tmp/swarmforge-phase2b2-integration/src/hosted-store.ts:114:17)
+      at new HostedStore (/tmp/swarmforge-phase2b2-integration/src/hosted-store.ts:140:30)
+      at <anonymous> (/tmp/swarmforge-phase2b2-integration/tests/hosted-supervisor.test.ts:2060:18)
+(fail) new-process recovery after exit does NOT reuse the start right [1.06ms]
+(pass) crash before/after mapping: restart holds ambiguity, never blindly re-execs [1.33ms]
+(pass) cancellation race and uncertain stop: settle requires confirmed exit [3.30ms]
+(pass) stale fence and revoked supervisor credential forbid execution and renewal [1.33ms]
+(pass) forbidden payload rejected; no secret in runtime env, logs or artifacts [1.00ms]
+(pass) parent crash: stdin EOF stops the real child independently (fail closed) [302.20ms]
+(pass) partition watchdog: expired lease without renewal stops locally and holds settlement [3.66ms]
+(pass) clock offsets and delayed responses cannot extend authority [0.04ms]
+(pass) held capacity: uncertain execution is quarantined, never released or reused [1.62ms]
+(pass) runtime env and logs carry no bearer, provider, repo or model credentials [2.12ms]
+(pass) hosted CLI parses supervisor/submit/status/cancel and rejects raw secrets [0.79ms]
+(pass) production handler: hosted submit/status/cancel via real TaskClient [1.51ms]
+61 |       s.isSymbolicLink() ||
+62 |       !s.isDirectory() ||
+63 |       (s.uid !== 0 && s.uid !== uid) ||
+64 |       (writable && !stickyRootTemp)
+65 |     )
+66 |       throw privateCredentialStorageError();
+                 ^
+error: Cloud credential storage must use a privately owned regular file (0600) in a private directory (0700), without symlinks.
+      at parentDirectory (/tmp/swarmforge-phase2b2-integration/src/private-credential-file.ts:66:13)
+      at savePrivateCredential (/tmp/swarmforge-phase2b2-integration/src/private-credential-file.ts:134:3)
+      at saveHostedSupervisorCredential (/tmp/swarmforge-phase2b2-integration/src/hosted-credentials.ts:128:3)
+      at <anonymous> (/tmp/swarmforge-phase2b2-integration/tests/hosted-supervisor.test.ts:2540:5)
+(fail) RED factory restart: statePath persists the durable mapping across factory instances [1.32ms]
+61 |       s.isSymbolicLink() ||
+62 |       !s.isDirectory() ||
+63 |       (s.uid !== 0 && s.uid !== uid) ||
+64 |       (writable && !stickyRootTemp)
+65 |     )
+66 |       throw privateCredentialStorageError();
+                 ^
+error: Cloud credential storage must use a privately owned regular file (0600) in a private directory (0700), without symlinks.
+      at parentDirectory (/tmp/swarmforge-phase2b2-integration/src/private-credential-file.ts:66:13)
+      at savePrivateCredential (/tmp/swarmforge-phase2b2-integration/src/private-credential-file.ts:134:3)
+      at saveHostedSupervisorCredential (/tmp/swarmforge-phase2b2-integration/src/hosted-credentials.ts:128:3)
+      at <anonymous> (/tmp/swarmforge-phase2b2-integration/tests/hosted-supervisor.test.ts:2600:5)
+(fail) production handler: supervisor loop claims, runs, stops and settles [1.01ms]
+(pass) accounting: actual run >300ms settles consumption >= actual minimum, no double release [356.99ms]
+(pass) RTT: delayed ACK response is measured in full (monotonic, after await) [1204.33ms]
+(pass) staging race: injected stopping intent between staging and start blocks start [3.26ms]
+
+10 tests failed:
+(fail) actual process A child >=300ms then NEW process B proves OS stop with foreign clock and full reserved consumption (transport mock) [178.36ms]
+(fail) lost COMPLETED response + actual NEW process retries identical frozen request/key once (transport mock) [160.80ms]
+(fail) hosted credential storage round-trips privately via the approved shared helper [0.55ms]
+(fail) supervisor rotation enforces a durable idempotency key on the supervised path [0.58ms]
+(fail) legacy origin unit: reopening a journal cannot authorize a foreign-clock measurement [1.75ms]
+(fail) D1 new-PROCESS recovery: on-disk state survives a real process boundary [37.92ms]
+(fail) concurrent duplicate ACKs on the SAME file from two supervisor instances: only one wins pre-launch [1.60ms]
+(fail) new-process recovery after exit does NOT reuse the start right [1.06ms]
+(fail) RED factory restart: statePath persists the durable mapping across factory instances [1.32ms]
+(fail) production handler: supervisor loop claims, runs, stops and settles [1.01ms]
+
+ 48 pass
+ 10 fail
+ 224 expect() calls
+Ran 58 tests across 1 file. [56.64s]

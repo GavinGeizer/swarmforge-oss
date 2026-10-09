@@ -1,0 +1,22 @@
+bun test v1.4.2 (744846f84)
+
+test/hosted-bun.test.ts:
+(pass) controlled task crosses real Worker/Bun code, completes its child, and settles the reserved meter once [417.86ms]
+(pass) cloud cancellation stops the actual child, retains capacity until stop proof, and exposes no ambient credentials [13528.26ms]
+(pass) task client retries preserve logical admission across client calls and reject changed work [15.47ms]
+
+test/hosted-supervisor-authority.test.ts:
+(pass) supervisor registration cannot elect authority after browser expiry while waiting for its batch [44.52ms]
+(pass) supervisor rotation cannot advance epoch after the authenticated credential expires before election [44.99ms]
+(pass) different supervisor issuer cannot rotate or validate execution after the worker enroller loses admin [9.51ms]
+(pass) registration elected before browser expiry completes all dependent writes and returns its fresh result [7.07ms]
+(pass) expired browser cannot revoke through a delayed election or mutate credentials and assignments [43.06ms]
+
+test/hosted-migration.test.ts:
+(pass) clean database accepts all migrations with foreign keys enforced and no execution grants [1.43ms]
+(pass) Phase 2B.1 database upgrade preserves linked CLI and enrolled worker authority [10.65ms]
+
+ 10 pass
+ 0 fail
+ 75 expect() calls
+Ran 10 tests across 3 files. [17.55s]

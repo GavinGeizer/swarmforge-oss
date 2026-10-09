@@ -1,0 +1,2 @@
+$ tsc --noEmit && biome check src tests scripts
+Checked 132 files in 83ms. No fixes applied.
