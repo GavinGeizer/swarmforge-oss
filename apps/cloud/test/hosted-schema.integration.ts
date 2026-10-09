@@ -329,7 +329,9 @@ function taskBind(
 }
 
 test("hosted schema checkpoint: FK orphans rejected direct and batch with valid other fields", async () => {
-  const h = await fixture();
+  const h = await fixture("https://api.example.invalid", {
+    schema: "phase2b1",
+  });
   try {
     const s = await setup(h);
     // Task naming a nonexistent worker (valid org/user otherwise): FK fires.
@@ -448,7 +450,9 @@ test("hosted schema checkpoint: FK orphans rejected direct and batch with valid 
 });
 
 test("hosted schema checkpoint: quantity CHECKs fire on valid-parent rows", async () => {
-  const h = await fixture();
+  const h = await fixture("https://api.example.invalid", {
+    schema: "phase2b1",
+  });
   try {
     const s = await setup(h);
     // Valid parents first: policy + task + reservation anchors.
@@ -633,7 +637,9 @@ test("hosted schema checkpoint: quantity CHECKs fire on valid-parent rows", asyn
 });
 
 test("hosted schema checkpoint: cross-org resource binding, worker exclusivity, rollback", async () => {
-  const h = await fixture();
+  const h = await fixture("https://api.example.invalid", {
+    schema: "phase2b1",
+  });
   try {
     const s = await setup(h);
     // Second tenant with its own valid worker.
@@ -782,7 +788,9 @@ test("hosted schema checkpoint: cross-org resource binding, worker exclusivity, 
 });
 
 test("hosted schema checkpoint: clean install and 2B.1 upgrade", async () => {
-  const h = await fixture();
+  const h = await fixture("https://api.example.invalid", {
+    schema: "phase2b1",
+  });
   try {
     const a = await h.login();
     const device = await h.linked(a);

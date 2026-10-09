@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
 import {
@@ -8,6 +7,7 @@ import {
   Response as RuntimeResponse,
 } from "miniflare";
 import { token } from "../src/crypto.ts";
+import { applyMigrations, type FixtureSchema } from "./migrations.ts";
 
 const bundled = build({
   entryPoints: [fileURLToPath(new URL("../src/index.ts", import.meta.url))],
@@ -16,7 +16,10 @@ const bundled = build({
   format: "esm",
   target: "es2023",
 });
-export async function fixture(origin = "https://api.example.invalid") {
+export async function fixture(
+  origin = "https://api.example.invalid",
+  options: { schema?: FixtureSchema } = {},
+) {
   let subject = 100;
   const mf = new Miniflare(
     convertV4MiniflareOptions({
@@ -48,17 +51,7 @@ export async function fixture(origin = "https://api.example.invalid") {
     }),
   );
   const db = await mf.getD1Database("DB");
-  for (const migration of ["0001_identity.sql", "0002_machine_identity.sql"]) {
-    const sql = await readFile(
-      new URL(`../migrations/${migration}`, import.meta.url),
-      "utf8",
-    );
-    for (const stmt of sql
-      .replace(/--[^\n]*/g, "")
-      .split(";")
-      .filter((x) => x.trim()))
-      await db.prepare(stmt).run();
-  }
+  await applyMigrations(db, options.schema ?? "phase2b2");
   async function request(
     path: string,
     headers: Record<string, string> = {},
