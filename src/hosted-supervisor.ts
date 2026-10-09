@@ -37,6 +37,10 @@ export interface HostedSupervisorOptions {
   minLifetimeMs?: number;
 }
 
+function taskIdSafe(task: { task_id: string }): string {
+  return task.task_id;
+}
+
 export interface ActiveRun {
   mapping: HostedMapping;
   task: HostedTask;
@@ -200,6 +204,11 @@ export class HostedSupervisor {
       throw new Error("Too little remaining authority; refusing to start.");
     const duration = Math.min(authority, reply.task.controlled_duration_ms);
     void mapping;
+    // D4: monotonic staging clock starts AFTER the ack await. All staging
+    // (Store create, pause verify, vm handle) consumes authority; the final
+    // budget subtracts the full elapsed staging immediately before start and
+    // refuses when insufficient — a slow staging path cannot overrun the lease.
+    const stagingStartMonoMs = performance.now();
 
     // Stage local worker BEFORE execution: create via the real Store in a
     // paused intent so the Coordinator can never dispatch model work, then
@@ -270,32 +279,68 @@ export class HostedSupervisor {
         `Hosted worker left paused state before start (state=${pausedAgain.state}); refusing start.`,
       );
     }
+    // D4: re-budget immediately before start — subtract the staging that
+    // already elapsed (monotonic) plus a final safety margin, and refuse when
+    // the remainder cannot cover a minimal useful execution.
+    const stagingElapsedMs = Math.max(
+      0,
+      performance.now() - stagingStartMonoMs,
+    );
+    const startBudgetMs = Math.floor(
+      duration - stagingElapsedMs - (this.options.safetyMarginMs ?? 2000) / 2,
+    );
+    if (startBudgetMs < Math.min(1000, duration))
+      throw new Error(
+        "Hosted staging consumed the remaining authority; refusing start.",
+      );
+    const launchDurationMs = Math.min(duration, Math.max(1, startBudgetMs));
+    // Fail-closed journal: BOTH the on-spawn hook and the post-spawn persist
+    // must succeed. A DB-write failure after process start stops the runtime
+    // at once and holds — never a running unjournaled process.
+    let journaled = false;
+    const journalStart = (record: {
+      startedAtMonoMs: number;
+      durationMs: number;
+      pid: number;
+      starttime: string;
+      exe: string;
+    }) => {
+      this.options.hostedStore.markRuntimeStarted(task.task_id, {
+        startedAtMonoMs: record.startedAtMonoMs,
+        monoOrigin: "spawn-process",
+        durationMs: record.durationMs,
+        pid: record.pid,
+        starttime: record.starttime,
+        exe: record.exe,
+      });
+      journaled = true;
+    };
     this.options.provider.onSpawn = (vmId, record) => {
-      try {
-        this.options.hostedStore.markRuntimeStarted(task.task_id, {
-          startedAtMonoMs: record.startedAtMonoMs,
-          durationMs: record.durationMs,
-          pid: record.pid,
-        });
-      } catch {}
+      journalStart(record);
       void vmId;
     };
-    this.options.provider.startControlled(staged, duration, () => {
+    this.options.provider.startControlled(staged, launchDurationMs, () => {
       this.options.agent.completeSession(staged);
     });
     this.options.provider.onSpawn = null;
     // Persist actual start even if the hook raced: resolve from the provider.
+    // Any DB-write failure here is fatal to the launch: stop the runtime
+    // immediately and hold instead of running unjournaled.
     try {
       const vmNow = store.get(local.worker_id).vm_id;
       const rec = vmNow ? this.options.provider.recordFor(vmNow) : null;
-      if (rec) {
-        this.options.hostedStore.markRuntimeStarted(task.task_id, {
-          startedAtMonoMs: rec.startedAtMonoMs,
-          durationMs: rec.durationMs,
-          pid: rec.pid,
-        });
-      }
-    } catch {}
+      if (rec && !journaled) journalStart(rec);
+      if (!journaled)
+        throw new Error("Hosted launch journal missing after start.");
+    } catch (e) {
+      try {
+        await this.options.provider.stopWorkerRuntime(staged);
+      } catch {}
+      this.options.hostedStore.markHeldUnknown(taskIdSafe(task));
+      throw new Error(
+        `Hosted launch journal failed; runtime stopped and held. ${(e as Error).message}`,
+      );
+    }
     const running: ActiveRun = {
       mapping: this.options.hostedStore.updateLease(
         task.task_id,
@@ -398,11 +443,13 @@ export class HostedSupervisor {
       if (
         mapping.child_pid === null &&
         mapping.runtime_started_at_mono_ms === null &&
+        mapping.runtime_mono_origin === "unknown" &&
         (mapping.state === "mapped" || mapping.state === "held")
       ) {
-        return this.options.hostedStore.markStopped(
+        // Provably never started (no pid, no start, origin unknown): zero-use
+        // stop is safe without a monotonic measurement.
+        return this.options.hostedStore.markStoppedZeroUse(
           taskId,
-          { elapsedMs: 0 },
           mapping.settlement_key ?? randomUUID(),
         );
       }
@@ -428,11 +475,14 @@ export class HostedSupervisor {
       // exit via stopPidWithProof; otherwise hold with conservative budget.
       const record =
         mapping.child_pid !== null &&
-        mapping.runtime_started_at_mono_ms !== null &&
+        mapping.child_starttime !== null &&
+        mapping.child_exe !== null &&
         mapping.runtime_duration_ms !== null
           ? {
               pid: mapping.child_pid,
-              startedAtMonoMs: mapping.runtime_started_at_mono_ms,
+              starttime: mapping.child_starttime,
+              exe: mapping.child_exe,
+              startedAtMonoMs: mapping.runtime_started_at_mono_ms ?? 0,
               durationMs: mapping.runtime_duration_ms,
             }
           : null;
@@ -450,18 +500,13 @@ export class HostedSupervisor {
             `Controlled stop uncertain (${reason}); holding reservation. ${(e as Error).message}`,
           );
         }
-        const elapsed =
-          mapping.runtime_started_at_mono_ms !== null
-            ? Math.max(
-                0,
-                performance.now() - mapping.runtime_started_at_mono_ms,
-              )
-            : (mapping.runtime_duration_ms ?? 0);
+        // D2: canonical row missing means this process never observed the
+        // start — the persisted clock is foreign. Settle conservatively with
+        // the reserved budget + unknown flag instead of a fake measurement.
         this.clearTaskTimers(taskId);
-        return this.options.hostedStore.markStopped(
-          taskId,
-          { elapsedMs: elapsed },
-          mapping.settlement_key ?? randomUUID(),
+        this.options.hostedStore.markHeldUnknown(taskId);
+        throw new Error(
+          `Controlled stop uncertain (${reason}); canonical row missing, stopped via pid proof but holding with reserved budget.`,
         );
       }
       this.options.hostedStore.markHeldUnknown(taskId);
@@ -469,17 +514,21 @@ export class HostedSupervisor {
         `Controlled stop uncertain (${reason}); canonical row missing, holding reservation.`,
       );
     }
-    // Resolve the durable pid record for cross-provider proof.
+    // Resolve the durable pid record for cross-provider proof (D3: full
+    // OS start identity required before any signal).
     const vmId =
       (local as { vm_id?: string | null }).vm_id ??
       `controlled-${mapping.local_worker_id}`;
     const record =
       mapping.child_pid !== null &&
-      mapping.runtime_started_at_mono_ms !== null &&
+      mapping.child_starttime !== null &&
+      mapping.child_exe !== null &&
       mapping.runtime_duration_ms !== null
         ? {
             pid: mapping.child_pid,
-            startedAtMonoMs: mapping.runtime_started_at_mono_ms,
+            starttime: mapping.child_starttime,
+            exe: mapping.child_exe,
+            startedAtMonoMs: mapping.runtime_started_at_mono_ms ?? 0,
             durationMs: mapping.runtime_duration_ms,
           }
         : this.options.provider.recordFor(vmId);
@@ -510,15 +559,26 @@ export class HostedSupervisor {
       );
     }
     this.clearTaskTimers(taskId);
-    // Measured ELAPSED EXECUTION (monotonic from process start), bounded by
-    // the server-reserved runtime — never the stop-call latency.
-    const elapsed =
-      mapping.runtime_started_at_mono_ms !== null
-        ? Math.max(0, performance.now() - mapping.runtime_started_at_mono_ms)
-        : (mapping.runtime_duration_ms ?? 0);
+    // D2: measured ELAPSED EXECUTION only when the persisted start carries a
+    // proven same-process monotonic origin. A foreign/persisted start from a
+    // prior process (or unknown origin) can NEVER be subtracted from this
+    // process clock — hold with the conservative reserved budget instead.
+    if (
+      mapping.runtime_mono_origin !== "spawn-process" ||
+      mapping.runtime_started_at_mono_ms === null
+    ) {
+      this.options.hostedStore.markHeldUnknown(taskId);
+      throw new Error(
+        `Controlled stop uncertain (${reason}); foreign monotonic origin, holding with reserved budget.`,
+      );
+    }
+    const elapsed = Math.max(
+      0,
+      performance.now() - mapping.runtime_started_at_mono_ms,
+    );
     return this.options.hostedStore.markStopped(
       taskId,
-      { elapsedMs: elapsed },
+      { elapsedMs: elapsed, monoOrigin: "spawn-process" },
       mapping.settlement_key ?? randomUUID(),
     );
   }
@@ -603,7 +663,14 @@ export class HostedSupervisor {
     return settled;
   }
 
-  /** Restart recovery: inspect the same mapping/runtime, hold ambiguity. */
+  /**
+   * Restart recovery: hold ambiguity (never blindly re-exec). Trusted
+   * stop/settlement reconciliation runs explicitly via reconcile().
+   * blindly re-exec), then rows with a durable pid record get a durable
+   * verified stop attempt, and stopped rows are settled with the SAME
+   * idempotency key. Returns held vs reconciled task ids — never
+   * held-forever without attempting trusted stop/settlement.
+   */
   recover(): { held: string[]; running: string[] } {
     const held: string[] = [];
     const running: string[] = [];
@@ -622,6 +689,55 @@ export class HostedSupervisor {
       void running;
     }
     return { held, running };
+  }
+
+  /**
+   * Restart reconciliation: retry durable verified stop + same-key settlement
+   * for held/stopped rows instead of reporting held-forever. Rows whose
+   * runtime cannot be proven stopped stay held with the conservative budget.
+   */
+  async reconcile(
+    options: { settleOutcome?: "completed" | "failed" | "cancelled" } = {},
+  ): Promise<{ stopped: string[]; settled: string[]; held: string[] }> {
+    const outcome = options.settleOutcome ?? "cancelled";
+    const stopped: string[] = [];
+    const settled: string[] = [];
+    const held: string[] = [];
+    for (const mapping of this.options.hostedStore.all()) {
+      if (["settled"].includes(mapping.state)) continue;
+      if (
+        mapping.state !== "held" &&
+        mapping.state !== "stop_intended" &&
+        mapping.state !== "stopped"
+      ) {
+        try {
+          this.options.hostedStore.markHeld(mapping.task_id);
+        } catch {}
+      }
+      if (mapping.state === "stopped") {
+        try {
+          await this.settle(mapping.task_id, outcome);
+          settled.push(mapping.task_id);
+        } catch {
+          held.push(mapping.task_id);
+        }
+        continue;
+      }
+      try {
+        await this.stopAndConfirm(mapping.task_id, "restart reconcile");
+        stopped.push(mapping.task_id);
+      } catch {
+        held.push(mapping.task_id);
+        continue;
+      }
+      try {
+        await this.settle(mapping.task_id, outcome);
+        settled.push(mapping.task_id);
+      } catch {
+        held.push(mapping.task_id);
+      }
+    }
+    return { stopped, settled, held };
   }
 
   get activeRuns(): ReadonlyMap<string, ActiveRun> {

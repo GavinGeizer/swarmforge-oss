@@ -25,7 +25,14 @@ export const hostedMappingSchema = z
     stop_confirmed: z.boolean(),
     consumed_runtime_ms: z.number().int().nonnegative(),
     consumed_runtime_unknown: z.boolean().default(false),
+    // D2: cross-process monotonic start is NOT comparable. Only rows whose
+    // start was observed in THIS process may carry a monotonic start; after a
+    // restart the persisted value is treated as opaque unless the record also
+    // carries a proven process/system monotonic origin (never assumed).
     runtime_started_at_mono_ms: z.number().nullable().default(null),
+    runtime_mono_origin: z
+      .enum(["spawn-process", "unknown"])
+      .default("unknown"),
     runtime_duration_ms: z
       .number()
       .int()
@@ -33,6 +40,8 @@ export const hostedMappingSchema = z
       .nullable()
       .default(null),
     child_pid: z.number().int().positive().nullable().default(null),
+    child_starttime: z.string().nullable().default(null),
+    child_exe: z.string().nullable().default(null),
     idempotency_key: z.uuid(),
     rotation_key: z.uuid().nullable(),
     settlement_key: z.uuid().nullable(),
@@ -70,8 +79,11 @@ export class HostedStore {
         consumed_runtime_ms INTEGER NOT NULL DEFAULT 0,
         consumed_runtime_unknown INTEGER NOT NULL DEFAULT 0,
         runtime_started_at_mono_ms REAL,
+        runtime_mono_origin TEXT NOT NULL DEFAULT 'unknown',
         runtime_duration_ms INTEGER,
         child_pid INTEGER,
+        child_starttime TEXT,
+        child_exe TEXT,
         idempotency_key TEXT NOT NULL,
         rotation_key TEXT,
         settlement_key TEXT,
@@ -103,8 +115,11 @@ export class HostedStore {
       | "state"
       | "consumed_runtime_unknown"
       | "runtime_started_at_mono_ms"
+      | "runtime_mono_origin"
       | "runtime_duration_ms"
       | "child_pid"
+      | "child_starttime"
+      | "child_exe"
     > & {
       state?: HostedMapping["state"];
     },
@@ -115,8 +130,11 @@ export class HostedStore {
         updated_at: true,
         consumed_runtime_unknown: true,
         runtime_started_at_mono_ms: true,
+        runtime_mono_origin: true,
         runtime_duration_ms: true,
         child_pid: true,
+        child_starttime: true,
+        child_exe: true,
       })
       .safeParse({ state: "mapped", ...mapping });
     if (!parsed.success) throw new Error("Hosted mapping is invalid.");
@@ -146,14 +164,17 @@ export class HostedStore {
         ...parsed.data,
         consumed_runtime_unknown: false,
         runtime_started_at_mono_ms: null,
+        runtime_mono_origin: "unknown",
         runtime_duration_ms: null,
         child_pid: null,
+        child_starttime: null,
+        child_exe: null,
         created_at: now,
         updated_at: now,
       };
       this.db
         .query(
-          "INSERT INTO hosted_mappings(task_id,tenant_id,worker_id,local_worker_id,lease_id,fence,supervisor_id,reservation_id,state,stop_confirmed,consumed_runtime_ms,consumed_runtime_unknown,runtime_started_at_mono_ms,runtime_duration_ms,child_pid,idempotency_key,rotation_key,settlement_key,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+          "INSERT INTO hosted_mappings(task_id,tenant_id,worker_id,local_worker_id,lease_id,fence,supervisor_id,reservation_id,state,stop_confirmed,consumed_runtime_ms,consumed_runtime_unknown,runtime_started_at_mono_ms,runtime_mono_origin,runtime_duration_ms,child_pid,child_starttime,child_exe,idempotency_key,rotation_key,settlement_key,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         )
         .run(
           full.task_id,
@@ -169,8 +190,11 @@ export class HostedStore {
           full.consumed_runtime_ms,
           full.consumed_runtime_unknown ? 1 : 0,
           full.runtime_started_at_mono_ms,
+          full.runtime_mono_origin,
           full.runtime_duration_ms,
           full.child_pid,
+          full.child_starttime,
+          full.child_exe,
           full.idempotency_key,
           full.rotation_key,
           full.settlement_key,
@@ -266,10 +290,23 @@ export class HostedStore {
       return updated;
     })();
   }
-  /** Persist actual process start (monotonic) + pid identity at launch. */
+  /**
+   * Persist actual process start + OS start identity at launch. D2: the
+   * monotonic start is tagged with its origin process. After a restart the
+   * persisted value is opaque (origin unknown) and must NEVER be subtracted
+   * from the new process clock — restart accounting uses the conservative
+   * reserved budget + unknown flag instead.
+   */
   markRuntimeStarted(
     taskId: string,
-    start: { startedAtMonoMs: number; durationMs: number; pid: number },
+    start: {
+      startedAtMonoMs: number;
+      monoOrigin: "spawn-process" | "unknown";
+      durationMs: number;
+      pid: number;
+      starttime: string;
+      exe: string;
+    },
   ): HostedMapping {
     return this.db.transaction(() => {
       const current = this.get(taskId);
@@ -277,8 +314,11 @@ export class HostedStore {
       const updated: HostedMapping = {
         ...current,
         runtime_started_at_mono_ms: start.startedAtMonoMs,
+        runtime_mono_origin: start.monoOrigin,
         runtime_duration_ms: start.durationMs,
         child_pid: start.pid,
+        child_starttime: start.starttime,
+        child_exe: start.exe,
         consumed_runtime_unknown: false,
         updated_at: Date.now(),
       };
@@ -287,17 +327,30 @@ export class HostedStore {
     })();
   }
   /**
-   * Normal stop records measured ELAPSED EXECUTION (monotonic), bounded by the
-   * server-reserved runtime — never the stop-call latency.
+   * Normal stop records measured ELAPSED EXECUTION, bounded by the
+   * server-reserved runtime — never the stop-call latency. D2: the elapsed
+   * value must come from the SAME process that observed the start (same
+   * monotonic origin). A caller passing a persisted start from a prior
+   * process must use markHeldUnknown instead — subtracting a foreign clock
+   * yields zero/garbage measurement, so markStopped rejects an unknown or
+   * foreign origin outright.
    */
   markStopped(
     taskId: string,
-    elapsed: { elapsedMs: number },
+    elapsed: { elapsedMs: number; monoOrigin: "spawn-process" | "unknown" },
     settlementKey: string,
   ): HostedMapping {
     return this.db.transaction(() => {
       const current = this.get(taskId);
       if (!current) throw new Error("Hosted mapping not found.");
+      if (
+        elapsed.monoOrigin === "unknown" ||
+        current.runtime_mono_origin === "unknown" ||
+        elapsed.monoOrigin !== current.runtime_mono_origin
+      )
+        throw new Error(
+          "Hosted accounting origin mismatch: use conservative held-unknown instead of foreign-clock measurement.",
+        );
       const bound = current.runtime_duration_ms ?? Number.MAX_SAFE_INTEGER;
       const consumed = Math.max(
         0,
@@ -332,6 +385,33 @@ export class HostedStore {
         stop_confirmed: false,
         consumed_runtime_ms: Math.max(current.consumed_runtime_ms, reserved),
         consumed_runtime_unknown: true,
+        updated_at: Date.now(),
+      };
+      this.write(updated);
+      return updated;
+    })();
+  }
+  /**
+   * Zero-use stop for provably-never-started rows (no pid, no start, unknown
+   * origin, still mapped/held). No monotonic measurement exists or is needed.
+   */
+  markStoppedZeroUse(taskId: string, settlementKey: string): HostedMapping {
+    return this.db.transaction(() => {
+      const current = this.get(taskId);
+      if (!current) throw new Error("Hosted mapping not found.");
+      if (
+        current.child_pid !== null ||
+        current.runtime_started_at_mono_ms !== null ||
+        (current.state !== "mapped" && current.state !== "held")
+      )
+        throw new Error("Hosted row may have started; refusing zero-use stop.");
+      const updated: HostedMapping = {
+        ...current,
+        state: "stopped",
+        stop_confirmed: true,
+        consumed_runtime_ms: 0,
+        consumed_runtime_unknown: false,
+        settlement_key: settlementKey,
         updated_at: Date.now(),
       };
       this.write(updated);
@@ -444,7 +524,7 @@ export class HostedStore {
     hostedMappingSchema.parse(mapping);
     this.db
       .query(
-        "UPDATE hosted_mappings SET lease_id=?,fence=?,state=?,stop_confirmed=?,consumed_runtime_ms=?,consumed_runtime_unknown=?,runtime_started_at_mono_ms=?,runtime_duration_ms=?,child_pid=?,rotation_key=?,settlement_key=?,updated_at=? WHERE task_id=?",
+        "UPDATE hosted_mappings SET lease_id=?,fence=?,state=?,stop_confirmed=?,consumed_runtime_ms=?,consumed_runtime_unknown=?,runtime_started_at_mono_ms=?,runtime_mono_origin=?,runtime_duration_ms=?,child_pid=?,child_starttime=?,child_exe=?,rotation_key=?,settlement_key=?,updated_at=? WHERE task_id=?",
       )
       .run(
         mapping.lease_id,
@@ -454,8 +534,11 @@ export class HostedStore {
         mapping.consumed_runtime_ms,
         mapping.consumed_runtime_unknown ? 1 : 0,
         mapping.runtime_started_at_mono_ms,
+        mapping.runtime_mono_origin,
         mapping.runtime_duration_ms,
         mapping.child_pid,
+        mapping.child_starttime,
+        mapping.child_exe,
         mapping.rotation_key,
         mapping.settlement_key,
         mapping.updated_at,
@@ -474,8 +557,11 @@ export class HostedStore {
       "consumed_runtime_ms",
       "consumed_runtime_unknown",
       "runtime_started_at_mono_ms",
+      "runtime_mono_origin",
       "runtime_duration_ms",
       "child_pid",
+      "child_starttime",
+      "child_exe",
       "rotation_key",
       "settlement_key",
       "updated_at",
@@ -489,8 +575,11 @@ export class HostedStore {
       consumed_runtime_ms: mapping.consumed_runtime_ms,
       consumed_runtime_unknown: mapping.consumed_runtime_unknown ? 1 : 0,
       runtime_started_at_mono_ms: mapping.runtime_started_at_mono_ms,
+      runtime_mono_origin: mapping.runtime_mono_origin,
       runtime_duration_ms: mapping.runtime_duration_ms,
       child_pid: mapping.child_pid,
+      child_starttime: mapping.child_starttime,
+      child_exe: mapping.child_exe,
       rotation_key: mapping.rotation_key,
       settlement_key: mapping.settlement_key,
       updated_at: mapping.updated_at,
@@ -525,8 +614,11 @@ export class HostedStore {
       consumed_runtime_ms: row.consumed_runtime_ms,
       consumed_runtime_unknown: row.consumed_runtime_unknown === 1,
       runtime_started_at_mono_ms: row.runtime_started_at_mono_ms,
+      runtime_mono_origin: row.runtime_mono_origin,
       runtime_duration_ms: row.runtime_duration_ms,
       child_pid: row.child_pid,
+      child_starttime: row.child_starttime,
+      child_exe: row.child_exe,
       idempotency_key: row.idempotency_key,
       rotation_key: row.rotation_key,
       settlement_key: row.settlement_key,

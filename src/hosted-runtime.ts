@@ -1,4 +1,5 @@
 import { type ChildProcess, spawn } from "node:child_process";
+import { readFileSync, readlinkSync } from "node:fs";
 import type {
   AgentSnapshot,
   CodingAgent,
@@ -12,8 +13,13 @@ import { HOSTED_CHILD_DURATION_ENV, HOSTED_CHILD_ENV } from "./hosted-child";
 
 export interface ControlledProcessRecord {
   pid: number;
-  startedAtMonoMs: number;
+  /** Linux process starttime (clock ticks since boot, /proc/<pid>/stat field 22). */
+  starttime: string;
+  /** Resolved /proc/<pid>/exe at spawn; must prefix-match our own binary. */
+  exe: string;
   durationMs: number;
+  /** Monotonic (performance.now) start in the SPAWNING process only. */
+  startedAtMonoMs: number;
 }
 
 function pidAlive(pid: number): boolean {
@@ -23,6 +29,49 @@ function pidAlive(pid: number): boolean {
   } catch {
     return false;
   }
+}
+
+/** Read /proc/<pid>/stat starttime (field 22, ticks since boot). Null when unreadable. */
+export function procStarttime(pid: number): string | null {
+  try {
+    const raw = readFileSync(`/proc/${pid}/stat`, "utf8");
+    const after = raw.slice(raw.lastIndexOf(") ") + 2).split(" ");
+    const starttime = after[19];
+    if (!starttime || !/^\d+$/.test(starttime)) return null;
+    return starttime;
+  } catch {
+    return null;
+  }
+}
+
+/** Resolved /proc/<pid>/exe. Null when unreadable (exited or permission). */
+export function procExe(pid: number): string | null {
+  try {
+    return readlinkSync(`/proc/${pid}/exe`);
+  } catch {
+    return null;
+  }
+}
+
+function ownExe(): string | null {
+  return procExe(process.pid);
+}
+
+/**
+ * OS start-identity match: same pid AND same /proc starttime AND exe lineage
+ * (the live exe must equal our own binary path — a reused pid running another
+ * binary, or an unreadable exe, never matches). Checked BEFORE any signal so
+ * a stale/fabricated record can never signal an unrelated live process.
+ */
+export function identityMatches(record: ControlledProcessRecord): boolean {
+  if (!Number.isSafeInteger(record.pid) || record.pid <= 0) return false;
+  if (!/^\d+$/.test(record.starttime)) return false;
+  const live = procStarttime(record.pid);
+  if (live === null || live !== record.starttime) return false;
+  const liveExe = procExe(record.pid);
+  const mine = ownExe();
+  if (liveExe === null || mine === null) return false;
+  return liveExe === mine && record.exe === mine;
 }
 
 /**
@@ -56,7 +105,7 @@ export class ControlledProcessProvider implements WorkerProvider {
     const id = `controlled-${w.worker_id}`;
     return { id, slug: w.worker_id, state: "running", worker_id: w.worker_id };
   }
-  /** Liveness from OS state only. Stopped pids report stopped (proof of exit, not absence). */
+  /** Liveness from OS state + start-identity. Stopped pids report stopped (exit proof). */
   async getWorker(id: string): Promise<VmInfo | null> {
     const child = this.children.get(id);
     if (child) {
@@ -68,7 +117,9 @@ export class ControlledProcessProvider implements WorkerProvider {
     }
     const record = this.records.get(id);
     if (record) {
-      if (pidAlive(record.pid)) return { id, slug: id, state: "running" };
+      // Identity-gated: a reused pid running another binary (or an unreadable
+      // /proc entry) never reports as our running worker.
+      if (identityMatches(record)) return { id, slug: id, state: "running" };
       return { id, slug: id, state: "stopped" };
     }
     return null;
@@ -89,6 +140,8 @@ export class ControlledProcessProvider implements WorkerProvider {
   trackExternal(vmId: string, record: ControlledProcessRecord): void {
     if (!Number.isSafeInteger(record.pid) || record.pid <= 0)
       throw new Error("Controlled pid record is invalid.");
+    if (!/^\d+$/.test(record.starttime) || !record.exe)
+      throw new Error("Controlled pid record lacks OS start identity.");
     this.records.set(vmId, record);
   }
   forget(vmId: string): void {
@@ -154,9 +207,22 @@ export class ControlledProcessProvider implements WorkerProvider {
     child.stderr?.resume();
     const record: ControlledProcessRecord = {
       pid: child.pid!,
-      startedAtMonoMs: performance.now(),
+      starttime: procStarttime(child.pid!) ?? "unknown",
+      exe: procExe(child.pid!) ?? procExe(process.pid) ?? "unknown",
       durationMs,
+      startedAtMonoMs: performance.now(),
     };
+    if (!/^\d+$/.test(record.starttime) || record.exe === "unknown") {
+      // No OS start identity (non-/proc platform): stop the child at once —
+      // never run an unjournaled, unidentifiable process.
+      try {
+        child.kill("SIGKILL");
+      } catch {}
+      this.children.delete(id);
+      throw new Error(
+        "Controlled runtime lacks OS start identity; refusing unjournaled execution.",
+      );
+    }
     this.children.set(id, child);
     this.records.set(id, record);
     try {
@@ -247,9 +313,11 @@ export class ControlledProcessProvider implements WorkerProvider {
       throw new Error("Controlled runtime stop is uncertain; holding state.");
   }
   /**
-   * Cross-provider/restart stop: resolve the durable pid record and confirm
-   * OS exit. Unknown pid (no record anywhere) rejects/holds — never releases
-   * on map/row absence.
+   * Cross-provider/restart stop: identity-gated OS exit from the durable
+   * record. The start-identity check runs BEFORE any signal: a stale or
+   * fabricated record (pid reused by an unrelated binary, /proc unreadable)
+   * rejects/holds instead of signalling a victim. Ghost records (pid absent)
+   * resolve as already-stopped — absence is proven by /proc, not by map.
    */
   async stopPidWithProof(
     vmId: string,
@@ -269,7 +337,13 @@ export class ControlledProcessProvider implements WorkerProvider {
       return;
     }
     this.trackExternal(vmId, record);
-    if (!pidAlive(record.pid)) return;
+    // Identity BEFORE signal: never touch an unrelated live process.
+    if (!identityMatches(record)) {
+      if (!pidAlive(record.pid)) return; // ghost: proven absent via OS.
+      throw new Error(
+        "Controlled pid record fails OS start-identity; holding instead of signalling an unrelated process.",
+      );
+    }
     try {
       process.kill(record.pid, "SIGTERM");
     } catch {
