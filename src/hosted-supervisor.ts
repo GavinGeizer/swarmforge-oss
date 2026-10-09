@@ -222,7 +222,8 @@ export class HostedSupervisor {
         "Server orders stop before start; holding without execution.",
       );
     }
-    const rtt = Math.max(0, Math.ceil(performance.now() - ackStartMono));
+    const authorityObservedMonoMs = performance.now();
+    const rtt = Math.max(0, Math.ceil(authorityObservedMonoMs - ackStartMono));
     const authority = remainingAuthorityMs({
       leaseExpiresAt: reply.task.lease_expires_at,
       deadlineAt: reply.task.deadline_at,
@@ -241,7 +242,7 @@ export class HostedSupervisor {
       requestRttMs: rtt,
       safetyMarginMs: this.options.safetyMarginMs ?? 2000,
     });
-    const absoluteDeadlineMonoMs = performance.now() + absoluteAuthority;
+    const absoluteDeadlineMonoMs = authorityObservedMonoMs + absoluteAuthority;
     void mapping;
     // B duplicate-task fix: durable start-right-once CAS grant AFTER the
     // server ack but BEFORE any staging/spawn. Granted exactly once per
@@ -253,11 +254,11 @@ export class HostedSupervisor {
       lease_id: task.lease_id,
       fence: task.fence,
     });
-    // D4: monotonic staging clock starts AFTER the ack await. All staging
-    // (Store create, pause verify, vm handle) consumes authority; the final
+    // D4: anchor staging at the ACK authority observation. The durable grant
+    // and all staging (Store create, pause verify, vm handle) consume authority; the final
     // budget subtracts the full elapsed staging immediately before start and
     // refuses when insufficient — a slow staging path cannot overrun the lease.
-    const stagingStartMonoMs = performance.now();
+    const stagingStartMonoMs = authorityObservedMonoMs;
 
     // Stage local worker BEFORE execution: create via the real Store in a
     // paused intent so the Coordinator can never dispatch model work, then

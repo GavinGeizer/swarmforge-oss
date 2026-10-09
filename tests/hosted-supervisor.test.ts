@@ -1463,6 +1463,39 @@ test("journal fail-closed: injected store failure stops runtime, never unjournal
   }
 }, 30000);
 
+test("a blocking durable start-right grant consumes lease authority before staging and refuses start", async () => {
+  const h = harness();
+  const fixture = api(() =>
+    json({
+      task: taskBody({
+        state: "running",
+        controlled_duration_ms: 1000,
+        lease_expires_at: Date.now() + 2500,
+      }),
+      directive: "continue",
+      server_time: Date.now(),
+    }),
+  );
+  const supervisor = supervisorUnderTest(h, fixture.origin);
+  const grant = h.hostedStore.grantStartRight.bind(h.hostedStore);
+  h.hostedStore.grantStartRight = (...args) => {
+    const granted = grant(...args);
+    Bun.sleepSync(1700);
+    return granted;
+  };
+  try {
+    await expect(
+      supervisor.ackAndStart(taskBody() as HostedTask),
+    ).rejects.toThrow(/staging consumed|absolute task authority/i);
+    expect(h.provider.spawnedCommands).toEqual([]);
+  } finally {
+    fixture.close();
+    await supervisor.close();
+    await h.coordinator.stop();
+    h.store.close();
+  }
+}, 10000);
+
 test("D4 slow staging: staging that consumes authority refuses start", async () => {
   // Staging (pause verify + vm handle) that eats the whole budget must refuse
   // instead of starting with phantom authority. Tiny lease forces the path.
