@@ -1,0 +1,11 @@
+bun test v1.4.2 (744846f84)
+
+test/hosted-bun.test.ts:
+(pass) controlled task crosses real Worker/Bun code, completes its child, and settles the reserved meter once [420.33ms]
+(pass) cloud cancellation stops the actual child, retains capacity until stop proof, and exposes no ambient credentials [13530.30ms]
+(pass) task client retries preserve logical admission across client calls and reject changed work [28.59ms]
+
+ 3 pass
+ 0 fail
+ 34 expect() calls
+Ran 3 tests across 1 file. [17.24s]

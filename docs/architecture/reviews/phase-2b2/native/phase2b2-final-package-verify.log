@@ -1,0 +1,2 @@
+$ bun scripts/package.ts verify
+{"archivePath":"/tmp/swarmforge-phase2b2-integration/dist/swarmforge-v0.1.2-linux-x64-glibc.tar.gz","archiveSha256":"d3c2b961c70bff330b113039a0b7f7d35b0f854127d71065dd5f1a5175c9d0fa","version":"0.1.2","commit":"786e726a14ac361bf6f92b4466106cf4a909d061","target":"bun-linux-x64-baseline","files":["SHA256SUMS","metadata-0.1.2.json","swarmforge"]}

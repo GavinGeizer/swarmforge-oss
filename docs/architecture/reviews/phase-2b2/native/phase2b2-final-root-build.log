@@ -1,0 +1,2 @@
+$ bun scripts/build.ts
+{"executable":"/tmp/swarmforge-phase2b2-integration/dist/swarmforge","version":"0.1.2","commit":"786e726a14ac361bf6f92b4466106cf4a909d061","target":"bun-linux-x64-baseline","bytes":83138016,"sha256":"01dbb8379444935149252fa13f48de442da1ea52790e1e330e7b57c49dbab9af"}

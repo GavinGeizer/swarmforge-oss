@@ -13,7 +13,7 @@ test("SQLite adapter preserves zero-change success inside an atomic batch", asyn
     ]);
     expect(result[1]!.meta.changes).toBe(0);
     expect(
-      await db.prepare("SELECT n FROM effects WHERE id=1").first("n"),
+      await db.prepare("SELECT n FROM effects WHERE id=1").first<number>("n"),
     ).toBe(1);
     await expect(
       db.batch([
@@ -22,7 +22,7 @@ test("SQLite adapter preserves zero-change success inside an atomic batch", asyn
       ]),
     ).rejects.toThrow();
     expect(
-      await db.prepare("SELECT n FROM effects WHERE id=1").first("n"),
+      await db.prepare("SELECT n FROM effects WHERE id=1").first<number>("n"),
     ).toBe(1);
   } finally {
     db.close();

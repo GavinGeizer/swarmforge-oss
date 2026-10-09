@@ -1,0 +1,20 @@
+# Independent-review dispatch corrections
+
+Final correction candidate: `93a96aa43e3874309d53436912a0ed728787b4aa` on `phase2b2-local-dispatch`, parent reviewed candidate `5151dc599e16e9ee5176af48b27e7b5635c202ea`. The original report `/tmp/phase2b2-local-dispatch-report.md` is preserved unchanged. Both commits touch only dispatch-owned production/tests/helpers; no integration/publication/deployment/SwarmForge action occurred.
+
+The independent reviewer reproduced three failures against the original candidate; original evidence remains `/tmp/phase2b2-native-dispatch-probes.ts` and `.log`. Added owned regressions all failed against `5151dc5` before these corrections (`/tmp/phase2b2-dispatch-independent-red.log`) and pass afterwards:
+
+1. A's enrolled worker and task were assigned to B's supervisor, where B remains a valid admin. Downgrading A from admin/owner to member at the batch boundary previously still allowed claim/ACK/renew and status continue. The execution election and final authority read now join the worker's original authorizer through active user, admin/owner tenant membership, and active tenant. Trusted current cleanup stays usable, and tests verify stop directive plus successful physical-stop settlement after that execution loss.
+2. A request timestamp captured 31 seconds before the actual SQL election produced an already-expired proposed claim/renew lease. The old claim committed task/outbox/operation/audit before returning 409. Both claim and renewal now elect only if the proposed expiry is strictly after the SQL clock, in addition to existing lease/deadline authority checks. The positive proposed window is checked ONLY at election; successors remain gated by own operation ID. Regression asserts zero persistent changes and no expired assignment for claim/renew. Five-second clock skew remains supported, with SQL server_time.
+3. A trusted database anomaly changed reservation quantity10000 to1 for a runtime10000 task; zero-runtime settlement previously terminalized the task while leaving reserved9999. This is a stored-invariant consistency defect, not a claimed remote attacker primitive. Settlement now requires reservation quantity equal full requested runtime and worker equal task worker before constructing the elected plan. Cleanup scans/elections also pin exact reservation identity/worker, and refuse inconsistent full-runtime quantity rather than hide stranded capacity. The real D1 helper now defaults quantity/reserved allowance to runtime; two previously inconsistent explicit metered fixtures now reserve10000 rather than100 for their runtime10000 task. Ledger conflict assertions and all retained D1 tests remain present.
+
+Fresh verification from `/tmp/swarmforge-phase2b2-dispatch/apps/cloud`:
+
+- `bun test test/*.test.ts`: **28 pass, 0 fail**, complementary production SQL integration with Bun SQLite. Log `/tmp/phase2b2-dispatch-correction-tests.log`.
+- `./node_modules/.bin/tsc --noEmit`: exit0. Log `/tmp/phase2b2-dispatch-correction-tsc.log`.
+- `./node_modules/.bin/biome check src/hosted-dispatch.ts test/hosted-dispatch.test.ts test/hosted-dispatch.integration.ts test/hosted-dispatch-helpers.ts`: exit0, four files clean. Log `/tmp/phase2b2-dispatch-correction-biome.log`.
+- `git diff --check` and staged check: exit0.
+
+Budgets retain 22 maximum hosted cleanup statements and **33 combined identity+hosted statements**, with maximum cleanup bindings now47. Reply paths remain at most14 statements (operator recovery); maximum argument count is64 (renewal election), including SQL clock response reads. Native counters are not D1 scanned-row or edge CPU evidence.
+
+Original real D1 fixture runs remain blocked by localhost `listen EPERM`; no corrected workerd/D1 execution, live provider, CPU or scanned-row claim is made. The retained real D1 after-read ledger barrier test remains in the committed suite. Exact production routing/cron wiring and shared dependencies remain lead-owned and pending review/integration. Original independent review and this separate correction candidate must remain separately identifiable.

@@ -1,0 +1,112 @@
+$ bun --no-env-file --config=/dev/null test test/*.test.ts
+bun test v1.4.2 (744846f84)
+
+test/hosted-global.test.ts:
+(pass) default Worker exposes private hosted policy and keeps execution audiences separate [20.25ms]
+(pass) readiness requires the additive hosted migration while identity maintenance remains compatible [13.23ms]
+(pass) default routing admits once, dispatches with stable fencing, settles once and releases capacity [60.14ms]
+(pass) hosted routes retain origin, query and CSRF checks before authority mutation [11.18ms]
+
+test/hosted-entitlements-safety.test.ts:
+(pass) controlled allowance boundary validation > rejects periodStart=-Infinity before preparing a mutation [0.16ms]
+(pass) controlled allowance boundary validation > rejects periodEnd=Infinity before preparing a mutation [0.03ms]
+(pass) controlled allowance boundary validation > rejects periodStart=100.5 before preparing a mutation
+(pass) controlled allowance boundary validation > rejects periodEnd=9007199254740992 before preparing a mutation
+(pass) controlled allowance boundary validation > rejects measuredStart=-Infinity before preparing a mutation
+(pass) controlled allowance boundary validation > rejects measuredEnd=Infinity before preparing a mutation
+(pass) controlled allowance boundary validation > rejects measuredStart=100.5 before preparing a mutation
+(pass) controlled allowance boundary validation > rejects now=NaN before preparing a mutation
+(pass) controlled allowance boundary validation > accepts exact safe integer boundaries [0.31ms]
+(pass) same-millisecond policy allowance collision retries with coherent real clock dates and preserves history [8.13ms]
+(pass) exhausted policy allowance collision retries roll back revocation allowance policy and audit together [10.27ms]
+(pass) legacy allowance alias refuses fractional unsafe or expired period boundaries [6.39ms]
+(pass) legacy allowance alias checks period expiry at SQL execution rather than only the supplied clock [6.22ms]
+(pass) explicit reserve helper rejects expired or future allowance periods at SQL execution time [6.08ms]
+
+test/hosted-bun.test.ts:
+(pass) controlled task crosses real Worker/Bun code, completes its child, and settles the reserved meter once [410.09ms]
+(pass) cloud cancellation stops the actual child, retains capacity until stop proof, and exposes no ambient credentials [13531.30ms]
+(pass) task client retries preserve logical admission across client calls and reject changed work [17.87ms]
+
+test/hosted-supervisor-authority.test.ts:
+(pass) supervisor registration cannot elect authority after browser expiry while waiting for its batch [43.57ms]
+(pass) supervisor rotation cannot advance epoch after the authenticated credential expires before election [46.13ms]
+(pass) different supervisor issuer cannot rotate or validate execution after the worker enroller loses admin [13.77ms]
+(pass) registration elected before browser expiry completes all dependent writes and returns its fresh result [8.60ms]
+(pass) expired browser cannot revoke through a delayed election or mutate credentials and assignments [44.16ms]
+
+test/hosted-admission-regressions.test.ts:
+(pass) current policy zero allowance cannot borrow a positive historical allowance [9.65ms]
+(pass) admission reserves only the pinned current policy allowance [8.96ms]
+(pass) reused cancellation key for another task changes no state or meter [13.91ms]
+(pass) authority revocation between cancellation authentication and batch changes nothing [11.67ms]
+(pass) cancellation ledger mismatch cannot terminalize or release capacity [9.29ms]
+(pass) legacy allowance alias cannot mutate unsupported meters [4.80ms]
+(pass) full-meter admission replay is identical 202 without a second reservation [9.48ms]
+(pass) any missing required capability denies admission with 403 [8.16ms]
+(pass) SQL int64 meter arithmetic reaches the canonical boundary exactly and refuses overflow [11.99ms]
+(pass) policy expiry while an admission waits to batch cannot elect a task [51.57ms]
+(pass) same-org multi-user and multi-CLI races share caps while another org admits independently [42.09ms]
+(pass) failed dependent SQL rolls back task reservation outbox audit operation and meter together [9.46ms]
+(pass) a ledger CAS miss on admission elects no task or dependent writes [9.11ms]
+(pass) admission denies a registered worker after its enroller loses admin authority [10.72ms]
+(pass) admission rechecks the worker enroller admin chain at batch election [9.75ms]
+(pass) cancellation elected before authority expires completes and reports its committed result [10.73ms]
+(pass) unavailable policy source denies new work with 503 and no admission effects [8.45ms]
+(pass) failed cancellation dependent SQL reports unavailable and rolls back elected effects [10.67ms]
+(pass) execution grant issuance cannot elect after browser or installation expiry while waiting to batch [138.41ms]
+(pass) execution grant issuance replay rechecks browser expiry at SQL time despite a stale Worker clock [32.96ms]
+(pass) fresh grant election returns its committed reply after browser expiry within the batch [8.81ms]
+(pass) execution grant election refuses a proposed credential already expired on the SQL clock [9.62ms]
+(pass) same-key grant issuance race replays one fresh winner and refuses a revoked winner without phantom audit [9.74ms]
+
+test/hosted-status-regressions.test.ts:
+(pass) status combined task pagination enumerates disjoint UUID ranges without skips [31.63ms]
+(pass) status fails closed on unavailable policy or operational source tables [11.12ms]
+(pass) supervisor authority checks current epoch and admin authorizer; observations use real task audits [9.66ms]
+(pass) status denies execution when a different worker enroller loses authority while preserving supervisor cleanup [12.97ms]
+
+test/hosted-dispatch.test.ts:
+(pass) dispatch SQL: batch-entry ledger race leaves every settlement row unchanged [16.25ms]
+(pass) dispatch SQL: renewal keeps fence, bounds deadline and same-key replay never extends twice [13.24ms]
+(pass) dispatch SQL: reused claim key after terminal task cannot claim a new task [11.93ms]
+(pass) dispatch SQL: conflicting ACK and renewal keys on another resource have zero effects [15.78ms]
+(pass) dispatch SQL: forced concurrent different settlements elect exactly one payload [13.85ms]
+(pass) dispatch SQL: session revocation at batch election denies ACK without any effects and status says stop [13.39ms]
+(pass) dispatch SQL: newest policy loss at election denies renewal and cleanup remains usable [13.62ms]
+(pass) dispatch SQL: queued expiry releases meter; assigned expiry retains capacity and combined cron stays bounded [13.83ms]
+(pass) dispatch SQL: revoked old assignment requires audited operator recovery with current lease [22.34ms]
+(pass) dispatch SQL: a delayed batch cannot renew an execution lease that expires during the request [55.91ms]
+(pass) dispatch SQL: claim replay requires the original recorded lease and fence [11.92ms]
+(pass) dispatch SQL: credential rebind at election cannot mutate a previous supervisor assignment [12.67ms]
+(pass) dispatch SQL: reply clocks come from the database after mutation despite Worker clock skew [45.84ms]
+dispatch cleanup budget: 33 combined statements, 47 maximum bindings
+(pass) dispatch SQL: full mixed cleanup leaves excess work and metered holds intact within combined D1 limits [36.67ms]
+(pass) dispatch SQL: queued cleanup ledger CAS miss persists no task, reservation, outbox, operation or audit effects [9.89ms]
+(pass) dispatch SQL: same-key competing claims replay one pinned assignment and leave the other task queued [13.38ms]
+(pass) dispatch SQL: CLI task survives issuer logout but rejects installation epoch, user and authorization-window changes [58.46ms]
+(pass) dispatch SQL: newest capability policy replacement at each execution election has zero persistent effects [100.74ms]
+(pass) dispatch SQL: supervisor cannot advance an assignment attached to another worker [22.99ms]
+(pass) dispatch SQL: a delayed ACK or renewal loses a reused key to a later task without persistent effects [29.46ms]
+dispatch response budgets: {"claim":{"statements":13,"maxArgs":65},"claim_replay":{"statements":5,"maxArgs":51},"empty_claim":{"statements":7,"maxArgs":35},"ack":{"statements":12,"maxArgs":68},"ack_replay":{"statements":5,"maxArgs":51},"renew":{"statements":12,"maxArgs":69},"renew_replay":{"statements":5,"maxArgs":51},"status":{"statements":4,"maxArgs":51},"stop_status":{"statements":4,"maxArgs":1},"settle":{"statements":13,"maxArgs":62},"settle_replay":{"statements":3,"maxArgs":4}}
+(pass) dispatch SQL: every response path including SQL clock fallback fits D1 statement and parameter limits [17.47ms]
+(pass) dispatch SQL: operator recovery requires current privileged browser, CSRF, strict proof, key, tenant and assignment [18.35ms]
+(pass) dispatch SQL: valid cleanup settles held work after worker, commercial and task-authorizer loss without new execution [15.45ms]
+(pass) dispatch SQL: expired supervisor credentials deny status and cleanup with zero persistent effects [11.58ms]
+dispatch operator recovery budget: 14 statements, 61 maximum bindings
+(pass) dispatch SQL: independently verified operator recovery fits D1 limits and settles only the revoked assignment [13.98ms]
+(pass) dispatch SQL: worker original enroller loss denies every execution election even under a different valid supervisor admin [49.27ms]
+(pass) dispatch SQL: election refuses a proposed lease whose captured timestamp is already expired on the SQL clock [21.44ms]
+(pass) dispatch SQL: reservation runtime or worker drift denies settlement without hiding inconsistent reserved capacity [36.67ms]
+
+test/hosted-migration.test.ts:
+(pass) clean database accepts all migrations with foreign keys enforced and no execution grants [2.41ms]
+(pass) Phase 2B.1 database upgrade preserves linked CLI and enrolled worker authority [11.73ms]
+
+test/local-d1.test.ts:
+(pass) SQLite adapter preserves zero-change success inside an atomic batch [0.29ms]
+
+ 84 pass
+ 0 fail
+ 306 expect() calls
+Ran 84 tests across 9 files. [18.89s]

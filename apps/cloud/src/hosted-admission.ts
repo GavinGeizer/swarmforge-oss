@@ -51,9 +51,9 @@ import { idSchema } from "./schemas.ts";
 // bound them to Number.MAX_SAFE_INTEGER, so in-SQL CAST arithmetic is
 // exact). The check (headroom for the full runtime in a covering period)
 // and the reserve (+runtime) both happen inside the SAME batch under
-// serialization, which is strictly stronger than a read-then-CAS window:
-// there is no stale-expected-value miss path, and a batch no-op leaves
-// zero writes (equivalent to a CAS miss with no partial state).
+// serialization. The election also pins the observed ledger quantities:
+// a concurrent change loses the election and returns a retryable conflict
+// with zero task, reservation, outbox, operation, audit or meter effects.
 
 const openStates = "'queued','claimed','running','stop_requested','held'";
 const workerAuthorizer =

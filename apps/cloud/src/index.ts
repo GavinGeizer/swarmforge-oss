@@ -27,6 +27,17 @@ import {
 import { connectPage } from "./connect.ts";
 import { hash, open, seal, sign, token } from "./crypto.ts";
 import { enrollmentRoute } from "./enrollment.ts";
+import { hostedAdmissionRoute } from "./hosted-admission.ts";
+import { hostedAuthorityRoute } from "./hosted-authority.ts";
+import {
+  cleanupHosted,
+  hostedDispatchRoute,
+  hostedRecoveryRoute,
+} from "./hosted-dispatch.ts";
+import { entitlementsRoute } from "./hosted-entitlements.ts";
+import { hostedStatusRoute } from "./hosted-status.ts";
+import { supervisorRoute } from "./hosted-supervisors.ts";
+import { hostedTableNames } from "./hosted-types.ts";
 import { linkRoute } from "./links.ts";
 import { machineRoute } from "./machines.ts";
 import {
@@ -379,6 +390,33 @@ function routeTemplate(path: string) {
   if (path === "/cloud/connect") return path;
   if (path === "/v1/cli-links") return path;
   if (
+    /^\/v1\/tenants\/[^/]+\/cli-installations\/[^/]+\/execution-authorizations$/.test(
+      path,
+    )
+  )
+    return "/v1/tenants/:tenant_id/cli-installations/:installation_id/execution-authorizations";
+  if (/^\/v1\/tenants\/[^/]+\/(?:entitlements|hosted-status)$/.test(path))
+    return `/v1/tenants/:tenant_id/${path.split("/").at(-1)}`;
+  if (
+    /^\/v1\/tenants\/[^/]+\/tasks(?:\/[^/]+(?:\/(?:cancel|recover))?)?$/.test(
+      path,
+    )
+  )
+    return path.endsWith("/cancel")
+      ? "/v1/tenants/:tenant_id/tasks/:task_id/cancel"
+      : path.endsWith("/recover")
+        ? "/v1/tenants/:tenant_id/tasks/:task_id/recover"
+        : path.split("/").length === 5
+          ? "/v1/tenants/:tenant_id/tasks"
+          : "/v1/tenants/:tenant_id/tasks/:task_id";
+  if (/^\/v1\/tenants\/[^/]+\/supervisors(?:\/[^/]+)?$/.test(path))
+    return "/v1/tenants/:tenant_id/supervisors/:supervisor_id";
+  if (/^\/v1\/supervisor\/(?:me(?:\/rotate)?|claim)$/.test(path)) return path;
+  if (/^\/v1\/supervisor\/tasks\/[^/]+(?:\/(?:ack|renew|settle))?$/.test(path))
+    return path.split("/").length === 5
+      ? "/v1/supervisor/tasks/:task_id"
+      : `/v1/supervisor/tasks/:task_id/${path.split("/").at(-1)}`;
+  if (
     /^\/v1\/cli-links\/[^/]+(?:\/(?:approve|deny|exchange|status))?$/.test(path)
   )
     return "/v1/cli-links/:link_id";
@@ -468,6 +506,12 @@ async function route(ctx: Context, provider: IdentityProvider) {
     await env.DB.prepare(
       "SELECT credential_id FROM machine_credentials LIMIT 1",
     ).all();
+    if (!(await hostedSchemaReady(env)))
+      throw new HttpError(
+        503,
+        "temporarily_unavailable",
+        "Hosted schema is not ready",
+      );
     return json(z.object({ status: z.literal("ready") }).strict(), {
       status: "ready",
     });
@@ -480,6 +524,13 @@ async function route(ctx: Context, provider: IdentityProvider) {
     linkRoute,
     machineRoute,
     enrollmentRoute,
+    hostedAuthorityRoute,
+    entitlementsRoute,
+    hostedAdmissionRoute,
+    supervisorRoute,
+    hostedDispatchRoute,
+    hostedRecoveryRoute,
+    hostedStatusRoute,
   ]) {
     const response = await handler(ctx);
     if (response) return response;
@@ -603,6 +654,14 @@ async function route(ctx: Context, provider: IdentityProvider) {
   }
   throw new HttpError(405, "method_not_allowed", "Method is not supported");
 }
+
+async function hostedSchemaReady(env: Env) {
+  const names = hostedTableNames.map((name) => `'${name}'`).join(",");
+  const row = await env.DB.prepare(
+    `SELECT count(*) n FROM sqlite_master WHERE type='table' AND name IN (${names})`,
+  ).first<{ n: number }>();
+  return row?.n === hostedTableNames.length;
+}
 export function createWorker(
   options: {
     provider?: IdentityProvider;
@@ -617,6 +676,9 @@ export function createWorker(
     async scheduled(_event: ScheduledController, env: Env) {
       config(env);
       await cleanupIdentity(env);
+      // Preserve identity maintenance before the additive hosted migration.
+      // Readiness denies admission until every hosted table is present.
+      if (await hostedSchemaReady(env)) await cleanupHosted(env);
     },
     async fetch(request: Request, env: Env): Promise<Response> {
       const ctx: Context = {

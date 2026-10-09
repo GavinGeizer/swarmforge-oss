@@ -11,7 +11,8 @@
   },
   "scripts": {
     "check": "tsc --noEmit && biome check src test scripts cloudflare.config.ts wrangler.config.ts",
-    "test": "node --experimental-strip-types --test test/*.integration.ts",
+    "test": "node --experimental-strip-types --test test/*.integration.ts && bun run test:sql",
+    "test:sql": "bun --no-env-file --config=/dev/null test test/*.test.ts",
     "types": "cf workers types --mode local",
     "build": "cf build --mode local",
     "dev": "cf dev --mode local",

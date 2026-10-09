@@ -10,6 +10,7 @@ import {
   notFound,
 } from "./common.ts";
 import { hash, open, seal, token } from "./crypto.ts";
+import { hostedSqlNow } from "./hosted-authority.ts";
 import {
   hostedSupervisorCredentialReplySchema,
   hostedSupervisorScopes,
@@ -34,6 +35,19 @@ export const supervisorRotationRecoveryTtl = 600000;
 
 const supervisorScopesJson = JSON.stringify([...hostedSupervisorScopes]);
 const supervisorBearerFormat = /^Bearer sfsuper_[A-Za-z0-9_-]{43}$/;
+const workerEnroller =
+  "EXISTS(SELECT 1 FROM users wu JOIN memberships wm ON wm.user_id=wu.user_id JOIN organizations wo ON wo.organization_id=wm.organization_id WHERE wu.user_id=w.authorizing_user_id AND wm.organization_id=w.organization_id AND wu.status='active' AND wm.status='active' AND wm.role IN ('owner','admin') AND wo.status='active')";
+
+function currentBrowserGuard(ctx: Context, tenant: string) {
+  const guard = browserGuard(ctx, tenant, true);
+  return {
+    ...guard,
+    sql: guard.sql.replace(
+      "s.expires_at>?",
+      `s.expires_at>MAX(?,${hostedSqlNow})`,
+    ),
+  };
+}
 
 // Explicitly typed supervisor principal: the credential, the supervisor row,
 // the tenant, the bound worker, the authorizing user, the epoch both must
@@ -107,6 +121,8 @@ interface SupervisorAuthRow {
   membership_status: string;
   membership_role: string;
   organization_status: string;
+  worker_enroller_valid: number;
+  server_time: number;
 }
 
 // Bearer-only supervisor authentication. Never falls through to cookie,
@@ -128,13 +144,13 @@ export async function supervisorAuth(
 ): Promise<HostedSupervisorPrincipal> {
   const raw = ctx.request.headers.get("authorization") ?? "";
   if (!supervisorBearerFormat.test(raw)) throw deny();
-  const now = Date.now();
   const row = await ctx.env.DB.prepare(
-    `SELECT c.credential_id,c.supervisor_id,c.organization_id,s.worker_id,s.authorizing_user_id,c.epoch,s.epoch supervisor_epoch,c.scopes,c.expires_at,s.authorization_expires_at,s.status supervisor_status,s.revoked_at supervisor_revoked_at,c.revoked_at credential_revoked_at,w.status worker_status,w.authorization_expires_at worker_authorization_expires_at,u.status user_status,m.status membership_status,m.role membership_role,o.status organization_status FROM hosted_supervisor_credentials c JOIN hosted_supervisors s ON s.supervisor_id=c.supervisor_id AND s.organization_id=c.organization_id JOIN cloud_workers w ON w.worker_id=s.worker_id AND w.organization_id=s.organization_id JOIN users u ON u.user_id=s.authorizing_user_id JOIN memberships m ON m.user_id=u.user_id AND m.organization_id=s.organization_id JOIN organizations o ON o.organization_id=s.organization_id WHERE c.token_hash=? AND c.audience='hosted-supervisor'`,
+    `SELECT c.credential_id,c.supervisor_id,c.organization_id,s.worker_id,s.authorizing_user_id,c.epoch,s.epoch supervisor_epoch,c.scopes,c.expires_at,s.authorization_expires_at,s.status supervisor_status,s.revoked_at supervisor_revoked_at,c.revoked_at credential_revoked_at,w.status worker_status,w.authorization_expires_at worker_authorization_expires_at,u.status user_status,m.status membership_status,m.role membership_role,o.status organization_status,(${workerEnroller}) worker_enroller_valid,${hostedSqlNow} server_time FROM hosted_supervisor_credentials c JOIN hosted_supervisors s ON s.supervisor_id=c.supervisor_id AND s.organization_id=c.organization_id JOIN cloud_workers w ON w.worker_id=s.worker_id AND w.organization_id=s.organization_id JOIN users u ON u.user_id=s.authorizing_user_id JOIN memberships m ON m.user_id=u.user_id AND m.organization_id=s.organization_id JOIN organizations o ON o.organization_id=s.organization_id WHERE c.token_hash=? AND c.audience='hosted-supervisor'`,
   )
     .bind(await hash(raw.slice(7)))
     .first<SupervisorAuthRow>();
   if (!row) throw deny();
+  const now = Math.max(Date.now(), row.server_time);
   if (JSON.stringify(JSON.parse(row.scopes)) !== supervisorScopesJson)
     throw deny();
   if (
@@ -159,6 +175,7 @@ export async function supervisorAuth(
   if (
     mode === "execution" &&
     (row.worker_status !== "registered" ||
+      row.worker_enroller_valid !== 1 ||
       row.worker_authorization_expires_at <= now)
   )
     throw deny();
@@ -190,14 +207,35 @@ export function supervisorGuard(
       : "";
   const workerCheck =
     mode === "execution"
-      ? " AND w.status='registered' AND w.authorization_expires_at>?"
+      ? ` AND w.status='registered' AND w.authorization_expires_at>MAX(?,${hostedSqlNow}) AND ${workerEnroller}`
       : "";
   return {
-    sql: `EXISTS(SELECT 1 FROM hosted_supervisor_credentials c JOIN hosted_supervisors s ON s.supervisor_id=c.supervisor_id AND s.organization_id=c.organization_id${worker} JOIN users u ON u.user_id=s.authorizing_user_id JOIN memberships m ON m.user_id=u.user_id AND m.organization_id=s.organization_id JOIN organizations o ON o.organization_id=s.organization_id WHERE c.credential_id=? AND c.audience='hosted-supervisor' AND c.revoked_at IS NULL AND c.expires_at>? AND c.epoch=s.epoch AND c.scopes=? AND s.status='registered' AND s.revoked_at IS NULL AND s.authorization_expires_at>? AND u.status='active' AND m.status='active' AND m.role IN ('owner','admin') AND o.status='active'${workerCheck})`,
+    sql: `EXISTS(SELECT 1 FROM hosted_supervisor_credentials c JOIN hosted_supervisors s ON s.supervisor_id=c.supervisor_id AND s.organization_id=c.organization_id${worker} JOIN users u ON u.user_id=s.authorizing_user_id JOIN memberships m ON m.user_id=u.user_id AND m.organization_id=s.organization_id JOIN organizations o ON o.organization_id=s.organization_id WHERE c.credential_id=? AND c.supervisor_id=? AND c.organization_id=? AND c.epoch=? AND s.worker_id=? AND s.authorizing_user_id=? AND c.audience='hosted-supervisor' AND c.revoked_at IS NULL AND c.expires_at>MAX(?,${hostedSqlNow}) AND c.epoch=s.epoch AND c.scopes=? AND s.status='registered' AND s.revoked_at IS NULL AND s.authorization_expires_at>MAX(?,${hostedSqlNow}) AND u.status='active' AND m.status='active' AND m.role IN ('owner','admin') AND o.status='active'${workerCheck})`,
     args:
       mode === "execution"
-        ? [auth.credential_id, now, supervisorScopesJson, now, now]
-        : [auth.credential_id, now, supervisorScopesJson, now],
+        ? [
+            auth.credential_id,
+            auth.supervisor_id,
+            auth.organization_id,
+            auth.epoch,
+            auth.worker_id,
+            auth.authorizing_user_id,
+            now,
+            supervisorScopesJson,
+            now,
+            now,
+          ]
+        : [
+            auth.credential_id,
+            auth.supervisor_id,
+            auth.organization_id,
+            auth.epoch,
+            auth.worker_id,
+            auth.authorizing_user_id,
+            now,
+            supervisorScopesJson,
+            now,
+          ],
   };
 }
 
@@ -249,12 +287,12 @@ async function registerSupervisor(ctx: Context, tenant: string) {
   });
   const fp = await hash(JSON.stringify(input)),
     cipher = await seal(ctx.env.AUTH_SECRET, JSON.stringify(reply)),
-    guard = browserGuard(ctx, tenant, true),
+    guard = currentBrowserGuard(ctx, tenant),
     principalKey = `session:${s.session_id}`,
     opId = crypto.randomUUID();
   const result = await ctx.env.DB.batch([
     ctx.env.DB.prepare(
-      `INSERT INTO hosted_operations(operation_id,organization_id,principal_key,resource_id,operation,idempotency_key,fingerprint,result_ciphertext,status,created_at,expires_at) SELECT ?,?,?,?,?,?,?,?,?,?,? WHERE ${guard.sql} AND EXISTS(SELECT 1 FROM cloud_workers WHERE worker_id=? AND organization_id=? AND status='registered') ON CONFLICT(organization_id,principal_key,operation,idempotency_key) DO NOTHING`,
+      `INSERT INTO hosted_operations(operation_id,organization_id,principal_key,resource_id,operation,idempotency_key,fingerprint,result_ciphertext,status,created_at,expires_at) SELECT ?,?,?,?,?,?,?,?,?,?,? WHERE ${guard.sql} AND ?>${hostedSqlNow} AND EXISTS(SELECT 1 FROM cloud_workers w WHERE w.worker_id=? AND w.organization_id=? AND w.status='registered' AND w.authorization_expires_at=? AND w.authorization_expires_at>${hostedSqlNow} AND ${workerEnroller}) ON CONFLICT(organization_id,principal_key,operation,idempotency_key) DO NOTHING`,
     ).bind(
       opId,
       tenant,
@@ -268,8 +306,10 @@ async function registerSupervisor(ctx: Context, tenant: string) {
       now,
       now + supervisorOperationTtl,
       ...guard.args,
+      reply.expires_at,
       worker.worker_id,
       tenant,
+      worker.authorization_expires_at,
     ),
     ctx.env.DB.prepare(
       "INSERT INTO hosted_supervisors(supervisor_id,organization_id,worker_id,authorizing_user_id,name,status,epoch,created_at,authorization_expires_at) SELECT ?,?,?,?,?,'registered',1,?,? WHERE EXISTS(SELECT 1 FROM hosted_operations WHERE operation_id=?)",
@@ -305,11 +345,19 @@ async function registerSupervisor(ctx: Context, tenant: string) {
       "FROM hosted_supervisors WHERE supervisor_id=?",
       [supervisorId],
     ),
-    // The encrypted replay rechecks CURRENT browser authority and the
-    // worker binding; a lost reply never allocates a second supervisor.
+    // A fresh election completes even if authority expires later in the
+    // batch. A replay rechecks current browser/worker authority.
     ctx.env.DB.prepare(
-      `SELECT fingerprint,result_ciphertext,expires_at FROM hosted_operations WHERE organization_id=? AND principal_key=? AND operation='supervisor.register' AND idempotency_key=? AND ${guard.sql} AND EXISTS(SELECT 1 FROM cloud_workers WHERE worker_id=? AND organization_id=? AND status='registered')`,
-    ).bind(tenant, principalKey, k, ...guard.args, worker.worker_id, tenant),
+      `SELECT fingerprint,result_ciphertext,expires_at FROM hosted_operations WHERE organization_id=? AND principal_key=? AND operation='supervisor.register' AND idempotency_key=? AND (operation_id=? OR (${guard.sql} AND expires_at>${hostedSqlNow} AND EXISTS(SELECT 1 FROM cloud_workers w WHERE w.worker_id=? AND w.organization_id=? AND w.status='registered' AND w.authorization_expires_at>${hostedSqlNow} AND ${workerEnroller})))`,
+    ).bind(
+      tenant,
+      principalKey,
+      k,
+      opId,
+      ...guard.args,
+      worker.worker_id,
+      tenant,
+    ),
   ]);
   const saved = result.at(-1)?.results[0] as
     | { fingerprint: string; result_ciphertext: string; expires_at: number }
@@ -344,7 +392,7 @@ async function revokeSupervisor(
   const k = key(ctx),
     now = Date.now(),
     s = ctx.session!,
-    guard = browserGuard(ctx, tenant, true),
+    guard = currentBrowserGuard(ctx, tenant),
     principalKey = `session:${s.session_id}`,
     opId = crypto.randomUUID(),
     fp = await hash(JSON.stringify({ supervisor_id: supervisorId }));
@@ -367,35 +415,35 @@ async function revokeSupervisor(
     // advances so every live credential fails the epoch check. Repeat calls
     // are a no-op on an already revoked row.
     ctx.env.DB.prepare(
-      `UPDATE hosted_supervisors SET status='revoked',revoked_at=COALESCE(revoked_at,?),epoch=epoch+CASE WHEN status='revoked' THEN 0 ELSE 1 END WHERE supervisor_id=? AND organization_id=? AND EXISTS(SELECT 1 FROM hosted_operations WHERE operation_id=?) AND ${guard.sql}`,
-    ).bind(now, supervisorId, tenant, opId, ...guard.args),
+      "UPDATE hosted_supervisors SET status='revoked',revoked_at=COALESCE(revoked_at,?),epoch=epoch+CASE WHEN status='revoked' THEN 0 ELSE 1 END WHERE supervisor_id=? AND organization_id=? AND EXISTS(SELECT 1 FROM hosted_operations WHERE operation_id=?)",
+    ).bind(now, supervisorId, tenant, opId),
     ctx.env.DB.prepare(
-      "UPDATE hosted_supervisor_credentials SET revoked_at=COALESCE(revoked_at,?) WHERE supervisor_id=? AND organization_id=? AND EXISTS(SELECT 1 FROM hosted_supervisors WHERE supervisor_id=? AND status='revoked')",
-    ).bind(now, supervisorId, tenant, supervisorId),
+      "UPDATE hosted_supervisor_credentials SET revoked_at=COALESCE(revoked_at,?) WHERE supervisor_id=? AND organization_id=? AND EXISTS(SELECT 1 FROM hosted_operations WHERE operation_id=?) AND EXISTS(SELECT 1 FROM hosted_supervisors WHERE supervisor_id=? AND status='revoked')",
+    ).bind(now, supervisorId, tenant, opId, supervisorId),
     // Assignments owned by this supervisor stop or hold: claimed/running
     // work moves to held so a trusted operator can reauthorize cleanup.
     // stop_requested duty is preserved (never falsely confirmed), queued
     // unassigned work is untouched, and reservations stay put: uncertain
     // execution is retained, never released or confirmed stopped here.
     ctx.env.DB.prepare(
-      "UPDATE hosted_tasks SET state='held' WHERE supervisor_id=? AND organization_id=? AND state IN ('claimed','running') AND EXISTS(SELECT 1 FROM hosted_supervisors WHERE supervisor_id=? AND status='revoked')",
-    ).bind(supervisorId, tenant, supervisorId),
+      "UPDATE hosted_tasks SET state='held' WHERE supervisor_id=? AND organization_id=? AND state IN ('claimed','running') AND EXISTS(SELECT 1 FROM hosted_operations WHERE operation_id=?) AND EXISTS(SELECT 1 FROM hosted_supervisors WHERE supervisor_id=? AND status='revoked')",
+    ).bind(supervisorId, tenant, opId, supervisorId),
     auditStatement(
       ctx,
       "supervisor.revoked",
       `supervisor:${supervisorId}`,
       tenant,
       s.user_id,
-      "FROM hosted_supervisors WHERE supervisor_id=? AND status='revoked'",
-      [supervisorId],
+      "FROM hosted_supervisors WHERE supervisor_id=? AND status='revoked' AND EXISTS(SELECT 1 FROM hosted_operations WHERE operation_id=?)",
+      [supervisorId, opId],
       `${supervisorId}:revoked`,
     ),
     ctx.env.DB.prepare(
       "SELECT fingerprint FROM hosted_operations WHERE organization_id=? AND principal_key=? AND operation='supervisor.revoke' AND idempotency_key=?",
     ).bind(tenant, principalKey, k),
     ctx.env.DB.prepare(
-      `SELECT supervisor_id,revoked_at FROM hosted_supervisors WHERE supervisor_id=? AND organization_id=? AND status='revoked' AND ${guard.sql}`,
-    ).bind(supervisorId, tenant, ...guard.args),
+      `SELECT supervisor_id,revoked_at FROM hosted_supervisors WHERE supervisor_id=? AND organization_id=? AND status='revoked' AND (EXISTS(SELECT 1 FROM hosted_operations WHERE operation_id=?) OR (${guard.sql}))`,
+    ).bind(supervisorId, tenant, opId, ...guard.args),
   ]);
   const op = result.at(-2)?.results[0] as { fingerprint: string } | undefined;
   if (!op || op.fingerprint !== fp)

@@ -3,8 +3,9 @@
 Goal: working organization-owned entitlements, atomic hosted admission, fenced
 durable dispatch and a Bun supervisor/client implementation with safe stop recovery.
 Spec: [design brief](phase-2b2-design.md) and the user's full Phase 2B.2 request.
-Execution method: SwarmForge engineering workers, with lead-owned integration and
-final verification. The user's autonomous execution directive supersedes optional
+Execution method: initial SwarmForge engineering workers, followed by isolated native
+coding/review agents after the owner directed us to stop using SwarmForge. Integration
+and final verification remain lead-owned. No further SwarmForge operations are authorized. The user's autonomous execution directive supersedes optional
 design/plan confirmation steps in general workflow skills.
 
 ## Global constraints
@@ -36,7 +37,7 @@ design/plan confirmation steps in general workflow skills.
 | Bun supervisor | Dedicated coder: safe client, durable local mapping, Coordinator adapter/watchdog, runtime-stop and root tests | Stable dispatch contract; shared private storage helper | Actual inert execution/cancellation with restart recovery; no broad credential injection |
 | Adversarial integration | Independent test coder: new hosted end-to-end/hostile/load test files | Working cloud/Bun candidates | Invoke production D1/workerd/Bun paths; exercise all acceptance criteria |
 | Integration/operations | Lead: routers, fixtures, CI, deployment/operations docs, load evidence | Accepted worker candidates | Clean/upgrade migrations, complete checks/build/package, original reports |
-| Final reviews | Three independent SwarmForge reviewers A/B/C | Exact integrated implementation commit | Architecture/compatibility; concurrency/recovery; auth/security with concrete findings |
+| Final reviews | Three independent reviewers A/B/C | Exact integrated implementation commit | Architecture/compatibility; concurrency/recovery; auth/security with concrete findings |
 
 Each code task writes failing behavioral tests first, records the red result,
 implements its owned changes, runs the relevant production tests/static checks,
@@ -53,8 +54,8 @@ Independent worker-client work consumes only existing 2B.1 APIs.
 - [x] Read requested architecture and actual cloud/coordinator/provider/storage interfaces.
 - [x] Run fresh root/cloud baseline before product changes.
 - [x] Discover SwarmForge tools/capacity/model and start scoped independent investigations.
-- [ ] Finalize shared schema, protocol, technical defaults and file ownership from evidence.
-- [ ] Implement/review worker client and hosted foundation.
+- [x] Finalize shared schema, protocol, technical defaults and file ownership from evidence.
+- [x] Implement/review worker client and hosted foundation; final integrated review remains separate.
 - [ ] Implement/review dispatch and Bun supervisor; integrate accepted commits.
 - [ ] Add independent hostile concurrency/recovery tests and reproducible resource observations.
 - [ ] Apply all migrations to clean and existing 2B.1 databases; verify repeatability.
@@ -63,3 +64,20 @@ Independent worker-client work consumes only existing 2B.1 APIs.
 - [ ] Preserve original reports/results/logs, verify source durability and scoped VM cleanup.
 - [ ] Write phase-2b2-summary.md with live/edge/isolation gaps and Stripe/pilot prerequisites.
 - [ ] Commit finished implementation and verify clean working tree; no master merge/deployment.
+
+
+## Resumption checkpoint, 2026-10-09
+
+Integration lives on `phase2b2-hosted-dispatch` in the isolated clone
+`/tmp/swarmforge-phase2b2-integration`, because the original checkout's Git metadata
+is read-only. Foundation, dispatch, runtime, worker client and protected storage
+contributions are committed. The lead added production routing, readiness, scheduled
+cleanup, supervisor authority regressions, and actual Worker-to-Bun inert execution
+and cancellation coverage. Tests are additive; live D1/workerd tests remain enabled.
+
+Current restrictions prevent local socket listeners and Docker access. Trusted
+credential/journal paths also fail closed under the container's differently owned
+root ancestors. Full suites, generated Worker types and immutable final review
+remain mandatory unfinished gates, not waived requirements. Native reviewer and
+runtime agents stopped after reporting an account usage limit. Original findings,
+corrections and verification limits are preserved. See [current summary](phase-2b2-summary.md).

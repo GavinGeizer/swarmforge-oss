@@ -1,0 +1,243 @@
+bun test v1.4.2 (744846f84)
+
+tests/hosted-supervisor.test.ts:
+ 96 |     const reader = a.stdout.getReader();
+ 97 |     let output = "";
+ 98 |     while (!output.includes("\n")) {
+ 99 |       const chunk = await reader.read();
+100 |       if (chunk.done)
+101 |         throw new Error("Process A exited before the live-child report.");
+                        ^
+error: Process A exited before the live-child report.
+      at <anonymous> (/tmp/phase2b2-review-a-898e63b/tests/hosted-supervisor.test.ts:101:19)
+(fail) actual process A child >=300ms then NEW process B proves OS stop with foreign clock and full reserved consumption (transport mock) [150.51ms]
+56 |   const [code, stdout, stderr] = await Promise.all([
+57 |     child.exited,
+58 |     new Response(child.stdout as ReadableStream).text(),
+59 |     new Response(child.stderr as ReadableStream).text(),
+60 |   ]);
+61 |   expect(stderr).toBe("");
+                      ^
+error: expect(received).toBe(expected)
+
+- ""
++ "109 |       stat.isSymbolicLink() ||
++ 110 |       (stat.uid !== 0 && stat.uid !== uid) ||
++ 111 |       (stat.mode & 0o022 && !rootTemp) ||
++ 112 |       (at === directory && (stat.uid !== uid || stat.mode & 0o077))
++ 113 |     )
++ 114 |       throw new Error(
++                       ^
++ error: Hosted state requires private directory (0700), without symlinks.
++       at ensurePrivateHostedPath (/tmp/phase2b2-review-a-898e63b/src/hosted-store.ts:114:17)
++       at new HostedStore (/tmp/phase2b2-review-a-898e63b/src/hosted-store.ts:140:30)
++       at /tmp/phase2b2-review-a-898e63b/tests/hosted-recovery-writer.ts:99:23
++ 
++ Bun v1.4.2 (Linux x64)
++ "
+
+- Expected  - 1
++ Received  + 14
+
+      at processReport (/tmp/phase2b2-review-a-898e63b/tests/hosted-supervisor.test.ts:61:18)
+      at async <anonymous> (/tmp/phase2b2-review-a-898e63b/tests/hosted-supervisor.test.ts:180:27)
+(fail) lost COMPLETED response + actual NEW process retries identical frozen request/key once (transport mock) [119.42ms]
+(pass) settlement 409 plus same-outcome terminal status cannot establish consumption receipt [8.17ms]
+(pass) actual measured runtime freezes a completed settlement before a lost reply and retries the identical receipt (transport mock) [365.91ms]
+(pass) recovery cannot settle an acknowledged launch with no captured PID as zero use [2.27ms]
+(pass) a durable mapping whose start right was never granted can settle zero use [1.51ms]
+(pass) OS permission failure never proves a live controlled process stopped [2.00ms]
+(pass) an unmatched live PID is unknown and must remain alive [2.04ms]
+(pass) stop escalation rechecks OS identity before SIGKILL when the captured identity changes [4022.98ms]
+(pass) actual 31s task outlives the initial 30s lease through timely renewal and completes in full (transport mock) [31015.03ms]
+(pass) a partition before renewal stops the full requested child early and settles cancelled (transport mock) [1005.64ms]
+(pass) a delayed renewal denial cannot reopen an already stopped and settled task [3516.05ms]
+(pass) server stop during the actual CLI supervisor loop settles cancelled, never completed (transport mock) [2004.41ms]
+(pass) hosted credential schemas bind tenant and reject cross-audience reuse [1.58ms]
+61 |       s.isSymbolicLink() ||
+62 |       !s.isDirectory() ||
+63 |       (s.uid !== 0 && s.uid !== uid) ||
+64 |       (writable && !stickyRootTemp)
+65 |     )
+66 |       throw privateCredentialStorageError();
+                                               ^
+error: Cloud credential storage must use a privately owned regular file (0600) in a private directory (0700), without symlinks.
+      at parentDirectory (/tmp/phase2b2-review-a-898e63b/src/private-credential-file.ts:66:43)
+      at savePrivateCredential (/tmp/phase2b2-review-a-898e63b/src/private-credential-file.ts:134:3)
+      at saveHostedTaskCredential (/tmp/phase2b2-review-a-898e63b/src/hosted-credentials.ts:119:3)
+      at <anonymous> (/tmp/phase2b2-review-a-898e63b/tests/hosted-supervisor.test.ts:888:5)
+(fail) hosted credential storage round-trips privately via the approved shared helper [0.59ms]
+61 |       s.isSymbolicLink() ||
+62 |       !s.isDirectory() ||
+63 |       (s.uid !== 0 && s.uid !== uid) ||
+64 |       (writable && !stickyRootTemp)
+65 |     )
+66 |       throw privateCredentialStorageError();
+                 ^
+error: Cloud credential storage must use a privately owned regular file (0600) in a private directory (0700), without symlinks.
+      at parentDirectory (/tmp/phase2b2-review-a-898e63b/src/private-credential-file.ts:66:13)
+      at savePrivateCredential (/tmp/phase2b2-review-a-898e63b/src/private-credential-file.ts:134:3)
+      at rotate (/tmp/phase2b2-review-a-898e63b/src/hosted-client.ts:431:7)
+      at <anonymous> (/tmp/phase2b2-review-a-898e63b/tests/hosted-supervisor.test.ts:941:20)
+(fail) supervisor rotation enforces a durable idempotency key on the supervised path [0.67ms]
+(pass) remaining authority subtracts full RTT and safety margin; rejects thin leases [0.03ms]
+(pass) SIMULATED transport: task client submits/reads/cancels with exact controlled payload [0.78ms]
+(pass) SIMULATED transport: task client stops on cross-tenant and malformed responses [0.28ms]
+(pass) SIMULATED transport: supervisor claim/ack/renew/status/settle round-trips strict fields [0.84ms]
+(pass) SIMULATED transport: supervisor surfaces 401/409 without widening credentials [0.12ms]
+(pass) durable mapping precedes execution: same retries reuse, fence changes hold [1.18ms]
+(pass) controlled runtime executes a real inert subprocess and verifies stop [904.09ms]
+(pass) RED-proven false stop: fresh provider without the pid record must NOT resolve [453.24ms]
+(pass) D3 stale identity never signals an unrelated live victim (no unsafe reuse experiment) [304.40ms]
+109 |       stat.isSymbolicLink() ||
+110 |       (stat.uid !== 0 && stat.uid !== uid) ||
+111 |       (stat.mode & 0o022 && !rootTemp) ||
+112 |       (at === directory && (stat.uid !== uid || stat.mode & 0o077))
+113 |     )
+114 |       throw new Error(
+                      ^
+error: Hosted state requires private directory (0700), without symlinks.
+      at ensurePrivateHostedPath (/tmp/phase2b2-review-a-898e63b/src/hosted-store.ts:114:17)
+      at new HostedStore (/tmp/phase2b2-review-a-898e63b/src/hosted-store.ts:140:30)
+      at <anonymous> (/tmp/phase2b2-review-a-898e63b/tests/hosted-supervisor.test.ts:1377:19)
+(fail) legacy origin unit: reopening a journal cannot authorize a foreign-clock measurement [1.78ms]
+(pass) journal fail-closed: injected store failure stops runtime, never unjournaled [3.51ms]
+(pass) a blocking durable start-right grant consumes lease authority before staging and refuses start [1702.48ms]
+(pass) D4 slow staging: staging that consumes authority refuses start [3.75ms]
+1563 |     const child = Bun.spawn([process.execPath, writer, dbPath, TASK], {
+1564 |       env: { PATH: "/usr/bin:/bin", TZ: "UTC" },
+1565 |       stdio: ["ignore", "pipe", "pipe"],
+1566 |     });
+1567 |     const code = await child.exited;
+1568 |     expect(code).toBe(0);
+                        ^
+error: expect(received).toBe(expected)
+
+Expected: 0
+Received: 1
+
+      at <anonymous> (/tmp/phase2b2-review-a-898e63b/tests/hosted-supervisor.test.ts:1568:18)
+(fail) D1 new-PROCESS recovery: on-disk state survives a real process boundary [38.19ms]
+(pass) reconcile retries durable stop + same-key settlement (not held-forever) [4.29ms]
+(pass) compiled binary + empty-cwd: real binary self-spawn runs without repo files [408.12ms]
+(pass) compiled launcher + hook from empty cwd: actual provider self-spawn via Bun.isStandaloneExecutable [555.18ms]
+(pass) controlled stopWorkerRuntime verifies exit; network/label failures are not proof [3.81ms]
+(pass) controlled provider refuses arbitrary exec and filesystem access [0.96ms]
+(pass) claim -> mapping -> ack -> real start; duplicate delivery reuses mapping [3.49ms]
+(pass) B duplicate-task repro: duplicate ACK AFTER child exit + mapping stopped must NOT spawn again [1205.65ms]
+109 |       stat.isSymbolicLink() ||
+110 |       (stat.uid !== 0 && stat.uid !== uid) ||
+111 |       (stat.mode & 0o022 && !rootTemp) ||
+112 |       (at === directory && (stat.uid !== uid || stat.mode & 0o077))
+113 |     )
+114 |       throw new Error(
+                      ^
+error: Hosted state requires private directory (0700), without symlinks.
+      at ensurePrivateHostedPath (/tmp/phase2b2-review-a-898e63b/src/hosted-store.ts:114:17)
+      at new HostedStore (/tmp/phase2b2-review-a-898e63b/src/hosted-store.ts:140:30)
+      at mkHarness (/tmp/phase2b2-review-a-898e63b/tests/hosted-supervisor.test.ts:1867:20)
+      at <anonymous> (/tmp/phase2b2-review-a-898e63b/tests/hosted-supervisor.test.ts:1871:14)
+(fail) concurrent duplicate ACKs on the SAME file from two supervisor instances: only one wins pre-launch [2.43ms]
+109 |       stat.isSymbolicLink() ||
+110 |       (stat.uid !== 0 && stat.uid !== uid) ||
+111 |       (stat.mode & 0o022 && !rootTemp) ||
+112 |       (at === directory && (stat.uid !== uid || stat.mode & 0o077))
+113 |     )
+114 |       throw new Error(
+                      ^
+error: Hosted state requires private directory (0700), without symlinks.
+      at ensurePrivateHostedPath (/tmp/phase2b2-review-a-898e63b/src/hosted-store.ts:114:17)
+      at new HostedStore (/tmp/phase2b2-review-a-898e63b/src/hosted-store.ts:140:30)
+      at <anonymous> (/tmp/phase2b2-review-a-898e63b/tests/hosted-supervisor.test.ts:1914:18)
+(fail) new-process recovery after exit does NOT reuse the start right [1.47ms]
+(pass) crash before/after mapping: restart holds ambiguity, never blindly re-execs [1.80ms]
+(pass) cancellation race and uncertain stop: settle requires confirmed exit [7.47ms]
+(pass) stale fence and revoked supervisor credential forbid execution and renewal [1.84ms]
+(pass) forbidden payload rejected; no secret in runtime env, logs or artifacts [1.24ms]
+(pass) parent crash: stdin EOF stops the real child independently (fail closed) [302.43ms]
+(pass) partition watchdog: expired lease without renewal stops locally and holds settlement [3.76ms]
+(pass) clock offsets and delayed responses cannot extend authority [0.05ms]
+(pass) held capacity: uncertain execution is quarantined, never released or reused [1.63ms]
+(pass) runtime env and logs carry no bearer, provider, repo or model credentials [1.86ms]
+(pass) hosted CLI parses supervisor/submit/status/cancel and rejects raw secrets [0.76ms]
+(pass) production handler: hosted submit/status/cancel via real TaskClient [1.73ms]
+61 |       s.isSymbolicLink() ||
+62 |       !s.isDirectory() ||
+63 |       (s.uid !== 0 && s.uid !== uid) ||
+64 |       (writable && !stickyRootTemp)
+65 |     )
+66 |       throw privateCredentialStorageError();
+                 ^
+error: Cloud credential storage must use a privately owned regular file (0600) in a private directory (0700), without symlinks.
+      at parentDirectory (/tmp/phase2b2-review-a-898e63b/src/private-credential-file.ts:66:13)
+      at savePrivateCredential (/tmp/phase2b2-review-a-898e63b/src/private-credential-file.ts:134:3)
+      at saveHostedSupervisorCredential (/tmp/phase2b2-review-a-898e63b/src/hosted-credentials.ts:128:3)
+      at <anonymous> (/tmp/phase2b2-review-a-898e63b/tests/hosted-supervisor.test.ts:2394:5)
+(fail) RED factory restart: statePath persists the durable mapping across factory instances [1.20ms]
+61 |       s.isSymbolicLink() ||
+62 |       !s.isDirectory() ||
+63 |       (s.uid !== 0 && s.uid !== uid) ||
+64 |       (writable && !stickyRootTemp)
+65 |     )
+66 |       throw privateCredentialStorageError();
+                 ^
+error: Cloud credential storage must use a privately owned regular file (0600) in a private directory (0700), without symlinks.
+      at parentDirectory (/tmp/phase2b2-review-a-898e63b/src/private-credential-file.ts:66:13)
+      at savePrivateCredential (/tmp/phase2b2-review-a-898e63b/src/private-credential-file.ts:134:3)
+      at saveHostedSupervisorCredential (/tmp/phase2b2-review-a-898e63b/src/hosted-credentials.ts:128:3)
+      at <anonymous> (/tmp/phase2b2-review-a-898e63b/tests/hosted-supervisor.test.ts:2454:5)
+(fail) production handler: supervisor loop claims, runs, stops and settles [1.30ms]
+(pass) accounting: actual run >300ms settles consumption >= actual minimum, no double release [357.28ms]
+(pass) RTT: delayed ACK response is measured in full (monotonic, after await) [1204.89ms]
+(pass) staging race: injected stopping intent between staging and start blocks start [4.39ms]
+
+tests/hosted-cli.test.ts:
+(pass) explicit hosted parser is pure and refuses secrets, unsafe workload flags and invalid bounds [0.43ms]
+(pass) unmodified real compiled CLI works from foreign cwd and enters only the bounded controlled child hook [669.85ms]
+61 |       s.isSymbolicLink() ||
+62 |       !s.isDirectory() ||
+63 |       (s.uid !== 0 && s.uid !== uid) ||
+64 |       (writable && !stickyRootTemp)
+65 |     )
+66 |       throw privateCredentialStorageError();
+                 ^
+error: Cloud credential storage must use a privately owned regular file (0600) in a private directory (0700), without symlinks.
+      at parentDirectory (/tmp/phase2b2-review-a-898e63b/src/private-credential-file.ts:66:13)
+      at savePrivateCredential (/tmp/phase2b2-review-a-898e63b/src/private-credential-file.ts:134:3)
+      at saveHostedSupervisorCredential (/tmp/phase2b2-review-a-898e63b/src/hosted-credentials.ts:128:3)
+      at credentials (/tmp/phase2b2-review-a-898e63b/tests/hosted-cli.test.ts:53:3)
+      at <anonymous> (/tmp/phase2b2-review-a-898e63b/tests/hosted-cli.test.ts:178:3)
+(fail) compiled actual CLI supervisor + production provider + child from empty cwd (instrumented build, fetch transport mock) [0.76ms]
+322 | // explicit verification gap; this remains executable unchanged in normal CI.
+323 | test("unmodified compiled actual hosted supervisor runs through HTTP fixture from empty cwd", async () => {
+324 |   const assignment = task();
+325 |   let settleBody: { outcome: string; consumed_runtime_ms: number } | null =
+326 |     null;
+327 |   const server = Bun.serve({
+                           ^
+EPERM: operation not permitted, listen
+ syscall: "listen",
+   errno: -1,
+    code: "EPERM"
+
+      at <anonymous> (/tmp/phase2b2-review-a-898e63b/tests/hosted-cli.test.ts:327:22)
+(fail) unmodified compiled actual hosted supervisor runs through HTTP fixture from empty cwd [0.19ms]
+
+12 tests failed:
+(fail) actual process A child >=300ms then NEW process B proves OS stop with foreign clock and full reserved consumption (transport mock) [150.51ms]
+(fail) lost COMPLETED response + actual NEW process retries identical frozen request/key once (transport mock) [119.42ms]
+(fail) hosted credential storage round-trips privately via the approved shared helper [0.59ms]
+(fail) supervisor rotation enforces a durable idempotency key on the supervised path [0.67ms]
+(fail) legacy origin unit: reopening a journal cannot authorize a foreign-clock measurement [1.78ms]
+(fail) D1 new-PROCESS recovery: on-disk state survives a real process boundary [38.19ms]
+(fail) concurrent duplicate ACKs on the SAME file from two supervisor instances: only one wins pre-launch [2.43ms]
+(fail) new-process recovery after exit does NOT reuse the start right [1.47ms]
+(fail) RED factory restart: statePath persists the durable mapping across factory instances [1.20ms]
+(fail) production handler: supervisor loop claims, runs, stops and settles [1.30ms]
+(fail) compiled actual CLI supervisor + production provider + child from empty cwd (instrumented build, fetch transport mock) [0.76ms]
+(fail) unmodified compiled actual hosted supervisor runs through HTTP fixture from empty cwd [0.19ms]
+
+ 47 pass
+ 12 fail
+ 229 expect() calls
+Ran 59 tests across 2 files. [56.54s]

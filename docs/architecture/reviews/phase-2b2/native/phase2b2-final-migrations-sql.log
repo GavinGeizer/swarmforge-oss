@@ -1,0 +1,10 @@
+bun test v1.4.2 (744846f84)
+
+apps/cloud/test/hosted-migration.test.ts:
+(pass) clean database accepts all migrations with foreign keys enforced and no execution grants [2.77ms]
+(pass) Phase 2B.1 database upgrade preserves linked CLI and enrolled worker authority [32.91ms]
+
+ 2 pass
+ 0 fail
+ 17 expect() calls
+Ran 2 tests across 1 file. [67.00ms]

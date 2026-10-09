@@ -1,0 +1,25 @@
+bun test v1.4.2 (744846f84)
+
+test/hosted-bun.test.ts:
+(pass) controlled task crosses real Worker/Bun code, completes its child, and settles the reserved meter once [420.75ms]
+233 |         continue;
+234 |       }
+235 |       if (!response.ok) {
+236 |         await response.body?.cancel();
+237 |         const retry = response.headers.get("retry-after") ?? "";
+238 |         throw new HostedApiError(
+                    ^
+error: Hosted operation conflicts with current server state.
+     status: 409,
+ retryAfterMs: 5000,
+
+      at request (/tmp/swarmforge-phase2b2-integration/src/hosted-client.ts:238:15)
+      at async renew (/tmp/swarmforge-phase2b2-integration/src/hosted-client.ts:524:30)
+      at async renewOnce (/tmp/swarmforge-phase2b2-integration/src/hosted-supervisor.ts:490:41)
+      at async <anonymous> (/tmp/swarmforge-phase2b2-integration/apps/cloud/test/hosted-bun.test.ts:203:32)
+(fail) cloud cancellation stops the actual child, retains capacity until stop proof, and exposes no ambient credentials [30.11ms]
+
+ 1 pass
+ 1 fail
+ 21 expect() calls
+Ran 2 tests across 1 file. [505.00ms]

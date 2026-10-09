@@ -1,0 +1,50 @@
+bun test v1.4.2 (744846f84)
+
+apps/cloud/test/hosted-supervisor-authority.test.ts:
+15 |       await Bun.sleep(35);
+16 |     };
+17 |     const response = await h.request(`/v1/tenants/${a.tenant}/supervisors`,
+18 |       { ...a.headers, "idempotency-key": crypto.randomUUID() }, "POST", { name: "bounded", worker_id: w.worker_id });
+19 |     expect(intercepted).toBe(true);
+20 |     expect(response.status).toBe(409);
+                                 ^
+error: expect(received).toBe(expected)
+
+Expected: 409
+Received: 201
+
+      at <anonymous> (/tmp/swarmforge-phase2b2-integration/apps/cloud/test/hosted-supervisor-authority.test.ts:20:29)
+(fail) supervisor registration cannot elect authority after browser expiry while waiting for its batch [60.11ms]
+39 |       await Bun.sleep(35);
+40 |     };
+41 |     const response = await h.request("/v1/supervisor/me/rotate",
+42 |       { authorization: `Bearer ${s.credential}`, "idempotency-key": crypto.randomUUID() }, "POST", {});
+43 |     expect(intercepted).toBe(true);
+44 |     expect(response.status).toBe(409);
+                                 ^
+error: expect(received).toBe(expected)
+
+Expected: 409
+Received: 200
+
+      at <anonymous> (/tmp/swarmforge-phase2b2-integration/apps/cloud/test/hosted-supervisor-authority.test.ts:44:29)
+(fail) supervisor rotation cannot advance epoch after the authenticated credential expires before election [50.93ms]
+56 |     const b = await h.login(101);
+57 |     h.db.sqlite.query("INSERT INTO memberships VALUES(?,?,'admin','active',?,?)").run(a.tenant,b.user,Date.now(),Date.now());
+58 |     const s = await h.registerSupervisor({ ...b, tenant: a.tenant }, w.worker_id);
+59 |     h.db.sqlite.query("UPDATE memberships SET role='member' WHERE organization_id=? AND user_id=?").run(a.tenant,a.user);
+60 |     const headers = { authorization: `Bearer ${s.credential}`, "idempotency-key": crypto.randomUUID() };
+61 |     expect((await h.request("/v1/supervisor/me", headers)).status).toBe(401);
+                                                                        ^
+error: expect(received).toBe(expected)
+
+Expected: 401
+Received: 200
+
+      at <anonymous> (/tmp/swarmforge-phase2b2-integration/apps/cloud/test/hosted-supervisor-authority.test.ts:61:68)
+(fail) different supervisor issuer cannot rotate or validate execution after the worker enroller loses admin [15.43ms]
+
+ 0 pass
+ 3 fail
+ 5 expect() calls
+Ran 3 tests across 1 file. [153.00ms]
