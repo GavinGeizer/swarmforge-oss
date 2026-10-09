@@ -1,21 +1,28 @@
 # SwarmForge
 
-SwarmForge lets an AI lead launch isolated coding workers, follow their progress, send follow-up tasks, and collect their results through MCP. Each worker runs OpenCode in a Freestyle VM against your model endpoint and Git repository. Worker state and results are stored in SQLite; the terminal dashboard shows current activity.
+**SwarmForge is a self-hosted orchestrator for parallel AI coding agents running in isolated remote VMs.** Your AI lead assigns tasks through the Model Context Protocol (MCP); SwarmForge runs OpenCode workers in Freestyle VMs, tracks their progress, and preserves their results and files.
 
-The global `swarmforge` executable provides `init`, `doctor`, `serve`, and `status`, plus GitHub OAuth repository authorization, configuration inspection and artifact retrieval. You supply the VM snapshot, model service, and Git access. SwarmForge does not host Git, serve models, or create pull requests.
+[Website](https://getswarmforge.tech) · [Setup guide](https://getswarmforge.tech/docs/) · [Releases](https://github.com/GavinGeizer/swarmforge-oss/releases) · [Developer onboarding](CONTRIBUTING.md)
 
-## License
+The coordinator runs on your Linux machine. Each worker gets a separate VM, workspace, and OpenCode session. You supply the VM snapshot, model endpoint, and Git repository. The CLI provides initialization, readiness checks, a terminal dashboard, and artifact retrieval. SwarmForge is [source-available under PolyForm Small Business 1.0.0](#license), which restricts permitted business use.
 
-SwarmForge is source-available under the [PolyForm Small Business License 1.0.0](LICENSE), with SPDX identifier `PolyForm-Small-Business-1.0.0`. The authoritative license is the repository-root `LICENSE`; its standard terms are unchanged.
+## Why distribute coding workers?
 
-Permitted business use requires fewer than **100 people working as employees and independent contractors** and prior-tax-year revenue below **US$1,000,000 in 2019 dollars, adjusted for inflation**. Both conditions must hold, and the license's company definition includes controlled and commonly controlled organizations. Uses outside its permissions require separate permission from the copyright holder; commercial licensing can be discussed through the [project repository](https://github.com/GavinGeizer/swarmforge-oss/issues).
+A single-machine coding-agent manager runs agent processes against the resources and workspaces of one host. SwarmForge separates the coordinator from worker compute:
 
-The standard license replaces the proposed custom 10-employee/fixed-US$1-million draft. It contains no separate ban on hosting services. It is source-available rather than OSI-approved open source. Third-party software retains its own licenses. See [licensing notes](docs/licensing/README.md) and the full license for the authoritative terms.
+- **Separate execution environments:** each worker runs in its own Freestyle VM with tools from your prepared snapshot. Worker compute runs remotely; the coordinator owns scheduling and state.
+- **Durable coordination:** SQLite stores the queue, follow-up dispatches, structured results, events, and observed usage. Restart reconciliation reconnects retained VMs and sessions; uncertain task delivery requires inspection before replay.
+- **Deliverables that survive cleanup:** declared files, logs, and standard artifact directories are copied into private coordinator storage and checked with SHA-256 before normal VM destruction.
+- **Explicit source handoff:** optional GitHub App, GitHub OAuth, or SSH modes push worker branches and verify the remote commit. Your lead reviews the evidence and integrates changes.
+
+This suits independent implementation, review, research, and documentation tasks. The lead decomposes work and coordinates dependencies through Git and follow-up messages. SwarmForge does not automatically plan dependencies, merge branches, or open pull requests.
 
 ## Contents
 
 - [Before you start](#before-you-start)
 - [Quick start](#quick-start)
+- [Architecture and workflow](#architecture-and-workflow)
+- [Supported harnesses, models, and infrastructure](#supported-harnesses-models-and-infrastructure)
 - [Download, build, and install](#download-build-and-install)
 - [Initialize a deployment](#initialize-a-deployment)
 - [Check setup and start the server](#check-setup-and-start-the-server)
@@ -25,10 +32,13 @@ The standard license replaces the proposed custom 10-employee/fixed-US$1-million
 - [Retained VMs and cleanup](#review-retained-vms-and-clean-up)
 - [Troubleshooting](#troubleshooting)
 - [Build and packaged installation](#build-and-packaged-installation)
+- [Developer onboarding](CONTRIBUTING.md)
+- [Documentation](#documentation)
+- [License](#license)
 
 ## Before you start
 
-The supported host is **Linux x64 with glibc**. Building from a checkout requires **Bun 1.4.2 or newer** and Git. The installed executable includes its runtime and does not require Bun or `node_modules`.
+The supported host is **Linux x64 with glibc**. The public installer requires a normal user account, Bash, curl, GNU tar, and coreutils; it refuses root execution. Building from a checkout requires Git and **Bun 1.4.2 or newer** (CI and release builds pin 1.4.2). The installed executable includes its runtime and does not require Bun or `node_modules`.
 
 Have these infrastructure details ready before initialization:
 
@@ -41,24 +51,85 @@ Have these infrastructure details ready before initialization:
 | `SWARMFORGE_MODEL_NAME` | The exact model ID accepted by the endpoint. The model must support tool calls. |
 | `SWARMFORGE_GIT_TREE` | A cloneable Git URL or path available to the worker. Use `none` or `none:/prepared/path` to use a prepared workspace instead of cloning. |
 
-The **worker snapshot** must contain OpenCode compatible with SDK 1.18.31, Python 3, Git, Bash, systemd, and the tools needed for your tasks. OpenCode must be on the service PATH and the guest workspace must be writable. Repository access can be connected through GitHub OAuth during initialization or configured through GitHub App or SSH credentials. Mounts and networking are prepared externally. These guest prerequisites are separate from the control-plane host.
+The **worker snapshot** must contain OpenCode compatible with SDK 1.18.31, Python 3, Git, Bash, running systemd, and the tools needed for your tasks. OpenCode must be on the service PATH and the guest workspace must be writable. See the [worker snapshot checklist](docs/WORKER-SNAPSHOT.md) before creating your snapshot. Repository access can be connected through GitHub OAuth during initialization or configured through GitHub App or SSH credentials. Mounts and networking are prepared externally. These guest prerequisites are separate from the control-plane host.
 
 Installing and initializing create no worker VMs. Spawning a worker provisions a billable VM; completed workers retain their VMs until explicitly destroyed.
 
 ## Quick start
 
-If you already have the required infrastructure values, the shortest path is:
+### Install the published executable
+
+After gathering the six required settings above, run this in Bash on the supported host. This pins the published **v0.1.2** release:
 
 ```sh
-git clone https://github.com/GavinGeizer/swarmforge-oss.git
-cd swarmforge-oss
-bun install --frozen-lockfile
-bun run setup
-swarmforge doctor
-swarmforge serve
+mkdir -p ~/my-swarmforge
+cd ~/my-swarmforge
+curl -fsSL https://getswarmforge.tech/install -o install-swarmforge.sh
+bash install-swarmforge.sh --version 0.1.2 --install-only --no-modify-path
+export PATH="$HOME/.local/bin:$PATH"
+swarmforge --version
+swarmforge init --config "$PWD/config.toml"
+swarmforge doctor --config ./config.toml
+swarmforge serve --config ./config.toml
 ```
 
-Then connect your MCP client to `http://127.0.0.1:8787/mcp` and run `swarmforge status` in another terminal.
+You can [inspect the installer](https://getswarmforge.tech/install) before executing it. It downloads versioned GitHub assets, verifies both archive and executable checksums, and installs at `~/.local/bin/swarmforge`. These flags keep installation separate from initialization and leave shell profiles unchanged. `--version` should print `0.1.2`. To persist PATH, follow [these shell instructions](#make-the-command-available-in-your-terminal-and-workspace).
+
+`init` asks for your real infrastructure settings and creates a private `.env` plus `config.toml` here. Keep passing this `--config` to select the deployment independently of global configuration. Exported SwarmForge/provider environment variables still take precedence; inspect `swarmforge config show --config ./config.toml` if settings differ from what you entered. If `.env` already exists, skip `init` and follow [the existing-environment instructions](#if-you-already-have-an-environment-file).
+
+Keep `serve` running. In another terminal, from the same deployment directory:
+
+```sh
+export PATH="$HOME/.local/bin:$PATH"
+swarmforge status --config ./config.toml
+```
+
+Connect your MCP client to `http://127.0.0.1:8787/mcp` using the [configuration below](#connect-an-mcp-client), then [run the first task](#run-a-first-task-and-collect-the-result). Installation and ordinary `doctor` checks create no VMs. A complete remote task needs your prepared snapshot, working model, and repository access.
+
+The installer, release executable, fresh source build, and local initialization path were [verified on Linux x64 with glibc](docs/README-AUDIT.md#verification). This verification does not certify your providers or snapshot. Optionally run `swarmforge doctor --config ./config.toml --live` to check snapshot access and a small model tool call; inference charges may apply. It creates no VM. See [live-check limits](docs/OPERATOR-WORKFLOWS.md#explicit-live-readiness-checks).
+
+### Build from source
+
+Use the [source installation steps](#download-build-and-install) below, or [CONTRIBUTING.md](CONTRIBUTING.md) to develop and test without provider credentials.
+
+## Architecture and workflow
+
+```mermaid
+flowchart LR
+    Lead["AI lead / MCP client"] -->|"Streamable HTTP"| Coordinator["Self-hosted coordinator"]
+    CLI["CLI / terminal dashboard"] --> Coordinator
+    Coordinator --> DB[("SQLite: queue, events, results, usage")]
+    Coordinator -->|"Freestyle API"| VM["Isolated worker VM / OpenCode"]
+    VM -->|"Tool-calling chat completions"| Model["Your model endpoint"]
+    VM -->|"Clone / optional verified push"| Git["Your Git repository"]
+    VM -->|"Artifact capture"| Files["Private coordinator artifact storage"]
+    Coordinator --> Files
+```
+
+1. **Assign:** your lead calls `spawn_worker` with a bounded task and expected deliverables. The coordinator queues it, provisions a VM from your snapshot, prepares the repository, and starts OpenCode.
+2. **Observe and follow up:** inspect progress through MCP or `swarmforge status`. Messages queue behind the current turn and reuse that worker's session. Pause, resume, and cancel are explicit operations.
+3. **Collect and review:** read the structured result and reported test outcomes. SwarmForge preserves artifacts separately from task completion and, when configured, verifies the Git branch push. The lead reviews and integrates the work.
+4. **Clean up:** inspect preservation and Git safety, then destroy eligible retained VMs through MCP or the dashboard. Results and preserved files remain available. VMs are retained by default; optional automatic retention expiry must be configured explicitly.
+
+For example, assign an implementation and an independent repository review in parallel, then send the verified implementation branch to a reviewer in a follow-up. Assign dependent work after its inputs exist. Workers do not automatically exchange messages or merge each other's changes.
+
+Run one coordinator per SQLite database on persistent local storage. Distributed worker execution does not imply a replicated coordinator or a shared-database cluster. Teams are coordination labels under shared trusted access, not security tenants. Read the [implementation architecture](docs/ARCHITECTURE.md), [MCP tool reference](docs/MCP-API.md), and [worker result protocol](docs/WORKER-PROTOCOL.md).
+
+## Supported harnesses, models, and infrastructure
+
+| Layer | Current support |
+| --- | --- |
+| Lead / manager | A client that can call MCP tools over Streamable HTTP, with a bearer header when configured. An OpenCode configuration example follows below; other clients need their own configuration syntax. |
+| Worker coding harness | **OpenCode**, using the pinned `@opencode-ai/sdk` **1.18.31** v2 client. Claude Code, Codex, and other harnesses have no shipped worker adapters. A compatible lead client is a separate role. |
+| Models / inference | Your configured exact model ID at an **OpenAI-compatible chat-completions endpoint with tool calling**, via OpenCode's `@ai-sdk/openai-compatible` provider. One endpoint/model configuration per deployment; no bundled inference or certified model/provider catalog. Endpoint compatibility must be checked. |
+| Worker compute provider | **Freestyle VMs** from an externally prepared snapshot. No shipped local-process, Docker, Kubernetes, SSH-host, or alternative VM provider adapter. |
+| Coordinator host | **Linux x64 with glibc**. Standalone binaries for macOS, Windows, ARM64, and Alpine/musl are not currently published or verified. |
+| Repository / source handoff | Cloneable Git URLs or paths accessible inside the VM; `none` / `none:/path` for a prepared tree. Optional verified branch push through GitHub App, GitHub OAuth, or SSH. No built-in pull request or merge API. |
+| State and outputs | Local SQLite plus private artifact storage; back up both. Prometheus metrics expose observed usage and lifecycle state. Cost estimates need configured rates; budget alerts do not enforce spending limits. |
+
+`WorkerProvider` and `CodingAgent` are code extension points, not a CLI plugin registry. The default runtime constructs `FreestyleProvider` and `OpenCodeAgent`. Self-hosting the coordinator still requires Freestyle and your model service.
+
+Hosted account services and alternative worker backends are outside this release. The public setup path uses the self-hosted coordinator and its existing OpenCode/Freestyle integration.
 
 ## Download, build, and install
 
@@ -185,6 +256,8 @@ If server authentication is enabled, add `"headers": {"Authorization": "Bearer {
 
 Ask your connected AI lead to call `spawn_worker`. Start with a small task to confirm the worker snapshot, model tools, and repository access:
 
+This JSON describes an MCP tool call, not a shell command. Substitute a new `request_id` for each new task attempt; reuse it only when retrying the same creation request with the same arguments.
+
 ```json
 {
   "name": "spawn_worker",
@@ -203,7 +276,7 @@ Ask your connected AI lead to call `spawn_worker`. Start with a small task to co
 4. Collect outputs with `list_artifacts` and inspect `get_artifact_metadata`. Preservation runs automatically when a turn settles, using declared paths plus the standard artifact/log/result files. `read_artifact` returns a bounded, credential-screened excerpt; authenticated `GET /artifacts/<artifact_id>/download` returns exact file bytes. Verify the downloaded SHA-256 against metadata. See the [artifact quickstart](docs/ARTIFACT-QUICKSTART.md) for declarations and download commands.
 5. Call `destroy_worker` when you have preserved the work. Normal destruction checks Git persistence and artifact preservation; a refusal reports `recovery_required`. Investigate and persist the source before explicitly considering a forced deletion.
 
-Completed, failed, cancelled, and paused workers can retain billable VMs and consume capacity. Check `get_swarm_status` for leftovers before leaving. All 26 tools are described in [MCP-API.md](docs/MCP-API.md).
+Completed, failed, cancelled, and paused workers can retain billable VMs and consume capacity. Check `get_swarm_status` for leftovers before leaving. Tools and their arguments are described in [MCP-API.md](docs/MCP-API.md).
 
 ### Connect GitHub with OAuth
 
@@ -222,7 +295,7 @@ For coding tasks, configure `SWARMFORGE_GIT_PUSH_MODE=github-app`, `github-oauth
 
 ## Preserve outputs and recover failed collection
 
-Add `"artifacts": [{"path": "results/findings.json", "required": true}]` to a task when that file must survive cleanup. Paths are relative to the worker repository. Standard `.swarmforge/artifacts/**`, logs, and result metadata are collected automatically; `snapshot_on_failure: true` also requests a bounded workspace snapshot on failure.
+Add `"artifacts": [{"path": "results/findings.json", "required": true}]` to a task when that file must survive cleanup. Paths are relative to `SWARMFORGE_WORKSPACE` (default `/workspace`), so this example declares `/workspace/results/findings.json`. To capture a file inside the default cloned repository, declare `repo/results/findings.json`. Standard `.swarmforge/artifacts/**`, logs, and result metadata are collected automatically; `snapshot_on_failure: true` also requests a bounded workspace snapshot on failure.
 
 In `swarmforge status`, select a worker and press Enter. The detail view shows preservation state, attempts, errors, artifact IDs, sizes, checksums, and download paths. Press `f` to retry a failed or pending collection on a retained VM, or call `retry_worker_finalization` through MCP. Task completion and preservation are separate states; failed collection retains the VM. Normal destruction refuses unsafe cleanup. Forced destruction explicitly abandons preservation and can lose files.
 
@@ -259,7 +332,7 @@ The overview shows global retained VM count, cleanup candidate count, and the ol
 
 Cleanup candidates must be completed, failed, cancelled, or recovery-required, have an available retained VM, have preserved outputs, and have no pending messages or control action. A candidate is **not** a guarantee that Git safety will pass. Use details to resolve refusals, then select and preview again. Quitting stops new batch requests after the current request. This flow requires an updated server; restart `swarmforge serve` and reopen the dashboard after installing the new binary.
 
-Cleanup is an operator action. Stored artifacts and results survive normal VM destruction. Pricing estimates and automatic retention policies remain future work.
+Stored artifacts and results survive normal VM destruction. Manual cleanup is an operator action; optional automatic VM expiry and configured usage estimates are described in [operator workflows](docs/OPERATOR-WORKFLOWS.md).
 
 ## Save deliverables and read artifact text
 
@@ -285,11 +358,22 @@ The Git repository is coordinator configuration. Finish outstanding tasks, prese
 
 | Symptom | Next step |
 | --- | --- |
+| `bun: command not found`, an old Bun version, or unsupported lockfile format | Source builds require Bun 1.4.2 or newer; check `bun --version` and follow [Bun installation instructions](https://bun.sh/docs/installation). Keep the committed lockfile; do not delete it to bypass a version error. The release executable needs no Bun. |
+| Public installer refuses root or `sudo` | Run as a normal user. Use an absolute writable `SWARMFORGE_INSTALL_DIR` if `~/.local/bin` is unsuitable. |
+| Unsupported platform, musl, or `Exec format error` | Use a Linux x64 glibc host. Installing Bun does not make the published binary run on macOS, ARM64, Windows, or Alpine/musl. |
+| Missing `curl`, GNU tar, `sha256sum`, or another installer prerequisite | Install the named tool with your OS package manager, then rerun. The installer lists the missing prerequisite. |
+| GitHub download fails, release is unavailable, or a checksum mismatches | Check [published releases](https://github.com/GavinGeizer/swarmforge-oss/releases) and access to GitHub release downloads through your proxy/firewall. Download again; do not bypass checksum validation. The public installer preserves the previous executable on validation failure. |
 | `swarmforge: command not found` | Follow the printed PATH instructions; reload the workspace or use `~/.local/bin/swarmforge`. |
+| Source `setup` fails after installing the executable | Run `~/.local/bin/swarmforge init` in an interactive terminal in your deployment directory. `setup` installs before initialization; it does not automatically change the parent terminal's PATH. |
 | `init` says `.env` exists | Keep the file and use `doctor --env-file .env`; initialization does not overwrite it. |
 | Required settings are missing | Run `swarmforge config path` and `config show`, or explicitly pass `--env-file .env`. |
+| `doctor` reports unwritable database or artifact storage | Use writable persistent local directories for `SWARMFORGE_DB_PATH` and `SWARMFORGE_ARTIFACT_DIR`. Run the service as the owner of those paths. |
 | The server reports a different persisted owner | Restore the existing instance ID and database path. |
 | A bind fails | Check whether another server owns port 8787 or metrics port 9090. |
+| A second coordinator cannot acquire the database lock | Stop the other coordinator cleanly or select a separate database/configuration. Run one server per database; do not remove a live lock file. |
+| MCP tools do not appear or the client gets `401` | Keep `serve` running, use Streamable HTTP at `/mcp`, supply the configured bearer header, and reload the client. `localhost` in a remote client refers to that client's machine. |
+| Local `doctor` passes but a worker fails to boot | Check [snapshot prerequisites](docs/WORKER-SNAPSHOT.md), including running systemd and VM network access. Local checks do not exercise these. |
+| Model returns `401`, `404`, or fails tool calls | Check the API key, exact model ID, and base URL. A coordinator's loopback URL is not reachable as that coordinator from a VM. Use the optional `doctor --live` probe, then inspect the worker logs. |
 | Worker provisioning or execution fails | Read `get_worker_logs`; check snapshot tools, Git access, and endpoint/model tool-calling support. |
 | Cleanup is refused | Inspect and persist the worker's local Git work and collect artifacts. |
 
@@ -297,7 +381,7 @@ The Git repository is coordinator configuration. Finish outstanding tasks, prese
 
 ## Build and packaged installation
 
-For development in the checkout:
+For development in the checkout, see [CONTRIBUTING.md](CONTRIBUTING.md) for a clean setup and tests that need no provider credentials. To run a configured coordinator from source:
 
 ```sh
 bun run init
@@ -368,3 +452,23 @@ swarmforge artifacts preview <artifact-id>
 ```
 
 In `swarmforge status`, Enter shows progress/results/recovery; `a` browses artifacts, `n` opens notifications, and PgUp/PgDn scroll long detail/preview views. Live checks require an explicit `doctor --live` invocation. Automatic VM expiry is disabled by default.
+
+## Documentation
+
+| Goal | Reference |
+| --- | --- |
+| Install and connect your first client | [Official setup guide](https://getswarmforge.tech/docs/) · [Developer onboarding](CONTRIBUTING.md) |
+| Prepare a worker environment | [Snapshot checklist](docs/WORKER-SNAPSHOT.md) · [Worker protocol](docs/WORKER-PROTOCOL.md) |
+| Understand distributed execution | [Architecture](docs/ARCHITECTURE.md) · [Workflow examples](https://getswarmforge.tech/use-cases/) |
+| Configure models, Git, networking, and storage | [Environment](docs/ENVIRONMENT.md) · [Configuration](docs/CONFIGURATION.md) · [GitHub OAuth](docs/GITHUB-OAUTH.md) |
+| Assign and inspect work | [MCP API](docs/MCP-API.md) · [Operator workflows](docs/OPERATOR-WORKFLOWS.md) |
+| Preserve, download, and monitor results | [Artifacts](docs/ARTIFACTS.md) · [Observability](docs/OBSERVABILITY.md) · [Server lifecycle](docs/SERVE.md) |
+| Review installation evidence and launch follow-ups | [README audit](docs/README-AUDIT.md) |
+
+## License
+
+SwarmForge is source-available under the [PolyForm Small Business License 1.0.0](LICENSE), with SPDX identifier `PolyForm-Small-Business-1.0.0`. The repository-root license is authoritative; its standard terms are unchanged. This is not an OSI-approved open-source license.
+
+Permitted business use requires **both** fewer than **100 individuals working as employees and independent contractors** and total revenue in the **prior tax year** below **US$1,000,000 in 2019 dollars, adjusted for inflation** under the license's specified CPI series. Its company definition includes controlled and commonly controlled organizations. Business use outside those permissions requires separate permission from the copyright holder; [contact the project](https://github.com/GavinGeizer/swarmforge-oss/issues) about commercial licensing.
+
+The standard license has no separate internal-use-only or hosted-service exclusion. Distribution must carry the license text or its official URL and any applicable Required Notices. Third-party software retains its own licenses. Read the [licensing notes](docs/licensing/README.md) and [official license text](https://polyformproject.org/licenses/small-business/1.0.0) for the complete terms.
