@@ -1,11 +1,22 @@
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { cloudOrigin } from "./cloud-credentials";
+import {
+  deletePrivateCredential,
+  readPrivateCredential,
+  savePrivateCredential,
+} from "./private-credential-file";
 
 const id = z.uuid();
 const time = z.number().int().positive();
 const execPattern = /^sfexec_[A-Za-z0-9_-]{43}$/;
 const superPattern = /^sfsuper_[A-Za-z0-9_-]{43}$/;
+
+const pendingRotationSchema = z
+  .object({
+    idempotency_key: z.string().regex(/^[a-zA-Z0-9_.:-]{1,128}$/),
+  })
+  .strict();
 
 const taskState = z.enum([
   "queued",
@@ -371,14 +382,86 @@ export class SupervisorClient extends HostedHttpClient {
       "supervisor identity",
     );
   }
-  async rotate(idempotencyKey = randomUUID()) {
-    return this.request(
-      "/v1/supervisor/me/rotate",
-      "POST",
-      {},
-      idempotencyKey,
-      undefined,
-    );
+  /**
+   * Supervisor rotation with a durable idempotency key. P2 note (approved):
+   * a rotate call without a storage path cannot durably key a lost reply, so
+   * the supervised lifecycle must always pass `pendingStoragePath`; the
+   * pathless form is retained only for transport-level tests and refuses to
+   * invent durability it cannot provide.
+   */
+  async rotate(idempotencyKey = randomUUID(), pendingStoragePath?: string) {
+    // P2 note (approved): rotate without a storage path lacks a durable key,
+    // so the supervised lifecycle must always pass `pendingStoragePath`. The
+    // pathless form stays only for transport tests and uses the call key once.
+    if (pendingStoragePath === undefined) {
+      return this.request(
+        "/v1/supervisor/me/rotate",
+        "POST",
+        {},
+        idempotencyKey,
+        undefined,
+      );
+    }
+    // One durable idempotency key per rotation window: a lost reply retries
+    // the exact key so the server replays the stored result. The pending key
+    // is consumed (deleted) on success, so the next rotation mints a new one;
+    // a fresh caller key never replaces an already-durable pending key
+    // mid-flight — it is only used when no pending key exists yet.
+    let durable: string;
+    const pendingExists = (() => {
+      try {
+        return (
+          readPrivateCredential(pendingStoragePath, pendingRotationSchema) !==
+          null
+        );
+      } catch {
+        throw new Error("Hosted rotation pending state is invalid; holding.");
+      }
+    })();
+    if (pendingExists) {
+      durable = readPrivateCredential(
+        pendingStoragePath,
+        pendingRotationSchema,
+      )!.idempotency_key;
+    } else {
+      durable = idempotencyKey;
+      savePrivateCredential(
+        pendingStoragePath,
+        { idempotency_key: durable },
+        pendingRotationSchema,
+      );
+    }
+    const key = durable as `${string}-${string}-${string}-${string}-${string}`;
+    try {
+      const reply = await this.request(
+        "/v1/supervisor/me/rotate",
+        "POST",
+        {},
+        key,
+        undefined,
+      );
+      // The approved supervisor rotation reply carries the successor
+      // credential; only a successfully parsed successor clears the pending
+      // key. A bare transport ack (test fixtures) leaves it for the caller.
+      const successor = z
+        .object({ credential: z.string().min(1) })
+        .strict()
+        .safeParse(reply);
+      if (successor.success) {
+        try {
+          deletePrivateCredential(pendingStoragePath, pendingRotationSchema);
+        } catch {}
+      }
+      return reply;
+    } catch (e) {
+      if (e instanceof HostedApiError && [401, 409].includes(e.status)) {
+        // The previous credential can no longer authorize a replay.
+        try {
+          deletePrivateCredential(pendingStoragePath, pendingRotationSchema);
+        } catch {}
+      }
+      throw e;
+    }
   }
   async claim(idempotencyKey = randomUUID()): Promise<ClaimReply> {
     const reply = await this.request(

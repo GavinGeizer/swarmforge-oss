@@ -1,35 +1,13 @@
 import { resolve } from "node:path";
 import { z } from "zod";
 import { cloudOrigin } from "./cloud-credentials";
-
-// Agreed worker-client helper (src/private-credential-file.ts) is not yet in
-// this baseline; resolve it lazily so the dependency stays explicit and local
-// helpers never duplicate its POSIX boundary. The static import is
-// intentionally absent: hosted files must not vendor a copy.
-interface PrivateCredentialModule {
-  readPrivateCredential<T>(path: string, schema: z.ZodType<T>): T | null;
-  savePrivateCredential<T>(path: string, value: T, schema: z.ZodType<T>): void;
-  deletePrivateCredential<T>(path: string, schema: z.ZodType<T>): void;
-}
-let cachedPrivateCredential: PrivateCredentialModule | null = null;
-async function privateCredential(): Promise<PrivateCredentialModule> {
-  if (cachedPrivateCredential) return cachedPrivateCredential;
-  try {
-    cachedPrivateCredential = (await import(
-      // Dynamic specifier so tsc skips resolution until the worker-client
-      // branch lands; a missing module reports the dependency, never a copy.
-      "./private-credential-file.ts" as string
-    )) as PrivateCredentialModule;
-    return cachedPrivateCredential;
-  } catch {
-    throw new Error(
-      "Hosted credential storage requires src/private-credential-file.ts " +
-        "(worker-client branch 09db215a2529369d2aec00fadd3f62fa9e81703a, " +
-        "not yet merged to this baseline); refusing to use placeholder storage. " +
-        "See task report dependency.",
-    );
-  }
-}
+// Approved worker-client helper (cherry-picked exact SHA 09db215): static
+// import so tsc/biome verify the agreed exports at build time.
+import {
+  deletePrivateCredential,
+  readPrivateCredential,
+  savePrivateCredential,
+} from "./private-credential-file";
 
 const id = z.uuid();
 const time = z.number().int().positive();
@@ -122,50 +100,38 @@ export function hostedSupervisorCredentialPath(path?: string): string {
 }
 
 /** Null when absent; throws sanitized storage error otherwise. Never logs secrets. */
-export async function readHostedTaskCredential(
+export function readHostedTaskCredential(
   path: string,
-): Promise<HostedTaskCredential | null> {
-  const helper = await privateCredential();
-  return helper.readPrivateCredential(path, hostedTaskCredentialSchema);
+): HostedTaskCredential | null {
+  return readPrivateCredential(path, hostedTaskCredentialSchema);
 }
-export async function readHostedSupervisorCredential(
+export function readHostedSupervisorCredential(
   path: string,
-): Promise<HostedSupervisorCredential | null> {
-  const helper = await privateCredential();
-  return helper.readPrivateCredential(path, hostedSupervisorCredentialSchema);
+): HostedSupervisorCredential | null {
+  return readPrivateCredential(path, hostedSupervisorCredentialSchema);
 }
-export async function saveHostedTaskCredential(
+export function saveHostedTaskCredential(
   path: string,
   value: HostedTaskCredential,
-): Promise<void> {
+): void {
   const parsed = hostedTaskCredentialSchema.safeParse(value);
   if (!parsed.success) throw new Error("Hosted task credential is invalid.");
-  const helper = await privateCredential();
-  helper.savePrivateCredential(path, parsed.data, hostedTaskCredentialSchema);
+  savePrivateCredential(path, parsed.data, hostedTaskCredentialSchema);
 }
-export async function saveHostedSupervisorCredential(
+export function saveHostedSupervisorCredential(
   path: string,
   value: HostedSupervisorCredential,
-): Promise<void> {
+): void {
   const parsed = hostedSupervisorCredentialSchema.safeParse(value);
   if (!parsed.success)
     throw new Error("Hosted supervisor credential is invalid.");
-  const helper = await privateCredential();
-  helper.savePrivateCredential(
-    path,
-    parsed.data,
-    hostedSupervisorCredentialSchema,
-  );
+  savePrivateCredential(path, parsed.data, hostedSupervisorCredentialSchema);
 }
-export async function deleteHostedTaskCredential(path: string): Promise<void> {
-  const helper = await privateCredential();
-  helper.deletePrivateCredential(path, hostedTaskCredentialSchema);
+export function deleteHostedTaskCredential(path: string): void {
+  deletePrivateCredential(path, hostedTaskCredentialSchema);
 }
-export async function deleteHostedSupervisorCredential(
-  path: string,
-): Promise<void> {
-  const helper = await privateCredential();
-  helper.deletePrivateCredential(path, hostedSupervisorCredentialSchema);
+export function deleteHostedSupervisorCredential(path: string): void {
+  deletePrivateCredential(path, hostedSupervisorCredentialSchema);
 }
 
 /** Execution gate: a credential that is expired cannot execute or renew. */

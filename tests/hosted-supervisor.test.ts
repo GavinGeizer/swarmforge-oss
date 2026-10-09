@@ -249,52 +249,88 @@ test("hosted credential schemas bind tenant and reject cross-audience reuse", ()
   ).toThrow();
 });
 
-test("hosted credential storage reports missing shared helper instead of duplicating it", async () => {
+test("hosted credential storage round-trips privately via the approved shared helper", () => {
   const dir = mkdtempSync(join(tmpdir(), "hosted-cred-"));
   try {
-    await expect(
-      saveHostedTaskCredential(join(dir, "t.json"), {
-        version: 1,
-        server_url: "https://hosted.example",
-        credential: `sfexec_${"a".repeat(43)}`,
-        grant_id: randomUUID(),
-        installation_id: randomUUID(),
-        subject_id: randomUUID(),
-        tenant_id: TENANT,
-        scopes: [
-          "tasks:create",
-          "tasks:read",
-          "tasks:cancel",
-          "entitlements:read",
-        ],
-        expires_at: NOW + 86_400_000,
-        authorization_expires_at: NOW + 30 * 86_400_000,
-      }),
-    ).rejects.toThrow("src/private-credential-file.ts");
-    await expect(readHostedTaskCredential(join(dir, "t.json"))).rejects.toThrow(
-      "src/private-credential-file.ts",
-    );
-    await expect(
-      saveHostedSupervisorCredential(join(dir, "s.json"), {
-        version: 1,
-        server_url: "https://hosted.example",
-        credential: `sfsuper_${"b".repeat(43)}`,
-        supervisor_id: SUPERVISOR,
-        worker_id: WORKER,
-        tenant_id: TENANT,
-        scopes: [
-          "supervisor:claim",
-          "supervisor:renew",
-          "supervisor:report",
-          "supervisor:cleanup",
-        ],
-        expires_at: NOW + 3_600_000,
-        authorization_expires_at: NOW + 86_400_000,
-      }),
-    ).rejects.toThrow("src/private-credential-file.ts");
-    await expect(
-      readHostedSupervisorCredential(join(dir, "s.json")),
-    ).rejects.toThrow("src/private-credential-file.ts");
+    const taskPath = join(dir, "task.json");
+    const task = {
+      version: 1 as const,
+      server_url: "https://hosted.example",
+      credential: `sfexec_${"a".repeat(43)}`,
+      grant_id: randomUUID(),
+      installation_id: randomUUID(),
+      subject_id: randomUUID(),
+      tenant_id: TENANT,
+      scopes: [
+        "tasks:create",
+        "tasks:read",
+        "tasks:cancel",
+        "entitlements:read",
+      ] as ["tasks:create", "tasks:read", "tasks:cancel", "entitlements:read"],
+      expires_at: NOW + 86_400_000,
+      authorization_expires_at: NOW + 30 * 86_400_000,
+    };
+    saveHostedTaskCredential(taskPath, task);
+    expect(readHostedTaskCredential(taskPath)).toEqual(task);
+    // Cross-audience files never parse as the other credential.
+    expect(() => readHostedSupervisorCredential(taskPath)).toThrow();
+    const superPath = join(dir, "supervisor.json");
+    const supervisor = {
+      version: 1 as const,
+      server_url: "https://hosted.example",
+      credential: `sfsuper_${"b".repeat(43)}`,
+      supervisor_id: SUPERVISOR,
+      worker_id: WORKER,
+      tenant_id: TENANT,
+      scopes: [
+        "supervisor:claim",
+        "supervisor:renew",
+        "supervisor:report",
+        "supervisor:cleanup",
+      ] as [
+        "supervisor:claim",
+        "supervisor:renew",
+        "supervisor:report",
+        "supervisor:cleanup",
+      ],
+      expires_at: NOW + 3_600_000,
+      authorization_expires_at: NOW + 86_400_000,
+    };
+    saveHostedSupervisorCredential(superPath, supervisor);
+    expect(readHostedSupervisorCredential(superPath)).toEqual(supervisor);
+    expect(() => readHostedTaskCredential(superPath)).toThrow();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("supervisor rotation enforces a durable idempotency key on the supervised path", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "hosted-rotate-"));
+  try {
+    const seen: string[] = [];
+    const fixture = api((request) => {
+      seen.push(request.headers.get("idempotency-key") ?? "");
+      return json({ rotated: true });
+    });
+    try {
+      const client = new SupervisorClient(
+        fixture.origin,
+        `sfsuper_${"b".repeat(43)}`,
+        TENANT,
+      );
+      const pending = join(dir, "rotate-pending.json");
+      // First call writes one durable key; a lost-reply retry with a FRESH
+      // caller key still reuses the durable pending key (never replaced).
+      // Fixture acks without a successor credential, so the pending key is
+      // retained for the follow-up retry (server replays within its window).
+      await client.rotate(randomUUID(), pending);
+      const first = seen.at(-1);
+      expect(first).toMatch(/^[a-zA-Z0-9_.:-]{1,128}$/);
+      await client.rotate(randomUUID(), pending);
+      expect(seen.at(-1)).toBe(first);
+    } finally {
+      fixture.close();
+    }
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
