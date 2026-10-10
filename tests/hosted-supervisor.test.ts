@@ -12,6 +12,7 @@ import {
 } from "../src/cli/hosted";
 import { loadConfig } from "../src/config";
 import { Coordinator } from "../src/coordinator";
+import { hostedBootTimeMs } from "../src/hosted-child";
 import {
   HostedApiError,
   type HostedTask,
@@ -2397,11 +2398,36 @@ test("runtime env and logs carry no bearer, provider, repo or model credentials"
       const record = h.provider.recordFor(vm.id)!;
       expect(identityMatches(record)).toBe(true);
       const environment = readFileSync(`/proc/${record.pid}/environ`, "utf8");
-      expect(environment.split("\0").filter(Boolean).sort()).toEqual([
+      const entries = environment.split("\0").filter(Boolean).sort();
+      const byKey = Object.fromEntries(
+        entries.map((entry) => {
+          const index = entry.indexOf("=");
+          return [entry.slice(0, index), entry.slice(index + 1)];
+        }),
+      );
+      const leaseBootMs = Number(byKey.SWARMFORGE_HOSTED_LEASE_BOOT_MS);
+      const absoluteBootMs = Number(byKey.SWARMFORGE_HOSTED_ABSOLUTE_BOOT_MS);
+      // Exact allowlist: the three pre-existing vars plus the two approved
+      // watchdog boot-clock deadline vars (no bearer/secret entries allowed).
+      expect(entries).toEqual([
         "PATH=/usr/bin:/bin",
+        `SWARMFORGE_HOSTED_ABSOLUTE_BOOT_MS=${byKey.SWARMFORGE_HOSTED_ABSOLUTE_BOOT_MS}`,
         "SWARMFORGE_HOSTED_DURATION=5000",
+        `SWARMFORGE_HOSTED_LEASE_BOOT_MS=${byKey.SWARMFORGE_HOSTED_LEASE_BOOT_MS}`,
         "TZ=UTC",
       ]);
+      // Both deadlines are safe finite positive integers with valid ordering
+      // against the actual shared boot clock: boot < lease <= absolute.
+      for (const value of [leaseBootMs, absoluteBootMs]) {
+        expect(/^\d{1,16}$/.test(String(value))).toBe(true);
+        expect(Number.isSafeInteger(value)).toBe(true);
+        expect(value).toBeGreaterThan(0);
+      }
+      expect(leaseBootMs).toBeLessThanOrEqual(absoluteBootMs);
+      expect(absoluteBootMs - hostedBootTimeMs()).toBeLessThanOrEqual(
+        3_600_000,
+      );
+      expect(leaseBootMs).toBeGreaterThan(hostedBootTimeMs() - 60_000);
       expect(environment).not.toMatch(
         /sfsuper_|sfexec_|provider-secret|model-secret|repo-secret/i,
       );
