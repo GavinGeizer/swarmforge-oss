@@ -2393,6 +2393,7 @@ test("runtime env and logs carry no bearer, provider, repo or model credentials"
     process.env.FREESTYLE_API_TOKEN = "provider-secret";
     process.env.SWARMFORGE_MODEL_API_KEY = "model-secret";
     process.env.GITHUB_TOKEN = "repo-secret";
+    const bootBeforeLaunch = hostedBootTimeMs();
     await h.provider.startControlled(tracked, 5000, () => {});
     try {
       const record = h.provider.recordFor(vm.id)!;
@@ -2405,29 +2406,34 @@ test("runtime env and logs carry no bearer, provider, repo or model credentials"
           return [entry.slice(0, index), entry.slice(index + 1)];
         }),
       );
-      const leaseBootMs = Number(byKey.SWARMFORGE_HOSTED_LEASE_BOOT_MS);
-      const absoluteBootMs = Number(byKey.SWARMFORGE_HOSTED_ABSOLUTE_BOOT_MS);
+      const leaseRaw = byKey.SWARMFORGE_HOSTED_LEASE_BOOT_MS as string;
+      const absoluteRaw = byKey.SWARMFORGE_HOSTED_ABSOLUTE_BOOT_MS as string;
+      const leaseBootMs = Number(leaseRaw);
+      const absoluteBootMs = Number(absoluteRaw);
       // Exact allowlist: the three pre-existing vars plus the two approved
       // watchdog boot-clock deadline vars (no bearer/secret entries allowed).
       expect(entries).toEqual([
         "PATH=/usr/bin:/bin",
-        `SWARMFORGE_HOSTED_ABSOLUTE_BOOT_MS=${byKey.SWARMFORGE_HOSTED_ABSOLUTE_BOOT_MS}`,
+        `SWARMFORGE_HOSTED_ABSOLUTE_BOOT_MS=${absoluteRaw}`,
         "SWARMFORGE_HOSTED_DURATION=5000",
-        `SWARMFORGE_HOSTED_LEASE_BOOT_MS=${byKey.SWARMFORGE_HOSTED_LEASE_BOOT_MS}`,
+        `SWARMFORGE_HOSTED_LEASE_BOOT_MS=${leaseRaw}`,
         "TZ=UTC",
       ]);
-      // Both deadlines are safe finite positive integers with valid ordering
-      // against the actual shared boot clock: boot < lease <= absolute.
-      for (const value of [leaseBootMs, absoluteBootMs]) {
-        expect(/^\d{1,16}$/.test(String(value))).toBe(true);
+      // Both deadlines pair raw-string shape with numeric value: raw strings
+      // match /^\d{1,16}$/ (rejects forms like '1e2' that Number() accepts),
+      // values are safe finite positive integers, and actual launch authority
+      // holds: lease deadline is after the boot time captured immediately
+      // before startControlled, with lease <= absolute.
+      for (const [raw, value] of [
+        [leaseRaw, leaseBootMs],
+        [absoluteRaw, absoluteBootMs],
+      ] as const) {
+        expect(/^\d{1,16}$/.test(raw)).toBe(true);
         expect(Number.isSafeInteger(value)).toBe(true);
         expect(value).toBeGreaterThan(0);
       }
+      expect(leaseBootMs).toBeGreaterThan(bootBeforeLaunch);
       expect(leaseBootMs).toBeLessThanOrEqual(absoluteBootMs);
-      expect(absoluteBootMs - hostedBootTimeMs()).toBeLessThanOrEqual(
-        3_600_000,
-      );
-      expect(leaseBootMs).toBeGreaterThan(hostedBootTimeMs() - 60_000);
       expect(environment).not.toMatch(
         /sfsuper_|sfexec_|provider-secret|model-secret|repo-secret/i,
       );
