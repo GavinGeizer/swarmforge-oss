@@ -34,17 +34,26 @@ test("single-use worker enrollment and encrypted retry are distinct from devices
     assert.equal((await h.request("/v1/cli/me", bearer(worker))).status, 401);
     assert.equal((await h.request("/v1/me", bearer(worker))).status, 401);
     assert.equal((await h.register(invite)).status, 409);
-    assert.equal(
-      (
-        await h.request(
-          `/v1/tenants/${a.tenant}/tasks`,
-          bearer(worker),
-          "POST",
-          {},
-        )
-      ).status,
-      404,
+    // Wrong-audience credential against task admission: valid controlled
+    // task JSON + Idempotency-Key must be rejected 401 with zero admission
+    // side effects (no task, reservation, outbox, operation, or meter rows).
+    const wrongAudience = await h.request(
+      `/v1/tenants/${a.tenant}/tasks`,
+      { ...bearer(worker), "idempotency-key": crypto.randomUUID() },
+      "POST",
+      {
+        request_id: crypto.randomUUID(),
+        worker_id: worker.worker_id,
+        execution_class: "controlled",
+        runtime_ms: 1000,
+        controlled_duration_ms: 100,
+      },
     );
+    assert.equal(wrongAudience.status, 401);
+    assert.equal(await count(h, "hosted_tasks"), 0);
+    assert.equal(await count(h, "hosted_reservations"), 0);
+    assert.equal(await count(h, "hosted_outbox"), 0);
+    assert.equal(await count(h, "hosted_operations"), 0);
     assert.equal(
       (
         await h.request(

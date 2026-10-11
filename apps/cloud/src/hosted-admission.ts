@@ -309,7 +309,7 @@ async function admit(ctx: Context, tenant: string): Promise<Response> {
       );
     if (remaining < BigInt(input.runtime_ms))
       throw new HttpError(
-        409,
+        403,
         "allowance_exhausted",
         "Metered allowance is exhausted",
       );
@@ -633,7 +633,7 @@ async function diagnoseAdmission(
           .bind(tenant, policy!.entitlement_id, now, now + input.runtime_ms)
           .first<{ allowance_id: string }>();
         return new HttpError(
-          409,
+          403,
           anyCovered ? "allowance_exhausted" : "allowance_unavailable",
           "Metered allowance cannot cover the requested runtime",
         );

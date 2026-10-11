@@ -56,7 +56,10 @@ test("current policy zero allowance cannot borrow a positive historical allowanc
     await h.seedPolicy(a.tenant, { ...policy, allowances: meter("10000") });
     await h.seedPolicy(a.tenant, { ...policy, allowances: meter("0") });
     const r = await admit(h, a, w.worker_id);
-    expect(r.status).toBe(409);
+    expect(r.status).toBe(403);
+    expect(((await r.json()) as { error: { code: string } }).error.code).toBe(
+      "allowance_exhausted",
+    );
     expect(
       h.db.sqlite.query("SELECT count(*) n FROM hosted_tasks").get(),
     ).toEqual({ n: 0 });
@@ -299,6 +302,42 @@ test("full-meter admission replay is identical 202 without a second reservation"
   }
 });
 
+test("allowance_exhausted returns 403 on both advisory and post-batch diagnostic paths", async () => {
+  const h = await fixture();
+  try {
+    const a = await h.login();
+    const w = await h.enrolledWorker(a);
+    const w2 = await h.enrolledWorker(a);
+    await h.seedPolicy(a.tenant, { ...policy, allowances: meter("1000") });
+    // Advisory path: full headroom consumed by the first admission, so the
+    // second admission's advisory remaining-check denies 403 exhausted.
+    expect((await admit(h, a, w.worker_id)).status).toBe(202);
+    const denied = await admit(h, a, w2.worker_id);
+    expect(denied.status).toBe(403);
+    expect(
+      ((await denied.json()) as { error: { code: string } }).error.code,
+    ).toBe("allowance_exhausted");
+    // Post-batch diagnostic path: same exhausted ledger state re-observed
+    // after the batch elects nothing reports 403 exhausted (not 409), while
+    // allowance_unavailable and concurrency conflicts stay 409.
+    const probe = await admit(h, a, w2.worker_id);
+    expect(probe.status).toBe(403);
+    expect(
+      ((await probe.json()) as { error: { code: string } }).error.code,
+    ).toBe("allowance_exhausted");
+    expect(
+      h.db.sqlite.query("SELECT count(*) n FROM hosted_tasks").get(),
+    ).toEqual({ n: 1 });
+    expect(
+      h.db.sqlite
+        .query("SELECT reserved_quantity FROM hosted_allowances")
+        .get(),
+    ).toEqual({ reserved_quantity: "1000" });
+  } finally {
+    h.close();
+  }
+});
+
 test("any missing required capability denies admission with 403", async () => {
   const h = await fixture();
   try {
@@ -350,7 +389,7 @@ test("SQL int64 meter arithmetic reaches the canonical boundary exactly and refu
       arithmetic_type: "integer",
       total: "9007199254740991",
     });
-    expect((await admit(h, a, w2.worker_id)).status).toBe(409);
+    expect((await admit(h, a, w2.worker_id)).status).toBe(403);
     expect(() =>
       h.db.sqlite
         .query(
