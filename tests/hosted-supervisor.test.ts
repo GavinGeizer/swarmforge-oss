@@ -801,23 +801,25 @@ test("concurrent distinct tasks journal their own actual child identities before
   const secondGate = new Promise<void>((resolve) => {
     releaseSecond = resolve;
   });
-  class DelayedProvider extends ControlledProcessProvider {
-    calls = 0;
-    override async startControlled(
-      ...args: Parameters<ControlledProcessProvider["startControlled"]>
-    ) {
-      this.calls++;
-      if (this.calls === 2) await secondGate;
-      else await Bun.sleep(50);
-      return super.startControlled(...args);
-    }
-  }
   const first = taskBody({ controlled_duration_ms: 5000 }) as HostedTask;
   const second = taskBody({
     task_id: randomUUID(),
     reservation_id: randomUUID(),
     controlled_duration_ms: 5000,
   }) as HostedTask;
+  class DelayedProvider extends ControlledProcessProvider {
+    override async startControlled(
+      ...args: Parameters<ControlledProcessProvider["startControlled"]>
+    ) {
+      const worker = args[0] as { task_id: string };
+      // Bind the delay to the intended task IDENTITY, never to invocation
+      // count: concurrent ACK/staging may legitimately reach the provider in
+      // either order, and a count-based gate would deadlock the second call.
+      if (worker.task_id === second.task_id) await secondGate;
+      else await Bun.sleep(50);
+      return super.startControlled(...args);
+    }
+  }
   const tasks = new Map<string, HostedTask>([
     [first.task_id, first],
     [second.task_id, second],
@@ -854,6 +856,104 @@ test("concurrent distinct tasks journal their own actual child identities before
     expect(identityMatches(secondRecord)).toBe(true);
   } finally {
     releaseSecond();
+    await secondLaunch?.catch(() => {});
+    await supervisor.close();
+    await h.coordinator.stop();
+    h.store.close();
+    fixture.close();
+  }
+});
+
+test("concurrent task journals remain correctly bound when the first ACK waits for the second", async () => {
+  let releaseSecond!: () => void;
+  const secondGate = new Promise<void>((resolve) => {
+    releaseSecond = resolve;
+  });
+  const first = taskBody({ controlled_duration_ms: 5000 }) as HostedTask;
+  const second = taskBody({
+    task_id: randomUUID(),
+    reservation_id: randomUUID(),
+    controlled_duration_ms: 5000,
+  }) as HostedTask;
+  let markSecond!: () => void;
+  const sawSecond = new Promise<void>((resolve) => {
+    markSecond = resolve;
+  });
+  class GatedProvider extends ControlledProcessProvider {
+    override async startControlled(
+      ...args: Parameters<ControlledProcessProvider["startControlled"]>
+    ) {
+      const worker = args[0] as { task_id: string };
+      if (worker.task_id === first.task_id) {
+        // Wait for the other task to reach the provider before applying the
+        // task-specific delay.
+        await sawSecond;
+      } else {
+        markSecond();
+      }
+      // Delay gate is bound to the task IDENTITY, never invocation count.
+      if (worker.task_id === second.task_id) await secondGate;
+      else await Bun.sleep(50);
+      return super.startControlled(...args);
+    }
+  }
+  const tasks = new Map<string, HostedTask>([
+    [first.task_id, first],
+    [second.task_id, second],
+  ]);
+  // Gate the intended-first task's ACK response behind the intended-second
+  // task's ACK: proves per-task journal binding even when the first ACK waits
+  // for the second (no claim about OS launch or response-delivery order).
+  let secondAcked = false;
+  let releaseFirstAck!: () => void;
+  const firstAckGate = new Promise<void>((resolve) => {
+    releaseFirstAck = resolve;
+  });
+  const fixture = api(async (request) => {
+    const pathname = new URL(request.url).pathname;
+    const taskId = pathname.split("/").at(-2)!;
+    if (pathname.endsWith("/ack")) {
+      if (taskId === first.task_id) {
+        await firstAckGate;
+      } else {
+        secondAcked = true;
+        releaseFirstAck();
+      }
+    }
+    return json({
+      task: { ...tasks.get(taskId), state: "running" },
+      directive: "continue",
+      server_time: Date.now(),
+    });
+  });
+  const h = harness(new GatedProvider());
+  const supervisor = supervisorUnderTest(h, fixture.origin);
+  let secondLaunch: Promise<unknown> | undefined;
+  try {
+    const firstLaunch = supervisor.ackAndStart(first);
+    secondLaunch = supervisor.ackAndStart(second);
+    await firstLaunch;
+    releaseSecond();
+    await secondLaunch;
+    // Both tasks must complete and journal their own child identity; the
+    // first ACK actually waited for the second.
+    expect(secondAcked).toBe(true);
+    const firstMapping = h.hostedStore.get(first.task_id)!;
+    const secondMapping = h.hostedStore.get(second.task_id)!;
+    const firstRecord = h.provider.recordFor(
+      h.store.get(firstMapping.local_worker_id).vm_id!,
+    )!;
+    const secondRecord = h.provider.recordFor(
+      h.store.get(secondMapping.local_worker_id).vm_id!,
+    )!;
+    expect(firstMapping.child_pid).toBe(firstRecord.pid);
+    expect(secondMapping.child_pid).toBe(secondRecord.pid);
+    expect(secondMapping.child_pid).not.toBe(firstMapping.child_pid);
+    expect(identityMatches(firstRecord)).toBe(true);
+    expect(identityMatches(secondRecord)).toBe(true);
+  } finally {
+    releaseSecond();
+    releaseFirstAck();
     await secondLaunch?.catch(() => {});
     await supervisor.close();
     await h.coordinator.stop();
@@ -2434,6 +2534,11 @@ test("runtime env and logs carry no bearer, provider, repo or model credentials"
       }
       expect(leaseBootMs).toBeGreaterThan(bootBeforeLaunch);
       expect(leaseBootMs).toBeLessThanOrEqual(absoluteBootMs);
+      // Restored L1 bound (dropped by env-contract refinement 1830): production
+      // refuses an absolute launch deadline more than 1h beyond boot, so the
+      // child's absolute boot-clock deadline must stay within that cap measured
+      // from the boot time captured immediately before startControlled.
+      expect(absoluteBootMs - bootBeforeLaunch).toBeLessThanOrEqual(3_600_000);
       expect(environment).not.toMatch(
         /sfsuper_|sfexec_|provider-secret|model-secret|repo-secret/i,
       );
