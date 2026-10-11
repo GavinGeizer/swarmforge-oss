@@ -797,6 +797,10 @@ test("hosted schema checkpoint: clean install and 2B.1 upgrade", async () => {
     const invite = await h.enroll(a);
     const reg = await h.register(invite);
     assert.equal(reg.status, 201);
+    // Consume the registration body before the migration burst: a Miniflare
+    // dispatchFetch response left unread across a burst of D1 prepare().run()
+    // calls becomes disturbed and the later json() throws "Body is unusable".
+    const worker = (await reg.json()) as { credential: string };
     const before = {
       links: (await h.db
         .prepare("SELECT count(*) n FROM cli_links")
@@ -846,7 +850,6 @@ test("hosted schema checkpoint: clean install and 2B.1 upgrade", async () => {
       ).status,
       200,
     );
-    const worker = (await reg.json()) as { credential: string };
     assert.equal(
       (
         await h.request("/v1/workers/me", {
