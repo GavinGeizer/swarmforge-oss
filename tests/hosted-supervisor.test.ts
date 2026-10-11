@@ -864,7 +864,7 @@ test("concurrent distinct tasks journal their own actual child identities before
   }
 });
 
-test("concurrent tasks complete and journal own child identities when ACK and launch order are reversed", async () => {
+test("concurrent task journals remain correctly bound when the first ACK waits for the second", async () => {
   let releaseSecond!: () => void;
   const secondGate = new Promise<void>((resolve) => {
     releaseSecond = resolve;
@@ -879,14 +879,14 @@ test("concurrent tasks complete and journal own child identities when ACK and la
   const sawSecond = new Promise<void>((resolve) => {
     markSecond = resolve;
   });
-  class ReversedProvider extends ControlledProcessProvider {
+  class GatedProvider extends ControlledProcessProvider {
     override async startControlled(
       ...args: Parameters<ControlledProcessProvider["startControlled"]>
     ) {
       const worker = args[0] as { task_id: string };
       if (worker.task_id === first.task_id) {
-        // Hold the intended-first task until the intended-second task has
-        // been seen, deterministically forcing the reversed launch order.
+        // Wait for the other task to reach the provider before applying the
+        // task-specific delay.
         await sawSecond;
       } else {
         markSecond();
@@ -901,8 +901,9 @@ test("concurrent tasks complete and journal own child identities when ACK and la
     [first.task_id, first],
     [second.task_id, second],
   ]);
-  // Force reversed ACK order: the intended-first task's ACK response is held
-  // until the intended-second task's ACK has been served.
+  // Gate the intended-first task's ACK response behind the intended-second
+  // task's ACK: proves per-task journal binding even when the first ACK waits
+  // for the second (no claim about OS launch or response-delivery order).
   let secondAcked = false;
   let releaseFirstAck!: () => void;
   const firstAckGate = new Promise<void>((resolve) => {
@@ -925,7 +926,7 @@ test("concurrent tasks complete and journal own child identities when ACK and la
       server_time: Date.now(),
     });
   });
-  const h = harness(new ReversedProvider());
+  const h = harness(new GatedProvider());
   const supervisor = supervisorUnderTest(h, fixture.origin);
   let secondLaunch: Promise<unknown> | undefined;
   try {
@@ -934,7 +935,8 @@ test("concurrent tasks complete and journal own child identities when ACK and la
     await firstLaunch;
     releaseSecond();
     await secondLaunch;
-    // Both task orders must complete; reversed order actually observed.
+    // Both tasks must complete and journal their own child identity; the
+    // first ACK actually waited for the second.
     expect(secondAcked).toBe(true);
     const firstMapping = h.hostedStore.get(first.task_id)!;
     const secondMapping = h.hostedStore.get(second.task_id)!;
