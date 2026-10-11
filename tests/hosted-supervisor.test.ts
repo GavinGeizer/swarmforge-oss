@@ -2534,6 +2534,11 @@ test("runtime env and logs carry no bearer, provider, repo or model credentials"
       }
       expect(leaseBootMs).toBeGreaterThan(bootBeforeLaunch);
       expect(leaseBootMs).toBeLessThanOrEqual(absoluteBootMs);
+      // Restored L1 bound (dropped by env-contract refinement 1830): production
+      // refuses an absolute launch deadline more than 1h beyond boot, so the
+      // child's absolute boot-clock deadline must stay within that cap measured
+      // from the boot time captured immediately before startControlled.
+      expect(absoluteBootMs - bootBeforeLaunch).toBeLessThanOrEqual(3_600_000);
       expect(environment).not.toMatch(
         /sfsuper_|sfexec_|provider-secret|model-secret|repo-secret/i,
       );
