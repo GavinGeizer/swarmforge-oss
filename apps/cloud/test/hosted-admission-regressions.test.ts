@@ -302,7 +302,7 @@ test("full-meter admission replay is identical 202 without a second reservation"
   }
 });
 
-test("allowance_exhausted returns 403 on both advisory and post-batch diagnostic paths", async () => {
+test("advisory allowance exhaustion and retries return 403 without a second reservation", async () => {
   const h = await fixture();
   try {
     const a = await h.login();
@@ -317,9 +317,7 @@ test("allowance_exhausted returns 403 on both advisory and post-batch diagnostic
     expect(
       ((await denied.json()) as { error: { code: string } }).error.code,
     ).toBe("allowance_exhausted");
-    // Post-batch diagnostic path: same exhausted ledger state re-observed
-    // after the batch elects nothing reports 403 exhausted (not 409), while
-    // allowance_unavailable and concurrency conflicts stay 409.
+    // A safe retry remains an advisory denial without another reservation.
     const probe = await admit(h, a, w2.worker_id);
     expect(probe.status).toBe(403);
     expect(
@@ -337,6 +335,71 @@ test("allowance_exhausted returns 403 on both advisory and post-batch diagnostic
     h.close();
   }
 });
+
+for (const scenario of ["exhausted", "unavailable"] as const) {
+  test(`admission diagnoses an allowance becoming ${scenario} at the batch boundary without dependent writes`, async () => {
+    const h = await fixture();
+    try {
+      const a = await h.login();
+      const w = await h.enrolledWorker(a);
+      await h.seedPolicy(a.tenant, { ...policy, allowances: meter("1000") });
+      let reachedAdmissionBatch = false;
+      h.db.beforeBatch = (statements) => {
+        expect(
+          statements.some((statement) =>
+            statement.sql.includes("INSERT INTO hosted_tasks"),
+          ),
+        ).toBe(true);
+        h.db.beforeBatch = undefined;
+        reachedAdmissionBatch = true;
+        // The advisory read saw available capacity. Change the real ledger
+        // before its atomic batch, as another settlement or expiry would.
+        if (scenario === "exhausted")
+          h.db.sqlite
+            .query("UPDATE hosted_allowances SET consumed_quantity='1000'")
+            .run();
+        else
+          h.db.sqlite
+            .query("UPDATE hosted_allowances SET period_start=1,period_end=2")
+            .run();
+      };
+      const response = await admit(h, a, w.worker_id);
+      expect(reachedAdmissionBatch).toBe(true);
+      expect(response.status).toBe(scenario === "exhausted" ? 403 : 409);
+      expect(
+        ((await response.json()) as { error: { code: string } }).error.code,
+      ).toBe(`allowance_${scenario}`);
+      for (const table of [
+        "hosted_tasks",
+        "hosted_reservations",
+        "hosted_outbox",
+        "hosted_operations",
+      ])
+        expect(
+          h.db.sqlite.query(`SELECT count(*) n FROM ${table}`).get(),
+        ).toEqual({ n: 0 });
+      expect(
+        h.db.sqlite
+          .query(
+            "SELECT count(*) n FROM audit_events WHERE action='hosted.task_admitted'",
+          )
+          .get(),
+      ).toEqual({ n: 0 });
+      expect(
+        h.db.sqlite
+          .query(
+            "SELECT reserved_quantity,consumed_quantity FROM hosted_allowances",
+          )
+          .get(),
+      ).toEqual({
+        reserved_quantity: "0",
+        consumed_quantity: scenario === "exhausted" ? "1000" : "0",
+      });
+    } finally {
+      h.close();
+    }
+  });
+}
 
 test("any missing required capability denies admission with 403", async () => {
   const h = await fixture();
@@ -389,7 +452,11 @@ test("SQL int64 meter arithmetic reaches the canonical boundary exactly and refu
       arithmetic_type: "integer",
       total: "9007199254740991",
     });
-    expect((await admit(h, a, w2.worker_id)).status).toBe(403);
+    const exhausted = await admit(h, a, w2.worker_id);
+    expect(exhausted.status).toBe(403);
+    expect(
+      ((await exhausted.json()) as { error: { code: string } }).error.code,
+    ).toBe("allowance_exhausted");
     expect(() =>
       h.db.sqlite
         .query(

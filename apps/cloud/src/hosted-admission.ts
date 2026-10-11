@@ -633,7 +633,7 @@ async function diagnoseAdmission(
           .bind(tenant, policy!.entitlement_id, now, now + input.runtime_ms)
           .first<{ allowance_id: string }>();
         return new HttpError(
-          403,
+          anyCovered ? 403 : 409,
           anyCovered ? "allowance_exhausted" : "allowance_unavailable",
           "Metered allowance cannot cover the requested runtime",
         );
