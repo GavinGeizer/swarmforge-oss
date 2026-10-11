@@ -187,7 +187,10 @@ try {
         if (mode === "always") throw new Error("synthetic ack network loss");
         if (mode === "once" && ackCalls === 1) {
           const response = await baseFetch(url, init);
-          void response;
+          // Consume the real (small) reply body before deliberately failing,
+          // so the lost-ACK simulation leaks no unconsumed stream. The reply
+          // is discarded, never fed back to the client as a fake delivery.
+          await response.arrayBuffer();
           throw new Error("synthetic lost ack reply");
         }
       }
@@ -580,6 +583,13 @@ async function withHarness(
     await rm(directory, { recursive: true, force: true });
     if (uncertainties.length) cleanupUncertainty = uncertainties.join("; ");
   }
+  // Teardown uncertainty must fail the qualification, never be hidden. A
+  // SIGKILL of the driver parent is NOT proof about a foreign grandchild, so
+  // the only accepted proof remains the tested graceful production stop.
+  if (failure && cleanupUncertainty)
+    throw new Error(
+      `${String(failure)}; Driver cleanup uncertainty: ${cleanupUncertainty}`,
+    );
   if (failure) throw failure;
   if (cleanupUncertainty)
     throw new Error(`Driver cleanup uncertainty: ${cleanupUncertainty}`);
