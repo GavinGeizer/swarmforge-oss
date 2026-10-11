@@ -6,10 +6,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import {
-  dispatchFixture,
-  type dispatchPolicy,
-} from "./hosted-dispatch-helpers.ts";
+import type { PolicyInput } from "../src/hosted-entitlements.ts";
+import { fixture } from "./machine-helpers.ts";
 
 // End-to-end hosted lifecycle qualification.
 //
@@ -18,9 +16,11 @@ import {
 //     production Worker handlers with in-process fetch and bun:sqlite.
 //   * worker-client.integration.ts runs a real Bun client against real
 //     workerd/D1 through a Node loopback HTTP bridge.
-// This file joins them: the production Worker runs under real local
-// Miniflare/workerd with real D1, reached over the same Node loopback HTTP
-// bridge pattern, and the real Bun HostedSupervisor + Coordinator +
+// This file joins them on the actual DEFAULT production worker: the existing
+// machine-helpers.ts fixture bundles and runs src/index.ts createWorker (the
+// real default route/middleware, not a hosted-only router source) under real
+// local Miniflare/workerd with real D1, reached over the same Node loopback
+// HTTP bridge pattern, while the real Bun HostedSupervisor + Coordinator +
 // ControlledProcessProvider + HostedTaskClient + SupervisorClient run in an
 // actual Bun subprocess with protected temporary SQLite journals and a real
 // inert child process. The GitHub identity fixture is synthetic (user100)
@@ -48,7 +48,7 @@ const policy = {
       allowed_quantity: "120000",
     },
   ],
-} satisfies typeof dispatchPolicy;
+} satisfies PolicyInput;
 
 interface DriverInput {
   origin: string;
@@ -192,11 +192,15 @@ try {
         }
       : null;
     if (mapping && mapping.child_pid) {
+      // Child absence is only proven by a real ESRCH. EPERM (alive but not
+      // signalable) or any other/unknown error must fail the qualification
+      // rather than be reported as a confirmed dead child.
       try {
         process.kill(mapping.child_pid, 0);
         out.pid_dead = false;
-      } catch {
-        out.pid_dead = true;
+      } catch (error) {
+        if (error && error.code === "ESRCH") out.pid_dead = true;
+        else throw error;
       }
     }
   }
@@ -275,27 +279,79 @@ async function runDriver(
   return { child, result };
 }
 
+type CloudFixture = Awaited<ReturnType<typeof fixture>>;
+type Account = Awaited<ReturnType<CloudFixture["login"]>>;
+
+interface SupervisorCredential {
+  credential: string;
+  credential_id: string;
+  supervisor_id: string;
+  worker_id: string;
+  subject_id: string;
+  tenant_id: string;
+  scopes: string[];
+  expires_at: number;
+  authorization_expires_at: number;
+}
+
 interface Setup {
-  h: Awaited<ReturnType<typeof dispatchFixture>>;
-  account: Awaited<
-    ReturnType<Awaited<ReturnType<typeof dispatchFixture>>["login"]>
-  >;
+  h: CloudFixture;
+  account: Account;
   workerId: string;
-  supervisor: Awaited<
-    ReturnType<
-      Awaited<ReturnType<typeof dispatchFixture>>["registerSupervisor"]
-    >
-  >;
+  supervisor: SupervisorCredential;
   taskCredential: string;
 }
 
+// Direct production operator seam (putPolicy) over the fixture's real D1,
+// mirroring the local shorthand used by the existing hosted helpers. No
+// shared-fixture edit: the shorthand lives only in this new test.
+async function seedPolicy(
+  h: CloudFixture,
+  origin: string,
+  tenant: string,
+  input: PolicyInput,
+  operator: string,
+) {
+  const { putPolicy } = await import("../src/hosted-entitlements.ts");
+  const ctx = {
+    env: {
+      DB: h.db,
+      AUTH_SECRET: "test-auth-secret-with-at-least-thirty-two-characters",
+      APP_ORIGIN: origin,
+      WEBSITE_ORIGIN: origin,
+      ENVIRONMENT: "local",
+    },
+    request: new Request(`${origin}/`),
+    request_id: crypto.randomUUID(),
+    route: "operator.policy",
+    actor: operator,
+  };
+  return putPolicy(ctx as never, tenant, input, operator);
+}
+
+// Worker enrollment, policy, supervisor registration, CLI link and execution
+// grant are all exercised through the actual DEFAULT worker routes (h.request)
+// plus the production putPolicy seam, not a hosted-only router source.
 async function setup(origin: string): Promise<Setup> {
-  const h = await dispatchFixture(origin);
+  const h = await fixture(origin);
   const account = await h.login();
-  const worker = await h.enrolledWorker(account);
-  await h.seedPolicy(account.tenant, policy);
-  const supervisor = await h.registerSupervisor(account, worker.worker_id);
-  const device = await h.linkedDevice(account);
+  const enrollment = await h.enroll(account);
+  const registered = await h.register(enrollment);
+  assert.equal(registered.status, 201);
+  const worker = (await registered.json()) as {
+    credential: string;
+    worker_id: string;
+  };
+  await seedPolicy(h, origin, account.tenant, policy, account.user);
+  const supervisorResponse = await h.request(
+    `/v1/tenants/${account.tenant}/supervisors`,
+    { ...account.headers, "idempotency-key": crypto.randomUUID() },
+    "POST",
+    { worker_id: worker.worker_id, name: "integration-supervisor" },
+  );
+  assert.equal(supervisorResponse.status, 201);
+  const supervisor = (await supervisorResponse.json()) as SupervisorCredential;
+  const device = await h.linked(account);
   const granted = await h.request(
     `/v1/tenants/${account.tenant}/cli-installations/${device.installation_id}/execution-authorizations`,
     { ...account.headers, "idempotency-key": crypto.randomUUID() },
