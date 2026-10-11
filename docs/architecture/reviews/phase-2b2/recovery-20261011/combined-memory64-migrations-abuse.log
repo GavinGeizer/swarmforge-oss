@@ -1,0 +1,113 @@
+{"request_id":"1ce1b72f-6640-4704-9c0f-6963c13096b6","route":"/v1/cli-links","method":"POST","status":201}
+{"request_id":"fb0419f5-83ba-4585-aedf-77691c01af39","route":"/v1/cli-links","method":"POST","status":201}
+{"request_id":"671e97a9-44ce-4527-8ee8-146e75816bc4","route":"/v1/cli-links","method":"POST","status":201}
+{"request_id":"b18bd67f-abc2-4740-a3ed-45e02207f126","route":"/v1/cli-links","method":"POST","status":201}
+{"request_id":"14120e62-5af2-4913-8e9e-ed7280ca6694","route":"/v1/cli-links","method":"POST","status":201}
+{"request_id":"6cd9cdff-ac4f-4f16-bef2-9b229134c3d5","route":"/v1/cli-links","method":"POST","status":201}
+{"request_id":"2243c681-58bf-437f-8894-83078bcb3b97","route":"/v1/cli-links","method":"POST","status":201}
+{"request_id":"3d729a57-df11-4b31-a06f-acd720c82894","route":"/v1/cli-links","method":"POST","status":201}
+{"request_id":"0bcaa249-eb16-4e17-afef-52cb3cc75a30","route":"/v1/cli-links","method":"POST","status":201}
+{"request_id":"aa41ffd1-2b8f-43f5-b35f-6742575f6132","route":"/v1/cli-links","method":"POST","status":201}
+{"request_id":"672ce73d-4c1b-4754-a552-4cde5e349f0b","route":"/v1/cli-links","method":"POST","status":429}
+{"request_id":"17743dea-8f72-4afe-a906-c701d5acef80","route":"/v1/auth/github/callback","method":"GET","status":400}
+{"request_id":"f84960a2-92c3-4b79-9b36-aa7ff384a466","route":"/v1/auth/github/callback","method":"GET","status":400}
+{"request_id":"20715f0a-817f-437c-b406-f94dadaa0656","route":"/v1/auth/github/callback","method":"GET","status":400}
+{"request_id":"be6a4cb9-cca6-4b92-9ab0-d52894f9a277","route":"/v1/auth/github/callback","method":"GET","status":400}
+{"request_id":"7dd79d24-d0a9-4e6f-bc1e-8386a0120c91","route":"/v1/auth/github/callback","method":"GET","status":400}
+{"request_id":"be24b1b9-434e-41b0-b1d1-2af4213f26aa","route":"/v1/auth/github/callback","method":"GET","status":400}
+{"request_id":"1a12fdff-d825-47c3-b175-da9ad2e5b4cf","route":"/v1/auth/github/callback","method":"GET","status":400}
+{"request_id":"4632874c-d8a5-4dd3-a2fe-87ee3d60382e","route":"/v1/auth/github/callback","method":"GET","status":400}
+{"request_id":"49b705b8-275c-4173-b876-e79fe053af9a","route":"/v1/auth/github/callback","method":"GET","status":400}
+{"request_id":"437242b6-0126-407e-96c2-2ca2f74d2136","route":"/v1/auth/github/callback","method":"GET","status":400}
+{"request_id":"12c38bbf-c511-4018-b6b1-850c6962206c","route":"/v1/auth/github/callback","method":"GET","status":400}
+{"request_id":"f0ee1df0-a45a-4faf-8adb-4d19cae0d2d1","route":"/v1/auth/github/callback","method":"GET","status":400}
+{"request_id":"2be4f2a4-f68c-45c3-a026-f6c2a707a32b","route":"/v1/auth/github/callback","method":"GET","status":400}
+{"request_id":"f88d3f1a-7007-42d9-95c0-b23043e6716a","route":"/v1/auth/github/callback","method":"GET","status":400}
+{"request_id":"5c702d56-5c19-40cd-af62-b5ac9190f2db","route":"/v1/auth/github/callback","method":"GET","status":400}
+{"request_id":"e3330f06-44e7-4413-9844-08cd0f7c7165","route":"/v1/auth/github/callback","method":"GET","status":400}
+{"request_id":"7e651046-58eb-4a1b-95de-9e3b8c8a7d50","route":"/v1/auth/github/callback","method":"GET","status":400}
+{"request_id":"c4489262-6026-43f7-a49b-831467cd1209","route":"/v1/auth/github/callback","method":"GET","status":400}
+{"request_id":"27fb1476-dff8-458a-a70b-655c2232d11d","route":"/v1/auth/github/callback","method":"GET","status":400}
+{"request_id":"a9d7ef5d-264e-4a09-9515-8462a1187407","route":"/v1/auth/github/callback","method":"GET","status":400}
+{"request_id":"1a36c724-373e-4906-94e7-566f45665c34","route":"/v1/auth/github","method":"GET","status":503}
+{"request_id":"5ce39320-5472-4684-9656-fa8a0f4e06d1","route":"/v1/cli/me","method":"GET","status":503}
+✔ public starts/polls and failure audit writes are bounded, untrusted rate headers cannot bypass budgets, limiter failure denies closed (1771.862798ms)
+✔ failure-audit budget saturates at exactly eight per window and rolls over at the minute boundary (1222.243179ms)
+{"request_id":"c14f8e86-6dff-42f3-9d1b-82e735d99f19","route":"/v1/auth/github","method":"GET","status":302}
+{"request_id":"f1425ae8-5ad5-4f6e-8bab-0ba80707c030","route":"/v1/auth/github/callback","method":"GET","status":302}
+{"request_id":"a7b1bf6a-9c5c-4656-8101-f4f0ef263052","route":"/v1/me","method":"GET","status":200}
+{"request_id":"701a817c-7910-4391-933a-1d7a970109bf","route":"/v1/session","method":"GET","status":200}
+{"request_id":"e0239350-41a7-4676-ba2e-5252e565af20","route":"/v1/cli-links","method":"POST","status":201}
+{"request_id":"e3e79763-b3dd-4b14-91ee-6ee1eb6c01f8","route":"/v1/cli-links/:link_id","method":"POST","status":200}
+{"request_id":"eb93c8a4-79ab-4770-a9ec-ee227f22b67a","route":"/v1/cli-links/:link_id","method":"POST","status":200}
+{"request_id":"02cd49d5-4c5d-46ba-9824-de3300aec0fe","route":"/v1/cli-links","method":"POST","status":201}
+{"request_id":"959dbc51-660b-4d4a-b35d-193ef95e1de6","route":"/v1/tenants/:tenant_id/machines","method":"POST","status":201}
+{"request_id":"4962b6a4-b23e-4cbb-8568-189d2609cc11","route":"/v1/cli/me","method":"DELETE","status":200}
+{"request_id":"857defd3-a65a-4f6d-b35e-aa79e75f2f3d","route":"/v1/cli-links/:link_id","method":"GET","status":404}
+{"request_id":"b0183ace-55fa-4634-a164-60563b615100","route":"/v1/workers/register","method":"POST","status":404}
+✔ bounded cleanup deletes expired unconsumed state/caches and preserves identity and revocation evidence (1340.033258ms)
+✔ hosted schema checkpoint: frozen DTOs expose exact protocol names (11.200213ms)
+{"request_id":"f3c121c2-3568-43b8-bfda-f542cd7e4303","route":"/v1/auth/github","method":"GET","status":302}
+{"request_id":"2fbfa5a1-c364-487c-aadd-bbe8857ca2ae","route":"/v1/auth/github/callback","method":"GET","status":302}
+{"request_id":"ac960119-35e2-4a45-a0e8-533db6754242","route":"/v1/me","method":"GET","status":200}
+{"request_id":"8a722b0e-2440-4165-95d8-8102e585a090","route":"/v1/session","method":"GET","status":200}
+{"request_id":"4075c9f3-3567-46bf-95e0-d5c29e02ee67","route":"/v1/cli-links","method":"POST","status":201}
+{"request_id":"683c194e-56fc-4b21-b062-b4451bec0f15","route":"/v1/cli-links/:link_id","method":"POST","status":200}
+{"request_id":"e71b44ca-bf37-48ee-bd7d-b0e83b126b24","route":"/v1/cli-links/:link_id","method":"POST","status":200}
+{"request_id":"0e0f6f93-b91b-4bcd-ab74-5f9b687cb152","route":"/v1/tenants/:tenant_id/machines","method":"POST","status":201}
+{"request_id":"46a1c99f-436e-4f80-bfde-158fe62ee005","route":"/v1/workers/register","method":"POST","status":201}
+✔ hosted schema checkpoint: FK orphans rejected direct and batch with valid other fields (1549.718356ms)
+{"request_id":"c23306a0-80e6-4a81-b3b5-885a66fe7767","route":"/v1/auth/github","method":"GET","status":302}
+{"request_id":"f30964ce-090f-43cc-89b4-8de877831643","route":"/v1/auth/github/callback","method":"GET","status":302}
+{"request_id":"1016d070-2446-4d93-a46a-011c04682ba1","route":"/v1/me","method":"GET","status":200}
+{"request_id":"745734ad-2ad5-4b60-8776-4cc1792c0bb4","route":"/v1/session","method":"GET","status":200}
+{"request_id":"1624c53c-1102-459f-b913-dce0ef375f3f","route":"/v1/cli-links","method":"POST","status":201}
+{"request_id":"6989152a-aa4d-4ade-8f46-76c5b9b9d1f9","route":"/v1/cli-links/:link_id","method":"POST","status":200}
+{"request_id":"0eeb2284-38af-429f-bb40-aa3d713d9c2a","route":"/v1/cli-links/:link_id","method":"POST","status":200}
+{"request_id":"8f568ba6-dc9d-4186-a71f-a3ae36245568","route":"/v1/tenants/:tenant_id/machines","method":"POST","status":201}
+{"request_id":"0cf57baf-cfc7-4217-a241-72d7ecd045bd","route":"/v1/workers/register","method":"POST","status":201}
+{"request_id":"6407e1f6-0c96-440e-9aed-403ecfcdfa21","route":"/v1/tenants/:tenant_id/machines","method":"POST","status":201}
+{"request_id":"25145944-467c-43dd-9e2f-8ac0e8103b73","route":"/v1/workers/register","method":"POST","status":201}
+{"request_id":"0c513642-9159-417a-bb22-f520e7e9c29e","route":"/v1/tenants/:tenant_id/machines","method":"POST","status":201}
+{"request_id":"4dad6349-b977-42dc-a9d1-9305ba6d6205","route":"/v1/workers/register","method":"POST","status":201}
+{"request_id":"f68a9dcf-91eb-4038-a5bb-b6295a3a5619","route":"/v1/tenants/:tenant_id/machines","method":"POST","status":201}
+{"request_id":"a7004bd9-7023-48f8-a642-5e5c9e3f28b4","route":"/v1/workers/register","method":"POST","status":201}
+{"request_id":"76cd50d7-8af9-4988-bf5d-c60bd142c8c3","route":"/v1/tenants/:tenant_id/machines","method":"POST","status":201}
+{"request_id":"f19a3c1a-6b05-420f-b2b8-64922f2415e7","route":"/v1/workers/register","method":"POST","status":201}
+✔ hosted schema checkpoint: quantity CHECKs fire on valid-parent rows (1714.541194ms)
+{"request_id":"84490a2e-c3a6-49e1-94da-bf841261c80d","route":"/v1/auth/github","method":"GET","status":302}
+{"request_id":"89660a37-a017-4b75-8e43-9ea4c8faac8c","route":"/v1/auth/github/callback","method":"GET","status":302}
+{"request_id":"db33a447-4095-4aaf-a549-b4fced86d115","route":"/v1/me","method":"GET","status":200}
+{"request_id":"fc4f3546-b005-4927-9e0b-c7ef52f3b273","route":"/v1/session","method":"GET","status":200}
+{"request_id":"d6483e09-399b-4342-ac0c-2cc89610ecb8","route":"/v1/cli-links","method":"POST","status":201}
+{"request_id":"5f8ebb4c-f0a1-4d40-8cb3-1238bc66f0e3","route":"/v1/cli-links/:link_id","method":"POST","status":200}
+{"request_id":"2cd711be-27cd-4b87-8360-a922fc3b7009","route":"/v1/cli-links/:link_id","method":"POST","status":200}
+{"request_id":"9004c49a-db48-47ac-945f-6d070be8e9e7","route":"/v1/tenants/:tenant_id/machines","method":"POST","status":201}
+{"request_id":"24d59842-dd83-4daf-b52b-1a42813d77c1","route":"/v1/workers/register","method":"POST","status":201}
+{"request_id":"f63794dc-d365-4f64-8390-a25a6cc5ab62","route":"/v1/auth/github","method":"GET","status":302}
+{"request_id":"eb69c6e4-3cb9-423d-b3bd-cee6e0744e9d","route":"/v1/auth/github/callback","method":"GET","status":302}
+{"request_id":"888c10aa-534b-4062-82fd-6f065e4a6f31","route":"/v1/me","method":"GET","status":200}
+{"request_id":"420230d7-0c4a-4b4d-9742-8a4ae33bae4d","route":"/v1/session","method":"GET","status":200}
+{"request_id":"dd50f1e8-a447-47ee-9721-399bcca11341","route":"/v1/tenants/:tenant_id/machines","method":"POST","status":201}
+{"request_id":"a06a3d30-42e2-46bc-95ac-1e45e1d8c126","route":"/v1/workers/register","method":"POST","status":201}
+✔ hosted schema checkpoint: cross-org resource binding, worker exclusivity, rollback (1276.069756ms)
+{"request_id":"cfd4fda4-1a34-4cca-b765-c5ac0e6cc792","route":"/v1/auth/github","method":"GET","status":302}
+{"request_id":"2377fbb5-a193-40a6-af6b-21f97dce5af0","route":"/v1/auth/github/callback","method":"GET","status":302}
+{"request_id":"47ec44ab-309e-418d-a061-7837b9462ae6","route":"/v1/me","method":"GET","status":200}
+{"request_id":"cc5c84f6-2966-4de7-b3d3-41767cc02888","route":"/v1/session","method":"GET","status":200}
+{"request_id":"39fc81a2-cda6-4c16-a0fa-03707ad4b295","route":"/v1/cli-links","method":"POST","status":201}
+{"request_id":"4a951f1e-4aed-44b9-9400-c756b8e57174","route":"/v1/cli-links/:link_id","method":"POST","status":200}
+{"request_id":"6adc049a-d438-4593-b6e6-619cf077dd0c","route":"/v1/cli-links/:link_id","method":"POST","status":200}
+{"request_id":"cd113325-df67-4ce8-9b18-fd3c79db407e","route":"/v1/tenants/:tenant_id/machines","method":"POST","status":201}
+{"request_id":"fa076448-4664-4ec4-bad8-40c5e5961d86","route":"/v1/workers/register","method":"POST","status":201}
+{"request_id":"c8627f63-b9d7-4488-bb49-d07a1c9109ea","route":"/v1/cli/me","method":"GET","status":200}
+{"request_id":"4f4e2a0a-5a83-4de5-93ba-4a78761fb7f0","route":"/v1/workers/me","method":"GET","status":200}
+✔ hosted schema checkpoint: clean install and 2B.1 upgrade (1119.373549ms)
+ℹ tests 8
+ℹ suites 0
+ℹ pass 8
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 5959.750781

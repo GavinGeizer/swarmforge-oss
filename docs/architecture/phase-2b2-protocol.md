@@ -187,3 +187,21 @@ extend authority by parent silence. Normal server leases are 30 seconds, renewed
 the supervisor before expiry with a conservative margin. A database/network outage
 retains uncertain capacity and cannot constitute stop proof. Existing entitlement
 expiry does not block emergency cleanup authorized by the surviving cleanup principal.
+
+
+## Trusted local supervisor state
+
+The hosted tenant API is the customer authority boundary. The local MCP server,
+OS process controls and SQLite journals are the trusted operator plane; hosted
+supervisor mode does not start a customer-facing MCP server. The default journal
+path is the private supervisor credential path plus `.state.sqlite`; its core
+worker database uses the same private path plus `.workers.sqlite`. Credential
+rotation keeps the journal path stable. Use distinct credential files and state
+paths per supervisor/tenant; explicitly sharing a state path is unsupported operator
+configuration and does not isolate local OS stop operations. Public customers never
+receive the global instance bearer, operator OS identity or journal access.
+
+Cloud calls still recheck tenant, worker, supervisor, lease and fence even when a
+trusted local journal is misconfigured. A foreign cloud operation is rejected,
+and failed settlement retains capacity. Do not treat that server protection as
+proof of runtime isolation for deliberately shared privileged local state.

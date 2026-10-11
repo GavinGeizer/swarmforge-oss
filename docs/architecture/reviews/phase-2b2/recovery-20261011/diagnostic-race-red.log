@@ -1,0 +1,24 @@
+bun test v1.4.2 (744846f84)
+
+apps/cloud/test/hosted-admission-regressions.test.ts:
+(pass) admission diagnoses an allowance becoming exhausted at the batch boundary without dependent writes [25.80ms]
+363 |             .query("UPDATE hosted_allowances SET period_start=1,period_end=2")
+364 |             .run();
+365 |       };
+366 |       const response = await admit(h, a, w.worker_id);
+367 |       expect(reachedAdmissionBatch).toBe(true);
+368 |       expect(response.status).toBe(scenario === "exhausted" ? 403 : 409);
+                                    ^
+error: expect(received).toBe(expected)
+
+Expected: 409
+Received: 403
+
+      at <anonymous> (/tmp/swarmforge-phase2b2-cloud-correction/apps/cloud/test/hosted-admission-regressions.test.ts:368:31)
+(fail) admission diagnoses an allowance becoming unavailable at the batch boundary without dependent writes [12.65ms]
+
+ 1 pass
+ 24 filtered out
+ 1 fail
+ 13 expect() calls
+Ran 2 tests across 1 file. [67.00ms]

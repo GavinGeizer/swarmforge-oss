@@ -1,0 +1,3 @@
+{"request_id":"30037640-7112-42a7-a3db-0e2c4e3ece48","route":"/ready","method":"GET","status":200}
+{"request_id":"6c2b71e1-f154-47da-8963-67f3025d9ba7","route":"/v1/tenants/:tenant_id/tasks","method":"POST","status":401}
+{"artifact":"/tmp/swarmforge-phase2b2-recovery/apps/cloud/.cloudflare/output/v0/workers/default/bundle/index.js","sha256":"34a09951f53d6b227615aaef8e091a2db573321dd66c70f92800421bab3e465e","bytes":1003567,"real_workerd_D1":true,"ready_status":200,"unauthenticated_admission_status":401,"dependent_rows_zero":true,"external_requests":0}

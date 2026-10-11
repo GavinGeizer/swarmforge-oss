@@ -1,21 +1,25 @@
 # Phase 2B.2 implementation and verification checkpoint
 
-**Status: corrected candidate; Phase 2B.2 acceptance is not complete.** The resumed
-review found a high runtime watchdog defect and a medium rotation replay defect;
-corrections and remaining qualification limits are recorded below. Final
-independent integrated reviews and unrestricted infrastructure verification are
-outstanding. Untrusted customer execution remains disabled. No production deployment,
-master merge, Stripe, managed inference or production provisioning occurred.
+**Status: recovery integration underway; final acceptance remains incomplete.**
+The original candidate `44156cc6ad7858059f0e45a659b63de81d258249` was recovered
+without losing accepted contributions. Production socket-based child lease renewal,
+real local workerd/D1, loopback HTTP and protected journals now execute successfully.
+All accepted code and test repairs are integrated. Full suites and build checks passed;
+final integrated independent reviews and durable delivery remain.
+Untrusted customer execution remains disabled. No master merge, production deployment,
+Stripe, managed inference or production provisioning is introduced.
 
 ## 1. Starting branch and commit
 
 Work began from `phase2b1-cloud-linking` at
 `fec66971536cb117b36c85faabd98883d6491cb2`. Baselines were root 610 passed,
 2 existing skips, 0 failed (3,771 assertions), and cloud 52 passed, 0 failed.
-The original checkout later reached `4a86a46` and has read-only Git metadata.
-Current integration is isolated in `/tmp/swarmforge-phase2b2-integration`, branch
+The original checkout later reached `4a86a46`; its historical Git permission restriction
+has ended. Recovery integration is isolated in `/tmp/swarmforge-phase2b2-recovery`, branch
 `phase2b2-hosted-dispatch`. `git log` on that branch is the authoritative contribution
-and integration history. This document records a candidate rather than final signoff.
+and integration history. The original complete bundle remains preserved. Its SHA256 is
+`92df947d406f827e91782358836acc54b57fd0c219daec741ac668e45cf7dae0`;
+a fresh clone, six required refs, ancestry and full object checks succeeded.
 
 ## 2. Implementation architecture
 
@@ -41,7 +45,13 @@ launch-journal/identity/retry correction `404cb2a`. Integration equivalents appe
 branch history. Reports are preserved under [reviews](reviews/phase-2b2/), including
 [native reports](reviews/phase-2b2/native/). Final runtime and architecture agents
 stopped after an account usage-limit error; they did not certify final integration.
-No further SwarmForge infrastructure operations were performed after the owner's directive.
+The owner subsequently explicitly reauthorized SwarmForge workers and private source
+delivery. Recovery uses SwarmForge itself through its authenticated MCP server, with
+separate implementation owners and independent reviewers. Private Git bundles are
+checked by hash, prerequisite, actual HEAD/tree and clean worktree; automatic handoff
+metadata for the older assigned `45c29d3` checkout is not treated as private source
+persistence. New workers use the configured DeepSeek V4.1 Flash model. Historical
+failed, quiesced and interrupted workers and their outputs remain preserved.
 
 ## 4. Files and packages
 
@@ -59,8 +69,9 @@ See branch diff and contribution reports for complete file lists.
 checks and indexes after existing identity migrations. It does not seed customer policy
 or widen the legacy machine-credential audience. Supplemental SQLite tests execute the
 complete migration SQL on a clean database and a populated Phase 2B.1 database with
-foreign keys enabled; CLI and worker rows are preserved. Real D1 migration tests remain
-present but cannot initialize a listener in the current permission profile.
+foreign keys enabled; CLI and worker rows are preserved. Real local workerd/D1
+clean-install and Phase 2B.1 upgrade tests now run, including existing CLI and worker
+credential checks after migration. No additional migration is needed for recovery.
 
 ## 6. API endpoints
 
@@ -172,211 +183,160 @@ supervisor reports in that sample are not runtime validation. One-shot CLI claim
 does not run an unbounded poll service. Recovery/cleanup work is bounded. No remote preview load or edge CPU
 measurement has been performed, and local test time is not edge CPU time.
 
-## 15. Verification
+## 15. Recovery investigations and verification
 
-Fresh lead verification on the integrated working candidate:
+Starting historical observations at44156cc: root697pass/85fail/2existing skips/1error;
+cloud SQLite87pass; cloud infrastructure2 file passes/19 file failures; listener startup
+blocked generated types. These are preserved environment observations, not permanent
+application failures. In the resumed unrestricted environment, TCP/workerd startup,
+protected storage and actual subprocess IPC run. The original shared setup error was
+`getifaddrs`; the original provider socket writes and listeners returned `EPERM`.
+Those restrictions were demonstrated then and are no longer reproduced here.
 
-- Cloud complementary SQLite suite: 84 passed, 0 failed, 306 assertions, nine files,
-  including two migration checks. All are additive production SQL/handler tests.
-- Production Worker-to-Bun integration: three passed, including real child completion,
-  cancellation with retained capacity until stop, ambient secret exclusion, duplicate
-  admission and changed-work conflict. Uses SQLite cloud storage, injected in-process
-  fetch and in-memory journals; it is not live D1, TCP or durable-file recovery validation.
-- Root TypeScript/Biome: passed, 132 files. Cloud TypeScript/Biome: passed, 69 files
-  after additive migration tests. Both packages type-check their own platform globals.
-- Root executable build, archive packaging and archive verification: passed on Linux.
-- Full cloud command: failed, two file-level passes and 19 file-level failures; no
-  skips. Workerd initialization is restricted and two Node child processes aborted
-  on a native async-scope assertion. Supplemental tests were separately executed.
-- Generated Worker types: failed at `listen EPERM`. Local cloud build command returned
-  success but also reported unavailable Docker and restricted Wrangler logging; that
-  exit code does not establish a valid unrestricted infrastructure build.
-- Full root suite: 683 passed, 78 failed, two existing skips, one error, 3,936 assertions
-  across 56 files (154.51 seconds). Targeted hosted supervisor suite: 48 passed,
-  10 failed, 224 assertions (53.19 seconds). Private-path and localhost restrictions are
-  confirmed gaps, not waived checks. Earlier nondurable "59 passed" runtime evidence
-  was superseded by an immutable rerun with 47 passed and 12 failed.
+Confirmed corrections:
 
-No failed assertion was deleted, no live test was skipped to obtain green results,
-and no credential/journal protection or test configuration was weakened. Earlier live
-browser linking, organization selection, rotation, logout/revocation and reauthorization
-are separately documented in [live verification](reviews/phase-2b2/live-linking-verification.md).
-Synthetic-provider integration tests are not additional live GitHub verification.
+| Failure | Confirmed cause and correction | Production effect |
+| --- | --- | --- |
+| Child environment exact allowlist | Stale three-variable fixture omitted two watchdog boot-clock variables; exact five-variable allowlist, raw integer syntax, captured initial authority and one-hour bound retained | Test repair; secret rejection assertions retained |
+| Worker credential submitted to task route | Old Phase 2B.1 unknown-route test used malformed JSON; now valid controlled JSON/idempotency, wrong audience401 and zero task/reservation/outbox/operation writes | Test repair |
+| Exhausted allowance returned409 | Both advisory and post-batch diagnostic contradicted documented403; exhausted403 and unavailable409 now agree | Two response-code lines; quota/transaction SQL unchanged |
+| Concurrent journal test timed out | Invocation-count delay gated the wrong task after concurrent ACK/staging; first launch and gate release could wait on each other | Test gate bound to task identity; deterministic RED/GREEN regression |
+| Audit count10 versus8 | Twenty requests crossed a real minute boundary; the server correctly permitted2+8 across two buckets | Test checks per-window authority and deterministic exact-eight saturation |
+| Enrollment response body already read | An unread local Miniflare response became disturbed across D1 migration calls under memory pressure | Parse registration immediately; credential identity still checked after migrations |
 
-## 16. Review findings and adjudications
+The first quota correction7e0cf18 also changed unavailable allowances to403, and its
+claimed diagnostic test only repeated the advisory path. That standalone correction was
+rejected and preserved. Repair1574331 distinguishes both paths with REAL beforeBatch
+ledger mutations and zero-dependent-write assertions; independent B/C reviews reproduced
+the rejected failure and approved the corrected range.
 
-Original SwarmForge and native reports are retained. Concrete findings corrected include
-partial meter settlement after a zero-row mutation, status cursor omissions, stale SQL
-clock authority, original worker-enroller revocation, lease expiry during delayed claim,
-reservation drift, expired browser grant issuance/replay, supervisor registration/rotation
-expiry, unsafe PID assumptions, start ambiguity, frozen settlement retries, short task
-execution and shared launch callbacks. The lead also found and corrected strict identity
-DTO mismatch and verified stable-key retries against production handlers.
+Actual production transport: `ControlledProcessProvider` creates socket-backed stdin
+using subprocess `stdio: pipe`. A31-second child survives its initial30-second lease
+through renewals; the lead and worker each executed this production path. Anonymous
+OS-pipe parser tests are supplemental evidence only. No production transport replacement
+was needed. Child expiration, stale renewal, cancellation, uncertain stop, fencing and
+journal recovery remain enforced.
 
-Runtime Reviewer A identified journal crossbinding and changed retry fingerprints;
-`404cb2a` addresses them. The lead reran both original executable probes against
-integration: distinct journals matched their respective real child PIDs, and repeated
-client calls retained the same request ID. This is lead confirmation; fresh independent
-verification was interrupted by usage limits. Admission and dispatch corrections have concrete cross-review reports; admission
-`8126b26` still needs independent correction verification. Three independent reviews of
-the final integrated commit are outstanding. Author reports and lead tests do not replace
-those reviews. New high/critical findings must be resolved before acceptance.
+New `apps/cloud/test/hosted-runtime.integration.ts` exercises the default Worker routes
+and middleware under real local Miniflare/workerd D1, a real Node TCP bridge, a real Bun
+supervisor/coordinator/provider and inert child, and private file-backed journals.
+Its five cases cover31s/multiple renewals/lost ACK/no duplicate child, cancellation with
+verified stop and released reservation, partition with retained uncertain capacity,
+actual driver failure while a child is alive with production cleanup, and malformed
+output rejection. PID absence requires `ESRCH`; permission errors cannot prove death.
+All drivers are awaited before fixture teardown; SIGKILL fallback is a failed
+qualification with explicit uncertainty. The lost ACK response body is consumed.
+The lead executed all five cases on integrated source:5pass/0fail,62.188s.
+Identity provider fixtures are synthetic; these are local infrastructure tests, not live
+Cloudflare edge or additional live GitHub qualification.
 
-## 17. Launch blockers
+Final code integration is `0b06aeb77c4f9b3d30a1102bc3f092c9f0eaf5f3`, tree
+`9c85e0316de58b46d38bee4d7ec8aa0c1f3a414a`. Accepted recovery heads include
+1574331 (quota contract),605fa60 (real lifecycle tests),b6d6e54 (root gate/bound)
+andc1e696a (cloud test repairs). Actual commands and results:
 
-Complete unrestricted root/cloud and real D1/workerd/TCP/durable-path verification;
-obtain final three independent integrated reviews; qualify private credential custody;
-measure Cloudflare CPU, reads/writes and retained storage under controlled load; preserve
-and reconcile inaccessible historical SwarmForge VM outputs without violating the owner's
-stop directive. Remote publication is not complete. A prior automatic connector approval
-review rejected publication under the current never-approval policy; Git DNS access also
-failed. No alternate publication route was used to bypass that rejection.
+| Command | Result |
+| --- | --- |
+| Root `bun --no-env-file --config=/dev/null test` |788pass/0fail/2existing skips;4,540 assertions,790tests/59files,233.29s |
+| Cloud `bun run test` (Node infrastructure then Bun SQL) |130/130 infrastructure,0skips,68.364s;90/90 SQL,351 assertions/10files,19.49s |
+| Node memory64 focused abuse/schema diagnostic |8/8,0skips,5.960s; real clean and populated2B.1 migration cases |
+| Root/cloud `bun run check` | TypeScript/Biome passed on133/71files |
+| Cloud `bun run types` | Generated bindings passed |
+| Root `bun run build`, `bun run package`, `bun run package:verify` | Linux executable/archive/manifest verification passed |
+| Cloud `bun run build` | Emitted actual Worker bundle, exit0; Docker detection permission warning retained |
+| Built CF artifact smoke under real workerd/D1 | ready200; unauthorized valid admission401; zero task/reservation/outbox/operation rows; no external requests |
 
-## 18. Stripe and pilot prerequisites
+Root ran at `a3f14dc15ee8d85c2e76efde452251ac3625d4d5`; the subsequent final
+code merge changes only the two Node integration files. Root sources, root tests,
+SQL tests, migrations, dependencies and configurations are identical. The full
+cloud suite and executable/archive were verified at0b06aeb. Recovery documentation
+and review evidence are a later delivery delta; final delivery identifiers are
+recorded in the primary handoff.
 
-Owner-approved plan/capability/limit/meter policy, explicit Stripe-to-policy mapping,
-idempotent authenticated billing events, revocation/grace behavior and auditing are
-required before Stripe integration. A controlled inert BYOK All pilot additionally
-requires all verification/review gates above, secure supervisor deployment, bounded
-traffic/cleanup sizing, operational stop/recovery runbooks and explicit deployment
-authorization. Repository brokerage, task-scoped BYOK secrets, snapshot hygiene and
-independently verified runtime isolation are mandatory before customer/untrusted workloads.
+The cf-built1,003,567-byte Worker artifact SHA256 is
+`34a09951f53d6b227615aaef8e091a2db573321dd66c70f92800421bab3e465e`.
+Its successful local workerd/D1 boot qualifies the emitted compilation despite
+unavailable Docker detection; this API uses no container binding. It does not
+qualify live Cloudflare edge CPU or production bindings. The preliminary Linux
+archive at0b06aeb SHA256 is
+`5436d42e3bea1c67455b79d188f554e053b5398b1dadeaaf27f73fe7a6200997`.
+A final delivery build, if regenerated, carries its own actual commit/hash in the handoff.
 
+Both existing skips are retained: lifecycle-package-only finalization survival,
+and opt-in real Freestyle/OpenCode/model smoke. No test was skipped to obtain green
+results. B's contribution review records one earlier unattributed full-suite
+failure; final review must preserve/recover its evidence rather than label it flaky
+without a concrete identity. The current full130-test lead run passed.
 
-## Durable evidence index
+Earlier live browser linking, organization selection, rotation, logout/revocation and
+reauthorization remain documented in [live verification](reviews/phase-2b2/live-linking-verification.md).
+Linux is the advertised release scope; Windows secure-storage qualification is outside
+that scope. No new live provider check is claimed in this recovery.
 
-Exact current-run logs are preserved in `reviews/phase-2b2/native/phase2b2-final-*`.
-Root failures include socket `EPERM`, protected-path ownership rejection and a
-`getifaddrs` error; they have not been certified as exclusively environmental.
-Cloud runner reports failed test files rather than successful assertion counts;
-its two passes are config/provider files. Worker `cf build` reported success with
-Docker/logging errors, so infrastructure build readiness remains unverified.
-Original reviewer reports, RED reproductions and lead confirmation logs remain separate.
-The original protected credential helper, test assertions and live infrastructure
-coverage were retained. A final unrestricted rerun must investigate any remaining
-failures before acceptance.
+## 16. Independent review and adjudication
 
+Original and corrected reports are preserved separately. Recovery roles:
 
-## Resumed final review, 2026-10-09
+- Architecture A: w-cf8f53a8-390e-4f5b-90d9-4759b856a37f; prior A quiesced and is retained.
+- Concurrency B: w-e78895ad-229f-407e-9ff7-84acef9410e5.
+- Security C: w-eb4ef77b-0a04-4d46-9bc5-934a1985eb3e; original malformed follow-up remains incomplete.
 
-Reviewer A inspected exact integrated `f1d0526` and reproduced a **High** runtime
-lease defect through the actual default Worker, SupervisorClient, Coordinator and
-child (SQLite cloud storage/in-process transport): the live parent's stalled event
-loop leaves the child executing beyond its current lease. Parent EOF and total
-workload duration alone do not establish an independently enforced lease watchdog.
-A separate isolated implementer is correcting this; acceptance is blocked until
-actual child expiry and renewable full duration are independently verified.
+All three approved the1573 quota/audience correction within its exact scope. B and C
+approved the605fa60 end-to-end test after correcting real driver cleanup and response
+body leaks. B reproduced the original journal deadlock and approved the identity-bound
+gate and accurate wording; A's dropped one-hour test bound was restored atb6d6e54.
+A retracted its mismatched-comment allegation after source inspection showed the
+comment exactly matched the four asserted tables.
 
-Reviewer C inspected the same integrated commit and found a **Medium** SQL-clock
-rotation recovery defect. Both old credential and recovery-window expiries now use
-`MAX(captured_time, SQL_time)` in correction `1a03be1` (integration `23535d2`). Three
-regressions went RED to GREEN; full cloud SQLite suite passed 87 tests, 322 assertions,
-and cloud checks passed 70 files. Reviewer A independently reran C's original probe
-against the correction: 401, no successor returned, both windows expired at SQL.
-The original C report remains separate from A's narrow correction approval.
+C's original shared-journal allegation was tested against the real supervisor/client
+and production Worker with an in-process SQLite D1 adapter. Cloud tenant guards reject
+foreign ACK/renew/status/settlement. Distinct private journals prevent accidental
+sharing by default. The deliberately shared probe used a never-started row and a stub
+provider: it does not prove isolation of a foreign OS runtime. The local journal and
+MCP server are the trusted operator plane. Do not share credential paths or explicitly
+configured state paths across tenant supervisors. Corrected probe helpers assert
+rejections without catching their own assertion failures.
 
-Reviewer B's final session stopped when an automated content filter reported
-possible cybersecurity risk; no completed B review was delivered. C preserved its
-original report before a later session interruption by the same filter. These are
-not approvals, and no content-filter bypass was attempted. Three completed final
-integrated reviews remain an unfinished gate. Original reports/probes/current-run
-results live under `reviews/phase-2b2/native/phase2b2-final-review-*`.
+Previous content-filter interruptions, failed source preflights, public stand-in
+investigations and malformed results remain incomplete evidence; they are not approvals.
+No security filter or rejected publication was bypassed. Final overall A/B/C verdicts
+must inspect the final integrated commit; contribution approvals alone are insufficient.
 
-The resumed focused cloud/Bun authority/migration suite passed 10 tests, 75 assertions.
-A fresh environment probe reconfirmed socket EPERM and differently owned root/tmp
-ancestors. A further minimal IPC probe confirms nonempty parent pipe writes report
-EPERM and deliver no bytes; this creates an additional real renewable-child test gap.
-IPC errors must fail closed. No authority, credential, helper or assertion is weakened
-to accommodate these restrictions.
+## 17. Remaining acceptance and launch gates
 
+The final combined root/cloud suites, builds, generated types, package verification,
+and clean/Phase 2B.1 migration checks passed. Complete exact-final A/B/C review,
+commit the delivery evidence and verify fresh bundle restoration. The controlled local fixture qualification is distinct from
+pilot deployment readiness. Live edge CPU, D1 scanned/written rows, larger retention
+storage growth and load fitness remain unmeasured. The cf build warning is a Docker detection restriction, not a failed Worker compile;
+the actual emitted artifact was booted against real local D1. Production bindings
+and live edge performance still require separately authorized qualification.
 
-## Watchdog correction integration
+Private credential custody, supervisor operating permissions, stop/recovery runbooks,
+owner-approved capacity policy and explicit deployment authorization remain pilot gates.
+Repository brokerage, task-scoped BYOK custody, snapshot hygiene and independently
+verified hostile runtime isolation are required before any customer/untrusted execution.
+Historical VMs are retained; necessary outputs are preserved before any separately
+authorized cleanup. No master merge or production deployment is authorized here.
 
-Runtime correction `1a2502a` (integration `7c0f147`) makes lease expiry independent
-of a stalled supervisor. The child receives validated initial numeric boot-clock
-deadlines fixed before spawn, checks startup delay/current authority, and accepts
-only bounded renewed absolute authority through its private pipe. Parent EOF, invalid
-clock/input and expiry fail closed. The child retains its full separate task duration;
-expiry reports cancelled, with the journal retained until OS stop confirmation.
-Provider writes await delivery callbacks; a post-write stop/expiry race cannot publish
-new parent authority. See the expanded [protocol](phase-2b2-protocol.md).
+## 18. Stripe and BYOK All prerequisites
 
-A fixture-only follow-up `f24b4a8` (integration `5cea3ef`) supplies required initial
-authority to the existing direct compiled-child test. Its completion/embedded-binary
-assertions remain unchanged and pass. A missing-authority fixture is a real protocol
-fixture defect, not an environment failure; its original failure is preserved.
-The lead also found and corrected a positive-test renewal frame that exceeded its
-immutable deadline; valid frames now clamp to that deadline, matching the production
-provider, while the full 31-second/zero-exit assertions remain intact.
+Stripe requires owner-approved capability/limit/meter policy, a separate authenticated
+idempotent plan-to-policy mapping, revocation/grace policy and audits. No prices, billing
+rates or product quotas were invented. A controlled inert pilot requires the qualified
+candidate, secure supervisor custody, bounded request/cleanup sizing, operational
+recovery and explicit deployment approval. Customer workloads retain the separate
+repository/secret/isolation gates above.
 
-The dedicated author's final production-code full run before the fixture follow-up
-reported 693 passed, 86 failed, two existing skips and one error. Successful renewable
-31-second execution and malformed/buffered renewal IPC tests remain unqualified under
-nonempty pipe-write EPERM. Genuine child-live/stalled-parent expiry, startup refusal,
-initial-authority validation, ordinary completion and parent EOF tests exercise real
-subprocesses; they do not establish successful renewal delivery on a deployable host.
-A final integrated root run after both corrections and the fixture follow-up is being
-recorded separately. Final full-suite failure counts supersede earlier checkpoints.
+## 19. Recovery delivery and evidence
 
-
-## Independent correction verification and additional component evidence
-
-Reviewer A independently approved the narrow A-H1 correction at exact `1a2502a`.
-A frozen archive of original `f1d0526` showed the child still executing (`S`) after
-lease expiry. Corrected production Worker/client/child code showed `R` before the
-stall and a nonexecuting zombie (`Z`) afterward, cancelled completion, retained
-journal identity and trusted OS stop confirmation. Earlier `kill(pid,0)`-only
-observations were explicitly corrected: presence alone does not distinguish a zombie
-from executing work. An accidental moving-checkout baseline attempt is retained and
-excluded from baseline RED evidence. Original reports were not overwritten.
-
-A separate permitted anonymous-pipe harness validates the unchanged child parser
-at pinned `f24b4a8`, with source hashes verified. Six real-subprocess cases pass:
-full 31-second work with 62 valid renewals, malformed/expired/oversized rejection,
-late closed-channel refusal and buffered late frames unable to reopen authority.
-Reviewer A independently reran all six cases; the full consumer exit occurred at
-31,027.269ms. This tests the child parser over an actual anonymous OS pipe. The
-production provider uses a socket-backed subprocess stdin; its writes remain EPERM.
-Those original tests remain failed, and the full production supervisor/client/provider
-renewal path is not qualified by the anonymous-pipe component result.
-
-The final integrated root run also exposed a real test-fixture defect: two manually
-seeded allowance periods could share one millisecond and violate their unique key.
-The fixture now waits for a distinct actual clock tick with a bounded retry; no
-quota/cleanup assertion, uniqueness constraint or production behavior was changed.
-All 28 dispatch tests and cloud checks pass after that correction. Its original full
-run UNIQUE failure is preserved rather than attributed to the environment.
-
-Production-source equivalence was inspected: current `src` matches reviewed watchdog
-`1a2502a`, and `hosted-supervisors.ts` matches independently approved `1a03be1`.
-Remaining gates include the third independent concurrency/recovery review, final
-corrected security/integrated signoff, unrestricted socket IPC/TCP/D1, privately owned
-credential/journal recovery, full green suites and edge resource qualification.
-
-
-## Latest final integrated verification checkpoint
-
-After both production corrections, the compiled-child fixture update and the real-clock
-allowance fixture correction, the complete root command finished with **697 passed,
-85 failed, two existing skips, one error**, 3,989 assertions across 59 files, 147.15s.
-The complete complementary cloud SQLite command passed **87 tests**, zero failures,
-322 assertions across ten files. Root TypeScript/Biome passed 133 files and cloud
-TypeScript/Biome passed 70 files. All failure names/traces are preserved; they are
-not certified as exclusively environmental. The prior 696/86 root result included
-the now-corrected allowance UNIQUE fixture failure and remains preserved separately.
-
-The unmodified full cloud infrastructure command still failed with two file-level
-passes and 19 file-level failures, zero skips. Worker generated types still failed
-socket initialization. Local `cf build` printed success alongside denied Docker and
-Wrangler logging access, so it does not qualify infrastructure build readiness.
-The final code's Linux executable/archive build and package verification are recorded
-in the durable handoff after the final feature commit. No remote publication, master
-merge or deployment occurred. Original and corrected worker branches are retained
-in the Git bundle, including the pinned commits needed to rerun the parser harness.
-
-The high child-stall and medium rotation replay findings have independent narrow
-correction approvals. Phase acceptance still requires the remaining third independent
-review and final integrated signoff, actual provider renewal transport, unrestricted
-D1/TCP/protected durable storage, full green suites and operational edge qualification.
-The automated content-filter interruptions are recorded as incomplete reviews, not
-approval. Customer/untrusted execution remains structurally disabled.
+Primary handoff: `data/phase2b2/HANDOFF.md`. Preserved original bundle:
+`data/phase2b2/phase2b2-hosted-dispatch.bundle`. Committed recovery evidence: [original/corrected reports and logs](reviews/phase-2b2/recovery-20261011/).
+Additional local recovery evidence: `data/phase2b2/recovery-20261009/`, including exact-current-run structured results,
+original/corrected reviews, hashes, failed attempts, RED reproductions and test logs.
+Source bundles preserve rejected and accepted intermediate commits. The original
+candidate summary and complete earlier evidence remain in44156cc Git history.
+The final handoff must identify the implementation/delivery commits, refreshed bundle
+hash and fresh-restore result, exact test commands/counts, remaining live-infrastructure
+restrictions and worker disposition. Automatic older-checkout publication metadata is
+not an accepted-source identifier.

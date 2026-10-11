@@ -1,0 +1,2 @@
+$ bun scripts/package.ts
+{"version":"0.1.2","commit":"0b06aeb77c4f9b3d30a1102bc3f092c9f0eaf5f3","target":"bun-linux-x64-baseline","metadataPath":"/tmp/swarmforge-phase2b2-recovery/dist/metadata-0.1.2.json","checksumsPath":"/tmp/swarmforge-phase2b2-recovery/dist/SHA256SUMS","archivePath":"/tmp/swarmforge-phase2b2-recovery/dist/swarmforge-v0.1.2-linux-x64-glibc.tar.gz","archiveSha256":"5436d42e3bea1c67455b79d188f554e053b5398b1dadeaaf27f73fe7a6200997","files":["swarmforge","metadata-0.1.2.json","SHA256SUMS"]}

@@ -153,3 +153,18 @@ The result asserts zero remaining reserved meter and ten consumed units. Per-ope
 wall times are recorded in the preserved JSON log only as local timings; no Cloudflare
 CPU claim follows. No scan/write accounting or remote load result was fabricated.
 Evidence: [local sample](reviews/phase-2b2/native/phase2b2-final-local-protocol-cost.log).
+
+
+## Recovery qualification, 2026-10-11
+
+The emitted cf Worker bundle (1,003,567 bytes, SHA256
+`34a09951f53d6b227615aaef8e091a2db573321dd66c70f92800421bab3e465e`)
+booted under local workerd with real D1 and all migrations. Readiness returned 200;
+unauthorized valid admission returned 401 with zero dependent writes. This qualifies
+local compilation and routing, not deployed bindings or edge CPU. The Docker detection
+permission warning is preserved; this Worker declares no container binding.
+
+Source inspection bounds a populated scheduled cleanup at 22 hosted statements,
+10 identity statements and one schema check: at most 33 statements in this path.
+This is a statement-count bound, not measured D1 scanned rows, write amplification,
+or Worker CPU. No edge performance or additional live load qualification is claimed.

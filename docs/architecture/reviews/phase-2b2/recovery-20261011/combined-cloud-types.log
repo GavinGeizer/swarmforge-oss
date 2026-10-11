@@ -1,0 +1,4 @@
+$ cf workers types --mode local
+{
+  "path": ".cloudflare/types/index.d.ts"
+}

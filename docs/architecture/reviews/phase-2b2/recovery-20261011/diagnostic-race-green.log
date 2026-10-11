@@ -1,0 +1,34 @@
+bun test v1.4.2 (744846f84)
+
+apps/cloud/test/hosted-admission-regressions.test.ts:
+(pass) current policy zero allowance cannot borrow a positive historical allowance [26.85ms]
+(pass) admission reserves only the pinned current policy allowance [12.67ms]
+(pass) reused cancellation key for another task changes no state or meter [14.40ms]
+(pass) authority revocation between cancellation authentication and batch changes nothing [9.54ms]
+(pass) cancellation ledger mismatch cannot terminalize or release capacity [10.42ms]
+(pass) legacy allowance alias cannot mutate unsupported meters [4.37ms]
+(pass) full-meter admission replay is identical 202 without a second reservation [8.05ms]
+(pass) advisory allowance exhaustion and retries return 403 without a second reservation [10.01ms]
+(pass) admission diagnoses an allowance becoming exhausted at the batch boundary without dependent writes [8.44ms]
+(pass) admission diagnoses an allowance becoming unavailable at the batch boundary without dependent writes [7.29ms]
+(pass) any missing required capability denies admission with 403 [7.13ms]
+(pass) SQL int64 meter arithmetic reaches the canonical boundary exactly and refuses overflow [9.97ms]
+(pass) policy expiry while an admission waits to batch cannot elect a task [48.69ms]
+(pass) same-org multi-user and multi-CLI races share caps while another org admits independently [40.56ms]
+(pass) failed dependent SQL rolls back task reservation outbox audit operation and meter together [7.55ms]
+(pass) a ledger CAS miss on admission elects no task or dependent writes [6.88ms]
+(pass) admission denies a registered worker after its enroller loses admin authority [5.84ms]
+(pass) admission rechecks the worker enroller admin chain at batch election [8.08ms]
+(pass) cancellation elected before authority expires completes and reports its committed result [8.06ms]
+(pass) unavailable policy source denies new work with 503 and no admission effects [5.39ms]
+(pass) failed cancellation dependent SQL reports unavailable and rolls back elected effects [8.54ms]
+(pass) execution grant issuance cannot elect after browser or installation expiry while waiting to batch [135.96ms]
+(pass) execution grant issuance replay rechecks browser expiry at SQL time despite a stale Worker clock [28.42ms]
+(pass) fresh grant election returns its committed reply after browser expiry within the batch [8.13ms]
+(pass) execution grant election refuses a proposed credential already expired on the SQL clock [6.57ms]
+(pass) same-key grant issuance race replays one fresh winner and refuses a revoked winner without phantom audit [7.18ms]
+
+ 26 pass
+ 0 fail
+ 132 expect() calls
+Ran 26 tests across 1 file. [486.00ms]

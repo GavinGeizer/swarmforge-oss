@@ -1,0 +1,11 @@
+bun test v1.4.2 (744846f84)
+killed 1 dangling process
+
+diag/diag.test.ts:
+(fail) DIAGNOSTIC pre-fix count-based gate deadlocks under reversed launch order [5000.82ms]
+  ^ this test timed out after 5000ms.
+
+ 0 pass
+ 60 filtered out
+ 1 fail
+Ran 1 test across 1 file. [5.12s]

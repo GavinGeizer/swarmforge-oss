@@ -1,0 +1,5 @@
+$ cf build --mode local
+├  Build
+│  Delegating to Wrangler
+permission denied while trying to connect to the docker API at unix:///var/run/docker.sock
+◆  Build complete
