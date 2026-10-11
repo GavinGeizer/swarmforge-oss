@@ -1,0 +1,32 @@
+bun test v1.4.2 (744846f84)
+
+tests/serve.test.ts:
+19:09:09  requested  w-90511b8b-5f59-42b0-8292-08df0c374216  team/task  vm=vm-w-90511b8b-5f59-42b0-8292-08df0c374216
+19:09:09  provisioning  w-90511b8b-5f59-42b0-8292-08df0c374216  team/task  vm=vm-w-90511b8b-5f59-42b0-8292-08df0c374216
+19:09:09  booting  w-90511b8b-5f59-42b0-8292-08df0c374216  team/task  vm=vm-w-90511b8b-5f59-42b0-8292-08df0c374216
+19:09:10  requested  w-bbd7a32e-b9a5-4ba4-8a88-138ef603e2f2  team/task  vm=vm-w-bbd7a32e-b9a5-4ba4-8a88-138ef603e2f2
+19:09:10  provisioning  w-bbd7a32e-b9a5-4ba4-8a88-138ef603e2f2  team/task  vm=vm-w-bbd7a32e-b9a5-4ba4-8a88-138ef603e2f2
+19:09:10  booting  w-bbd7a32e-b9a5-4ba4-8a88-138ef603e2f2  team/task  vm=vm-w-bbd7a32e-b9a5-4ba4-8a88-138ef603e2f2
+19:09:10  requested  w-5551c638-78a5-4ea9-81ff-1a4d7f25c83e  team/after-startup
+19:09:10  requested  w-fc1d4fc1-5e71-40c7-84c3-d8ae4d752d1a  team/task  vm=vm-w-fc1d4fc1-5e71-40c7-84c3-d8ae4d752d1a
+19:09:10  provisioning  w-fc1d4fc1-5e71-40c7-84c3-d8ae4d752d1a  team/task  vm=vm-w-fc1d4fc1-5e71-40c7-84c3-d8ae4d752d1a
+19:09:10  booting  w-fc1d4fc1-5e71-40c7-84c3-d8ae4d752d1a  team/task  vm=vm-w-fc1d4fc1-5e71-40c7-84c3-d8ae4d752d1a
+19:09:10  ready  w-fc1d4fc1-5e71-40c7-84c3-d8ae4d752d1a  team/task  vm=vm-w-fc1d4fc1-5e71-40c7-84c3-d8ae4d752d1a
+19:09:10  running  w-fc1d4fc1-5e71-40c7-84c3-d8ae4d752d1a  team/task  vm=vm-w-fc1d4fc1-5e71-40c7-84c3-d8ae4d752d1a
+19:09:10  paused  w-fc1d4fc1-5e71-40c7-84c3-d8ae4d752d1a  team/task  vm=vm-w-fc1d4fc1-5e71-40c7-84c3-d8ae4d752d1a
+
+tests/proof-runner.test.ts:
+{"event":"a","at":1791745874863,"n":1}
+{"event":"b","at":1791745874863,"n":2}
+{"event":"c","at":1791745874863}
+
+apps/cloud/test/hosted-dispatch.test.ts:
+dispatch cleanup budget: 33 combined statements, 47 maximum bindings
+dispatch response budgets: {"claim":{"statements":13,"maxArgs":65},"claim_replay":{"statements":5,"maxArgs":51},"empty_claim":{"statements":7,"maxArgs":35},"ack":{"statements":12,"maxArgs":68},"ack_replay":{"statements":5,"maxArgs":51},"renew":{"statements":12,"maxArgs":69},"renew_replay":{"statements":5,"maxArgs":51},"status":{"statements":4,"maxArgs":51},"stop_status":{"statements":4,"maxArgs":1},"settle":{"statements":13,"maxArgs":62},"settle_replay":{"statements":3,"maxArgs":4}}
+dispatch operator recovery budget: 14 statements, 61 maximum bindings
+
+ 788 pass
+ 2 skip
+ 0 fail
+ 4540 expect() calls
+Ran 790 tests across 59 files. [243.82s]

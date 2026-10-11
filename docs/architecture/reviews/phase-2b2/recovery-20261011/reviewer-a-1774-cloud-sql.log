@@ -1,0 +1,11 @@
+bun test v1.4.2 (744846f84)
+
+test/hosted-dispatch.test.ts:
+dispatch cleanup budget: 33 combined statements, 47 maximum bindings
+dispatch response budgets: {"claim":{"statements":13,"maxArgs":65},"claim_replay":{"statements":5,"maxArgs":51},"empty_claim":{"statements":7,"maxArgs":35},"ack":{"statements":12,"maxArgs":68},"ack_replay":{"statements":5,"maxArgs":51},"renew":{"statements":12,"maxArgs":69},"renew_replay":{"statements":5,"maxArgs":51},"status":{"statements":4,"maxArgs":51},"stop_status":{"statements":4,"maxArgs":1},"settle":{"statements":13,"maxArgs":62},"settle_replay":{"statements":3,"maxArgs":4}}
+dispatch operator recovery budget: 14 statements, 61 maximum bindings
+
+ 90 pass
+ 0 fail
+ 351 expect() calls
+Ran 90 tests across 10 files. [16.85s]

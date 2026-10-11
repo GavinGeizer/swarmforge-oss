@@ -1,0 +1,17 @@
+PASS B HostedSupervisor.claimOnce sees no foreign work (null)
+PASS B stopAndConfirm(A task) refused (no journal mapping) (Unknown hosted task; refusing stop.)
+PASS B renewOnce(A task) refused (no journal mapping) (Unknown hosted task; refusing renewal.)
+PASS B settle(A task) refused (no journal mapping) (Unknown hosted task; refusing settlement.)
+PASS B reconcile iterates own empty journal only
+PASS A cloud task still 'queued' after B supervisor attempts
+PASS B locally mutated shared trusted journal row for A task (state=stopped stop_confirmed=true)
+PASS B settle(A task) blocked by server guard (threw: Frozen settlement belongs to a different supervisor.)
+PASS A authoritative cloud task STILL 'queued' after shared-journal settle attempt
+PASS No non-queued A task rows: server writes blocked
+PASS B real SupervisorClient.ack(A task) blocked by server (status=404)
+PASS B real SupervisorClient.renew(A task) blocked by server (status=404)
+PASS B real SupervisorClient.status(A task) blocked by server (status=404)
+PASS B real SupervisorClient.settle(A task) blocked by server (status=404)
+PASS A authoritative cloud task still 'queued' after direct cross-tenant client calls
+
+SUPERVISOR_CROSS_TENANT_PROBE: 15 checks, 0 failed

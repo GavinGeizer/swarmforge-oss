@@ -1,0 +1,1142 @@
+{"request_id":"624c7600-8cfe-41f0-aec8-b3f4ca6d0483","route":"/v1/cli-links","method":"POST","status":201}
+{"request_id":"a93e5160-e7dc-431e-af24-6a93d1341ad3","route":"/v1/cli-links","method":"POST","status":201}
+{"request_id":"08df283b-aeb7-44c8-9c77-adea0ddbb7e6","route":"/v1/cli-links","method":"POST","status":201}
+{"request_id":"f0c5dffd-630f-4e87-aba1-101011d6dd9a","route":"/v1/cli-links","method":"POST","status":201}
+{"request_id":"e3d8ea33-a220-4551-a790-4e10840aa462","route":"/v1/cli-links","method":"POST","status":201}
+{"request_id":"2b792ce3-80ee-4dd2-a919-39084fee9f90","route":"/v1/cli-links","method":"POST","status":201}
+{"request_id":"2a26d643-e7a1-4f73-9a04-2043f500f66b","route":"/v1/cli-links","method":"POST","status":201}
+{"request_id":"d27d1b17-1feb-4001-9750-8b9d594b5561","route":"/v1/cli-links","method":"POST","status":201}
+{"request_id":"45242a3e-ed4a-4202-89e7-3c92ee8e410f","route":"/v1/cli-links","method":"POST","status":201}
+{"request_id":"a42edfe1-3baf-41c3-b7ab-ebc7d269410b","route":"/v1/cli-links","method":"POST","status":201}
+{"request_id":"ab7534e9-a4d9-457d-b808-f923a4f4bd8b","route":"/v1/cli-links","method":"POST","status":429}
+{"request_id":"a1d1e8f3-fa50-4aab-9a61-366b012d4769","route":"/v1/auth/github/callback","method":"GET","status":400}
+{"request_id":"643482f4-2ccd-4223-9a0c-b63f94dff1c3","route":"/v1/auth/github/callback","method":"GET","status":400}
+{"request_id":"7be87e17-b486-4ee7-9f1e-c35f80130c83","route":"/v1/auth/github/callback","method":"GET","status":400}
+{"request_id":"f31d6fa2-6a7e-4dc8-a715-615888c6b453","route":"/v1/auth/github/callback","method":"GET","status":400}
+{"request_id":"a6d88715-1994-47d8-9b94-f58ae4eb7e38","route":"/v1/auth/github/callback","method":"GET","status":400}
+{"request_id":"88181c2b-9c63-4ae7-85c3-227566f6c355","route":"/v1/auth/github/callback","method":"GET","status":400}
+{"request_id":"d178eb41-f0c9-49dc-ab74-7b144b832a34","route":"/v1/auth/github/callback","method":"GET","status":400}
+{"request_id":"2cef5e33-9e13-4a9e-a15c-e171e3828543","route":"/v1/auth/github/callback","method":"GET","status":400}
+{"request_id":"203c6417-8215-47c7-8568-3de2fa75542b","route":"/v1/auth/github/callback","method":"GET","status":400}
+{"request_id":"76723b31-8be4-4a02-865e-e71eb76a4694","route":"/v1/auth/github/callback","method":"GET","status":400}
+{"request_id":"5ee55fba-b4e1-487a-9161-55dbbea13be2","route":"/v1/auth/github/callback","method":"GET","status":400}
+{"request_id":"9e8e4b97-21b3-49f3-9b01-fca7a4d43264","route":"/v1/auth/github/callback","method":"GET","status":400}
+{"request_id":"6887b946-50ad-4758-85e9-5e69a5c1c089","route":"/v1/auth/github/callback","method":"GET","status":400}
+{"request_id":"c0f93b71-d65e-4a15-89e3-b0d6f741e8eb","route":"/v1/auth/github/callback","method":"GET","status":400}
+{"request_id":"bce6d22a-01ea-4fa1-b5d0-6d1552ab3186","route":"/v1/auth/github/callback","method":"GET","status":400}
+{"request_id":"82932d48-6555-400c-9446-d5795a2c4bfc","route":"/v1/auth/github/callback","method":"GET","status":400}
+{"request_id":"cdb40db2-447b-4ec0-8e28-dcaa376155bc","route":"/v1/auth/github/callback","method":"GET","status":400}
+{"request_id":"8577357c-b5bd-488b-b52f-1720c9758ac3","route":"/v1/auth/github/callback","method":"GET","status":400}
+{"request_id":"0e59385b-034d-415e-b067-1c8c8586f296","route":"/v1/auth/github/callback","method":"GET","status":400}
+{"request_id":"e077434e-fe85-4dfe-a6ab-4ce388015a23","route":"/v1/auth/github/callback","method":"GET","status":400}
+{"request_id":"ae972823-0dbc-47c6-b943-db287560b3bd","route":"/v1/auth/github","method":"GET","status":503}
+{"request_id":"e7b5ce3f-2368-4aea-b216-77041b2654a4","route":"/v1/cli/me","method":"GET","status":503}
+✔ public starts/polls and failure audit writes are bounded, untrusted rate headers cannot bypass budgets, limiter failure denies closed (1604.6817ms)
+✔ failure-audit budget saturates at exactly eight per window and rolls over at the minute boundary (1064.791191ms)
+{"request_id":"6e7b5ef2-ae79-4c19-b60e-2d8f3f70b68f","route":"/v1/auth/github","method":"GET","status":302}
+{"request_id":"2b69e742-b9ca-4ede-a371-f225f5466cfd","route":"/v1/auth/github/callback","method":"GET","status":302}
+{"request_id":"f9a53fed-15c6-463c-a64f-d8c9b0711795","route":"/v1/me","method":"GET","status":200}
+{"request_id":"0a3c74e8-9fc3-4233-b371-72872f8ba2c7","route":"/v1/session","method":"GET","status":200}
+{"request_id":"938c5a66-bb81-42ea-9902-2503a93f26ce","route":"/v1/cli-links","method":"POST","status":201}
+{"request_id":"dbcfa476-1643-469c-bdb5-b7d2fd521a99","route":"/v1/cli-links/:link_id","method":"POST","status":200}
+{"request_id":"4528641f-2e3b-422d-8091-5ce1071b558c","route":"/v1/cli-links/:link_id","method":"POST","status":200}
+{"request_id":"fcd6d0b7-6de2-42d9-976e-ed980b2a79fd","route":"/v1/cli-links","method":"POST","status":201}
+{"request_id":"23b998a1-7a70-48cf-91f2-ce29b67b11ad","route":"/v1/tenants/:tenant_id/machines","method":"POST","status":201}
+{"request_id":"7d4466c0-e9d3-4583-9550-e21b8370f6b1","route":"/v1/cli/me","method":"DELETE","status":200}
+{"request_id":"70835afa-d554-4a8c-82fc-5e8061f559d9","route":"/v1/cli-links/:link_id","method":"GET","status":404}
+{"request_id":"72e115a1-f4b7-4cc0-99a0-535964ce797a","route":"/v1/workers/register","method":"POST","status":404}
+✔ bounded cleanup deletes expired unconsumed state/caches and preserves identity and revocation evidence (1253.78738ms)
+{"request_id":"fe4f6c77-ba64-4dc6-9be3-4b5b8ec21336","route":"/v1/auth/github","method":"GET","status":302}
+{"request_id":"48903edf-2329-495d-bb03-47848d5b3ba3","route":"/v1/auth/github/callback","method":"GET","status":302}
+{"request_id":"246c0ff6-0d42-48ff-b162-100e51aaf106","route":"/v1/me","method":"GET","status":200}
+{"request_id":"53117967-e312-4005-81c7-41d272dcc291","route":"/v1/session","method":"GET","status":200}
+{"request_id":"610c64ff-3bf6-4785-b936-6124a957a08a","route":"/v1/cli-links","method":"POST","status":201}
+{"request_id":"d3fd6b97-4968-47e0-b5ac-45332ae035b8","route":"/v1/cli-links","method":"POST","status":201}
+{"request_id":"3448fd70-ea6a-4ea1-92c7-56683d4c9922","route":"/v1/cli-links/:link_id","method":"POST","status":200}
+{"request_id":"61e6007a-f3e6-4fc5-b003-be43737f8cb4","route":"/v1/cli-links/:link_id","method":"POST","status":200}
+{"request_id":"644ecacb-5e36-4beb-8b1c-1d5b1958fdb5","route":"/v1/cli-links/:link_id","method":"POST","status":200}
+✔ cleanupIdentity removes expired unconsumed links and preserves consumed links and audits (1310.457564ms)
+{"request_id":"206ea493-8a63-491d-843b-1352e7ca791f","route":"/v1/auth/github","method":"GET","status":302}
+{"request_id":"eb184e3b-7413-4954-80a4-8225df44b0e8","route":"/v1/auth/github/callback","method":"GET","status":302}
+{"request_id":"70211893-a588-455d-bfe4-168258044712","route":"/v1/me","method":"GET","status":200}
+{"request_id":"afbcfb3d-d1de-455a-ac6c-c8838bf01ae7","route":"/v1/session","method":"GET","status":200}
+{"request_id":"5e87b430-1fe6-45b7-9d6b-2f1e02d8f9b2","route":"/v1/cli-links","method":"POST","status":201}
+{"request_id":"69d329e2-d745-4688-af27-811ce643f0ce","route":"/v1/cli-links/:link_id","method":"POST","status":200}
+{"request_id":"e76f6a94-3858-4ef0-b68c-fccd3fbf78ee","route":"/v1/cli-links/:link_id","method":"POST","status":200}
+{"request_id":"31989d32-1aba-4360-829e-280c745aa8a5","route":"/v1/cli/me/rotate","method":"POST","status":200}
+{"request_id":"8e2c1ae0-c3b7-483d-9349-f605312175bc","route":"/v1/cli/me/rotate","method":"POST","status":200}
+{"request_id":"8d8015ae-86e8-4f6d-a979-b8369d98d64d","route":"/v1/cli/me","method":"GET","status":401}
+✔ credential rotation concurrent winners invalidate old tokens (1092.34894ms)
+{"request_id":"93292de4-9411-4c5e-b356-1175be338c5b","route":"/v1/auth/github","method":"GET","status":302}
+{"request_id":"ca75c78e-ed4e-4d8f-9867-645c7cca7001","route":"/v1/auth/github/callback","method":"GET","status":302}
+{"request_id":"6cb87647-6cd5-4e4a-84aa-60fc04342c36","route":"/v1/me","method":"GET","status":200}
+{"request_id":"b8620c4b-383a-4c5d-bf18-a2915e956117","route":"/v1/session","method":"GET","status":200}
+{"request_id":"dcd0cd83-57b0-4dab-bcdf-daee7c174db5","route":"/v1/tenants/:tenant_id/machines","method":"POST","status":201}
+{"request_id":"b8c11a20-360a-4609-a1aa-6532734a4d3a","route":"/v1/workers/register","method":"POST","status":201}
+{"request_id":"c75830b4-849b-42ba-9d07-182583908641","route":"/v1/workers/register","method":"POST","status":409}
+{"request_id":"0206be86-295e-4ffa-af87-4b8843133541","route":"/v1/workers/register","method":"POST","status":201}
+✔ enrollment exact replay returns cached credential while changed body returns conflict (958.867739ms)
+{"request_id":"e18e9175-a079-4535-872f-1ed36eb80dcb","route":"/v1/auth/github","method":"GET","status":302}
+{"request_id":"5d1a23be-ff4a-4582-ae53-899466d03b4f","route":"/v1/auth/github/callback","method":"GET","status":302}
+{"request_id":"4f90b673-0a30-4492-9211-1f0bd6f757a1","route":"/v1/me","method":"GET","status":200}
+{"request_id":"0bc1ad93-6590-4874-a62c-c90b9b28cbf2","route":"/v1/session","method":"GET","status":200}
+{"request_id":"4ff50cc2-3b17-4158-83c9-41061e40805f","route":"/v1/cli-links","method":"POST","status":201}
+{"request_id":"899ea24e-8755-4984-9904-3ef118b468f6","route":"/v1/cli-links/:link_id","method":"POST","status":200}
+{"request_id":"16bd220a-2803-4395-9d71-8fb512983ecb","route":"/v1/cli-links/:link_id","method":"POST","status":200}
+{"request_id":"25f7446a-3dbb-4ffb-97ee-18558fa6a094","route":"/v1/me","method":"GET","status":401}
+{"request_id":"ed890419-4a6b-4e44-a118-7bd679e3383b","route":"/v1/workers/me","method":"GET","status":401}
+{"request_id":"9c0e554b-6aa3-41fd-8ab6-7e7194230f57","route":"/v1/tenants/:tenant_id/machines","method":"POST","status":201}
+{"request_id":"27c3227f-7ede-4475-96cd-51593943d16a","route":"/v1/workers/register","method":"POST","status":201}
+{"request_id":"16bcb276-d742-4dd2-8129-8828655b53d1","route":"/v1/cli/me","method":"GET","status":401}
+✔ machine credentials cannot access other machine types or website routes (1017.12923ms)
+{"request_id":"0755b0ab-86a9-4314-bc74-d32d48c38043","route":"/v1/auth/github","method":"GET","status":302}
+{"request_id":"6f5ea698-79a2-446f-847f-550dbf2be1f4","route":"/v1/auth/github/callback","method":"GET","status":302}
+{"request_id":"45b0d89a-80c2-4886-814b-65176021cd18","route":"/v1/me","method":"GET","status":200}
+{"request_id":"beea5d82-5daf-40f5-bb30-00595239741d","route":"/v1/session","method":"GET","status":200}
+{"request_id":"1c2e36de-2653-4140-bc9b-21abbd5e12eb","route":"/v1/cli-links","method":"POST","status":201}
+{"request_id":"c24f0e6a-2f57-44b8-96d5-d272a6649117","route":"/v1/cli-links/:link_id","method":"POST","status":200}
+{"request_id":"37f978d5-82af-4d76-b4da-73822d2539cd","route":"/v1/cli-links/:link_id","method":"POST","status":403}
+✔ link exchange denied when approving account loses active membership (908.481114ms)
+{"request_id":"41452b7c-3464-42cb-9bac-0e3079aa8e8b","route":"/v1/auth/github","method":"GET","status":302}
+{"request_id":"5801558e-1e0b-4cbe-b248-7bd3e3a89bc8","route":"/v1/auth/github/callback","method":"GET","status":302}
+{"request_id":"8956938e-598f-43cf-afcc-204baf75fd18","route":"/v1/me","method":"GET","status":200}
+{"request_id":"0ce899e9-beea-4e65-b41d-94a47bdb9717","route":"/v1/session","method":"GET","status":200}
+{"request_id":"dd3a0f10-ccf2-476c-8813-d9cd73d2c2a2","route":"/v1/cli-links","method":"POST","status":201}
+{"request_id":"5118521d-e8d8-419b-b58d-a2c8a61d2e7c","route":"/v1/cli-links/:link_id","method":"POST","status":200}
+{"request_id":"a72dac49-1e5b-4005-9c6e-f27c44bf0541","route":"/v1/cli-links/:link_id","method":"POST","status":200}
+{"request_id":"11f07b0f-1722-49df-931a-3f3060ec7dec","route":"/v1/cli-links/:link_id","method":"POST","status":409}
+✔ exchange cache prevents duplicate consumption with different keys (950.493406ms)
+{"request_id":"fbbf94f8-b5e7-49ab-a59d-3b9e83c786e8","route":"/v1/auth/github","method":"GET","status":302}
+{"request_id":"5dc4fb3f-cf7f-494f-a15b-41098645b44b","route":"/v1/auth/github/callback","method":"GET","status":302}
+{"request_id":"17a57220-6470-47c6-b123-bdacd40b597b","route":"/v1/me","method":"GET","status":200}
+{"request_id":"76d2d3a8-51f2-42ee-886a-d6349a3c18ca","route":"/v1/session","method":"GET","status":200}
+{"request_id":"c9fb3d94-24d3-4796-8b38-89d8573c693a","route":"/v1/auth/github","method":"GET","status":302}
+{"request_id":"45749a7a-7068-4958-9202-137530387af2","route":"/v1/auth/github/callback","method":"GET","status":302}
+{"request_id":"aa522b59-2315-4432-a8c3-f469f4b39e58","route":"/v1/me","method":"GET","status":200}
+{"request_id":"21a42bcf-f69f-4175-9287-acef019bf980","route":"/v1/session","method":"GET","status":200}
+{"request_id":"3852605b-9f71-4918-812c-57a88c374e61","route":"/v1/tenants/:tenant_id/machines","method":"POST","status":201}
+{"request_id":"14cc8159-1761-4922-a9e0-8407b81e9eea","route":"/v1/workers/register","method":"POST","status":201}
+{"request_id":"c75d015e-8d12-4e54-a45f-d1bd9907ae4e","route":"/v1/tenants/:tenant_id/machines","method":"POST","status":201}
+{"request_id":"684eed40-ea55-4c37-a225-f60a0bedffec","route":"/v1/workers/register","method":"POST","status":201}
+✔ worker credential tenant binding is immutable at enrollment time (919.77711ms)
+{"request_id":"777cfc11-3bbb-460c-bd1b-1cd5b98dfe30","route":"/v1/auth/github","method":"GET","status":302}
+{"request_id":"8e72ae16-c174-493f-951a-9103d53356be","route":"/v1/auth/github/callback","method":"GET","status":302}
+{"request_id":"48c8c95e-a03c-4b00-8897-45fad3b3b8a5","route":"/v1/me","method":"GET","status":200}
+{"request_id":"729b726c-3fd3-4110-9183-3bc8ec7d1fae","route":"/v1/session","method":"GET","status":200}
+{"request_id":"725ed9c9-820f-4d8a-9923-97f4e943dfb8","route":"/v1/cli-links","method":"POST","status":201}
+{"request_id":"5de88679-d3ef-4cc8-87e4-213b3805e79b","route":"/v1/cli-links/:link_id","method":"POST","status":200}
+{"request_id":"6d107178-a759-4e31-81dd-1ac94f27a3bd","route":"/v1/cli-links/:link_id","method":"POST","status":503}
+✔ DB failure during exchange denies closed without partial credential (948.464879ms)
+{"request_id":"54ff13b7-0ba4-4b5e-b8d7-0a324d77e22b","route":"/v1/auth/github","method":"GET","status":302}
+{"request_id":"9afd5791-5512-4ab3-b671-66139b8fb192","route":"/v1/auth/github/callback","method":"GET","status":302}
+{"request_id":"d422934c-90e5-4963-9a25-6d353cd64df8","route":"/v1/me","method":"GET","status":200}
+{"request_id":"0b331591-9628-4b71-a794-af7031c0699a","route":"/v1/session","method":"GET","status":200}
+{"request_id":"82b7afe8-af35-4269-ab45-119bab0095a9","route":"/v1/tenants/:tenant_id/machines","method":"POST","status":201}
+{"request_id":"0ec2dc63-afb1-4383-9332-170e51cd9bf8","route":"/v1/tenants/:tenant_id/machines","method":"POST","status":201}
+{"request_id":"958666c9-2757-4afe-8d0f-3d5ecc239b2e","route":"/v1/tenants/:tenant_id/machines","method":"POST","status":201}
+{"request_id":"bc728055-3d5e-4fc4-8d36-caf0f21e6069","route":"/v1/tenants/:tenant_id/machines","method":"POST","status":201}
+{"request_id":"60618290-c732-4152-bb66-1b8f31c8bc3b","route":"/v1/tenants/:tenant_id/machines","method":"POST","status":201}
+{"request_id":"753543d8-4d0e-4f93-b02d-e8e0f03560db","route":"/v1/tenants/:tenant_id/machines","method":"POST","status":201}
+{"request_id":"268933b2-8a37-4505-be5d-feb266efb653","route":"/v1/tenants/:tenant_id/machines","method":"POST","status":201}
+{"request_id":"b26e4dee-f073-4ba3-9dd5-d105c0854371","route":"/v1/tenants/:tenant_id/machines","method":"POST","status":201}
+{"request_id":"330bb0a7-2534-4335-bcc7-cdb00c6158e5","route":"/v1/tenants/:tenant_id/machines","method":"POST","status":201}
+{"request_id":"7a2d39a3-8c60-4b0b-ac2b-1e19af55fc8b","route":"/v1/tenants/:tenant_id/machines","method":"POST","status":201}
+{"request_id":"d5c92274-beb7-450d-b802-0eb3a97ede0c","route":"/v1/tenants/:tenant_id/machines","method":"POST","status":201}
+{"request_id":"a5a250ce-3d7e-4db7-bfb7-7df3fc396473","route":"/v1/tenants/:tenant_id/machines","method":"POST","status":201}
+{"request_id":"ee4e1604-3125-4e3b-8a58-4fccd04eeebd","route":"/v1/tenants/:tenant_id/machines","method":"POST","status":201}
+{"request_id":"46588492-911f-43c3-8eef-b3df8276320b","route":"/v1/tenants/:tenant_id/machines","method":"POST","status":201}
+{"request_id":"5a1b21ce-d131-4b82-a97b-b6ddf179152c","route":"/v1/tenants/:tenant_id/machines","method":"POST","status":201}
+{"request_id":"937c0bc6-3403-4ef2-8f2b-c3512e963eab","route":"/v1/tenants/:tenant_id/machines","method":"POST","status":201}
+{"request_id":"ee24a14a-55cc-4f99-88e0-c42c6ffa3e79","route":"/v1/tenants/:tenant_id/machines","method":"POST","status":201}
+{"request_id":"699324c9-9a41-499d-9f78-2dcecfcbf1e0","route":"/v1/tenants/:tenant_id/machines","method":"POST","status":201}
+{"request_id":"e6fc8094-a6c5-460b-9533-60d33ec5ccf2","route":"/v1/tenants/:tenant_id/machines","method":"POST","status":201}
+{"request_id":"95e7ff7c-02e7-4cbd-b363-7302f00be4e5","route":"/v1/tenants/:tenant_id/machines","method":"POST","status":201}
+{"request_id":"99f8a2b8-786c-4ca8-8503-1a7fa6ed106e","route":"/v1/tenants/:tenant_id/machines","method":"POST","status":201}
+{"request_id":"6ea007fa-c5a7-4750-b53e-5712af8a396a","route":"/v1/tenants/:tenant_id/machines","method":"POST","status":201}
+{"request_id":"6d0ddfc2-806f-4897-8183-08c62f488d91","route":"/v1/tenants/:tenant_id/machines","method":"POST","status":201}
+{"request_id":"10215e75-2c33-493c-83e8-2c83a23ddfd9","route":"/v1/tenants/:tenant_id/machines","method":"POST","status":201}
+{"request_id":"d3d2ec81-9a28-44f7-a0ab-47d14ad89f8d","route":"/v1/tenants/:tenant_id/machines","method":"POST","status":201}
+{"request_id":"850eb1ef-c8c7-4a0a-be42-820bd9bb5eb6","route":"/v1/tenants/:tenant_id/machines","method":"POST","status":409}
+✔ per-tenant enrollment limit prevents exceeding maximum active invitations (1142.237149ms)
+{"request_id":"5f986566-8e04-4e66-bf19-8865eb8a7a47","route":"/v1/auth/github","method":"GET","status":302}
+{"request_id":"9d586049-1ad7-4c53-b54e-3b60b4657106","route":"/v1/auth/github/callback","method":"GET","status":302}
+{"request_id":"13d96a7d-0eea-47e4-adb3-7b9d18bf2ccf","route":"/v1/me","method":"GET","status":200}
+{"request_id":"88217a48-456c-45d8-94ea-b07df272ad3c","route":"/v1/session","method":"GET","status":200}
+{"request_id":"cd4fe645-0f94-44e5-a43d-93ee8655e3c6","route":"/v1/cli-links","method":"POST","status":201}
+{"request_id":"5544a12f-ba5e-443f-865b-f4c76c33deb2","route":"/v1/cli-links","method":"POST","status":201}
+{"request_id":"7126fc41-186c-481e-a6dc-e8b68566d81c","route":"/v1/cli-links/:link_id","method":"POST","status":200}
+{"request_id":"163fcdfb-e19f-4e8a-b0cc-2c4b48592349","route":"/v1/cli-links/:link_id","method":"POST","status":200}
+{"request_id":"2fcedd7c-b0db-43a6-b086-30c0c0bbff25","route":"/v1/cli-links/:link_id","method":"POST","status":200}
+{"request_id":"afe620c3-4cd5-4d52-8700-3a5216812dc8","route":"/v1/cli-links/:link_id","method":"POST","status":200}
+✔ concurrent link starts with different keys produce independent credentials (905.710807ms)
+✔ verified provider login creates persistent personal authority and revocable session (1173.06224ms)
+✔ callback replay and arbitrary state cannot create accounts (956.49137ms)
+✔ GitHub issuer is pinned before state consumption and valid issuer callbacks retain replay protection (1162.514157ms)
+✔ callback audit distinguishes invalid parameters and missing browser proof without credentials (894.748066ms)
+✔ repeat login and username changes retain immutable identity and personal organization (1082.76639ms)
+✔ concurrent sign-in creates one identity and personal owner without orphan users (1258.075947ms)
+✔ expired and wrong-browser OAuth state are rejected before provider verification (844.865448ms)
+✔ upstream identity failure consumes callback without partial linked accounts or secret logging (836.500061ms)
+✔ tenant IDs do not grant access and cross-tenant idempotency cannot replay results (1520.08331ms)
+✔ session and membership cursors are principal, tenant and purpose bound (1372.026716ms)
+✔ disabled users, expired/revoked/forged sessions and repository bearers fail closed (1178.760581ms)
+✔ CSRF, strict input, body limits, CORS and security headers apply (1119.804647ms)
+✔ audit failure rolls back privileged updates and D1 outage never authorizes (1101.346794ms)
+✔ only owner/admin can update settings; session revocation is user scoped (1502.904688ms)
+✔ concurrent identical mutation keys have one durable effect and audit event (1155.465941ms)
+✔ account bootstrap batch rolls back and query claims cannot link identities (1045.489824ms)
+✔ missing auth configuration and unmigrated D1 return coarse unavailability (888.917116ms)
+{"request_id":"617ccecf-4a38-4090-89d4-44d14fa3961c","route":"/v1/auth/github","method":"GET","status":302}
+{"request_id":"716b2de9-1098-4185-b68d-b186659b15a3","route":"/v1/auth/github/callback","method":"GET","status":302}
+{"request_id":"961bb7eb-b635-497b-a99f-dd90fbb4f1e4","route":"/v1/me","method":"GET","status":200}
+{"request_id":"4ecb95fe-1983-4902-a881-83dc029cc1da","route":"/v1/session","method":"GET","status":200}
+{"request_id":"367dfff9-74c5-4f52-8134-f9cc49a7a262","route":"/v1/cli-links","method":"POST","status":201}
+{"request_id":"64fb34c9-a655-418d-9978-cc0fb874d316","route":"/v1/cli-links/:link_id","method":"POST","status":200}
+{"request_id":"baa9defa-ad72-4029-b400-038aa7d16e44","route":"/v1/cli-links/:link_id","method":"POST","status":200}
+{"request_id":"a39c7b54-1e0d-4624-9743-0042b7f25a04","route":"/v1/cli/me","method":"GET","status":200}
+{"request_id":"bcda0922-36ce-4b21-9a15-a0aebde4aca2","route":"/v1/cli/organizations","method":"GET","status":200}
+{"request_id":"6655a54a-26f8-47b1-881e-5e0a9541f1da","route":"/v1/auth/github","method":"GET","status":302}
+{"request_id":"48080d9a-b8ff-4fa8-8c82-5143d331943d","route":"/v1/auth/github/callback","method":"GET","status":302}
+{"request_id":"0872d325-66db-4dcb-8c2f-9b1acaa9d185","route":"/v1/me","method":"GET","status":200}
+{"request_id":"d6f8a623-41ef-4970-b5a8-c7246741880f","route":"/v1/session","method":"GET","status":200}
+{"request_id":"0216e365-b3e0-47fe-94d6-c72dd551ba61","route":"/v1/cli-links","method":"POST","status":201}
+{"request_id":"d012f0a0-527a-4bcc-8543-51d843bd44f9","route":"/v1/cli-links/:link_id","method":"POST","status":200}
+{"request_id":"0fccf65b-12b7-4f31-83a1-caf08791c3ec","route":"/v1/cli-links/:link_id","method":"POST","status":200}
+{"request_id":"403cefcb-343b-4472-8e5a-17c8e1440d0e","route":"/v1/cli/me","method":"DELETE","status":200}
+{"request_id":"0dba2681-31e6-4247-839d-0ae0ebc942fc","route":"/v1/cli/me","method":"GET","status":401}
+{"request_id":"61b3d715-16b7-445e-8fa7-83f389355178","route":"/v1/cli/me/rotate","method":"POST","status":200}
+{"request_id":"673146b5-cb13-4b68-a884-b1636c6fb763","route":"/v1/cli/me","method":"GET","status":401}
+{"request_id":"93bcaceb-f194-49aa-9b13-ae5eeb104749","route":"/v1/cli/me","method":"DELETE","status":200}
+{"request_id":"42755ada-0c85-402d-bd05-29edc132c04a","route":"/v1/cli/me","method":"GET","status":401}
+✔ real Bun CLI pairs with workerd/D1, persists privately, checks status, reauthorizes tenant and revokes server/local credentials (12452.175636ms)
+✔ local configuration isolates metadata and secret bindings from the Bun coordinator (1.200433ms)
+✔ production and unknown modes are rejected (0.527801ms)
+✔ preview requires separate D1 UUID and exact HTTPS origins (0.630723ms)
+{"request_id":"c7ae014d-0819-41c6-94d5-418b004b3397","route":"/v1/auth/github","method":"GET","status":302}
+{"request_id":"2c8982b1-d5d5-43d9-9dd3-cfbd04f11e0e","route":"/v1/auth/github/callback","method":"GET","status":302}
+{"request_id":"4a65d255-6031-4fa4-a6e0-919e7dfcd720","route":"/v1/me","method":"GET","status":200}
+{"request_id":"349a68d7-5a6b-4269-8f0d-efa4481390d4","route":"/v1/session","method":"GET","status":200}
+{"request_id":"24c4002b-faef-4b50-a31e-85a4a3b800ec","route":"/v1/cli-links","method":"POST","status":201}
+{"request_id":"c8c820de-544b-420f-8de3-200b3b674dd5","route":"/v1/cli-links/:link_id","method":"POST","status":200}
+{"request_id":"e12af3b7-f5b0-4e6a-84ff-66f75d3f3167","route":"/v1/cli-links/:link_id","method":"POST","status":200}
+{"request_id":"7fe5d879-4a26-472b-8d60-93d466cf46a4","route":"/v1/tenants/:tenant_id/machines","method":"POST","status":201}
+{"request_id":"a23970d1-1bd2-4907-b076-3ff4d4495bd0","route":"/v1/workers/register","method":"POST","status":201}
+{"request_id":"ea498a49-3683-4637-97cc-ef2bf9a8766a","route":"/v1/workers/register","method":"POST","status":201}
+{"request_id":"a88ae217-388e-46c9-832e-b7d47737d055","route":"/v1/workers/me","method":"GET","status":200}
+{"request_id":"e20318b4-4028-4d64-aa78-1440426f22ad","route":"/v1/workers/me","method":"GET","status":401}
+{"request_id":"6f5ccd14-1ded-42a7-b454-b9b3bb77198f","route":"/v1/workers/me","method":"GET","status":401}
+{"request_id":"2cc66a1b-9a19-4996-88d8-78c712f611f2","route":"/v1/workers/me","method":"GET","status":401}
+{"request_id":"4e2156a2-f119-4be8-9c13-91c55eebc640","route":"/v1/cli/me","method":"GET","status":401}
+{"request_id":"5908d310-6036-43bc-9f00-ecf3fed1afde","route":"/v1/me","method":"GET","status":401}
+{"request_id":"c66117c6-e216-4848-b914-51c2ad82abd8","route":"/v1/workers/register","method":"POST","status":409}
+{"request_id":"afcf45a0-2376-42c3-be69-415be5756352","route":"/v1/tenants/:tenant_id/tasks","method":"POST","status":401}
+{"request_id":"7a7aa52a-4ef8-4b67-9220-791d3604d7d1","route":"/v1/tenants/:tenant_id/machines","method":"POST","status":401}
+{"request_id":"73177dc4-bde4-49f2-8c0f-d6eb1dc9422a","route":"/v1/tenants/:tenant_id/machines","method":"GET","status":200}
+✔ single-use worker enrollment and encrypted retry are distinct from devices, sessions and task authority (1320.892675ms)
+{"request_id":"94de9869-49a5-4114-84bd-5d3f66f8c02c","route":"/v1/auth/github","method":"GET","status":302}
+{"request_id":"5e32432e-b965-4f25-9136-5b0aa3359cd5","route":"/v1/auth/github/callback","method":"GET","status":302}
+{"request_id":"cbbf9f0f-9e7e-4ac8-a237-ad28b93dc187","route":"/v1/me","method":"GET","status":200}
+{"request_id":"cbf2a656-ea8e-4871-b0cd-77bfc7bf12ad","route":"/v1/session","method":"GET","status":200}
+{"request_id":"8082fe5a-1f44-4c42-b44b-f6f40a8f74ed","route":"/v1/auth/github","method":"GET","status":302}
+{"request_id":"d568d04e-e1a8-4427-b3c3-7ce7b0e93cc4","route":"/v1/auth/github/callback","method":"GET","status":302}
+{"request_id":"c400508d-9f03-44c4-85ef-0629953776be","route":"/v1/me","method":"GET","status":200}
+{"request_id":"1b7ec712-a3d9-49b9-9b08-36f76ca0d23c","route":"/v1/session","method":"GET","status":200}
+{"request_id":"0f365d01-b334-4988-95a7-1a98fb867113","route":"/v1/tenants/:tenant_id/machines","method":"POST","status":201}
+{"request_id":"147a46f7-47d6-42e4-ad23-018c19253249","route":"/v1/tenants/:tenant_id/machines","method":"POST","status":404}
+{"request_id":"3a40f9a1-09af-49eb-8882-4e313bd0f29a","route":"/v1/workers/register","method":"POST","status":201}
+{"request_id":"abbbed8d-2241-4b9d-bcad-091537138954","route":"/v1/tenants/:tenant_id/machines","method":"DELETE","status":404}
+{"request_id":"f0e9a779-30ee-4390-abc5-48ed447c74b6","route":"/v1/workers/me","method":"GET","status":401}
+{"request_id":"bd34b1cf-0ee1-4df8-a20d-998d055179d6","route":"/v1/tenants/:tenant_id/machines","method":"DELETE","status":200}
+{"request_id":"6cf251e5-61d6-4a50-8c41-a6cd4d567817","route":"/v1/workers/me","method":"GET","status":401}
+{"request_id":"72d35d18-b1c9-4893-9410-9ecd395aff45","route":"/v1/tenants/:tenant_id/machines","method":"DELETE","status":200}
+{"request_id":"2209a080-c64a-436e-b975-c13e30d630f9","route":"/v1/tenants/:tenant_id/machines","method":"POST","status":201}
+{"request_id":"5d743acf-1aa9-4acd-bfef-8592205b7722","route":"/v1/workers/register","method":"POST","status":410}
+{"request_id":"80b43fd4-777f-4546-afea-f2972c6cc714","route":"/v1/tenants/:tenant_id/machines","method":"POST","status":201}
+{"request_id":"cbea8e5f-8728-4fc7-ac76-be3430e443fd","route":"/v1/tenants/:tenant_id/machines","method":"DELETE","status":200}
+{"request_id":"6a1a43f2-86ca-4756-89a1-4867aeab2e2d","route":"/v1/workers/register","method":"POST","status":410}
+{"request_id":"e9a06e7b-b973-4e3f-9fe2-0ee60ec5e7c9","route":"/v1/tenants/:tenant_id/machines","method":"POST","status":201}
+{"request_id":"d36ba847-817a-4ea0-887a-8fa254ed30fa","route":"/v1/workers/register","method":"POST","status":403}
+✔ cross-tenant enrollment/revocation, loss of owner authority, expired invitations and revoked workers fail closed (1199.659156ms)
+{"request_id":"5ba59319-2d8e-430f-9ade-bd29708e9652","route":"/v1/auth/github","method":"GET","status":302}
+{"request_id":"3408fbb6-c652-428b-b34f-8d056b83a12e","route":"/v1/auth/github/callback","method":"GET","status":302}
+{"request_id":"83a60ad4-15f8-4911-bbbc-3a463e747298","route":"/v1/me","method":"GET","status":200}
+{"request_id":"98233c8d-810d-42e6-b525-66ee623f2244","route":"/v1/session","method":"GET","status":200}
+{"request_id":"2470281f-68fc-4f72-89ff-3370aab07e08","route":"/v1/tenants/:tenant_id/machines","method":"POST","status":201}
+{"request_id":"1cd9c213-b1cf-4259-86d8-0ff0a3b638a1","route":"/v1/workers/register","method":"POST","status":201}
+{"request_id":"9dd2a656-96f9-4f1e-bebd-4d3fe46d57b7","route":"/v1/workers/me/rotate","method":"POST","status":200}
+{"request_id":"b9e5be5c-947a-4d54-85e2-ea931a98681b","route":"/v1/workers/me","method":"GET","status":401}
+{"request_id":"46020382-0ea4-4cbd-b3cd-b5554a7b383a","route":"/v1/workers/me","method":"GET","status":200}
+{"request_id":"012a6499-7ed2-4317-891a-f7a753da17e8","route":"/v1/cli/me","method":"GET","status":401}
+{"request_id":"1d891a7c-2d23-41a2-8874-83a7d956b7d0","route":"/v1/workers/me","method":"GET","status":401}
+{"request_id":"7943180c-d7a0-4807-ba89-af389cc266d5","route":"/v1/workers/me","method":"GET","status":401}
+{"request_id":"5cad9955-e8cf-434c-a5c5-5fc001171d0a","route":"/v1/workers/me","method":"GET","status":401}
+✔ worker rotation invalidates the old epoch and suspended tenant/disabled authorizer/expired credentials are denied (1137.534626ms)
+{"request_id":"fa5bc576-c253-4a98-8b78-5e54460ec3a1","route":"/v1/auth/github","method":"GET","status":302}
+{"request_id":"0617b435-34a7-4883-ad8c-20d79c16693d","route":"/v1/auth/github/callback","method":"GET","status":302}
+{"request_id":"8c964c2a-f71a-413a-914b-1824d4f66c2e","route":"/v1/me","method":"GET","status":200}
+{"request_id":"821193fc-11ce-4106-82a3-8af542003662","route":"/v1/session","method":"GET","status":200}
+{"request_id":"6144b590-77c2-4074-883f-1bda489aa604","route":"/v1/cli-links","method":"POST","status":201}
+{"request_id":"3834af78-97b6-4ac3-b6ce-3776aa7d1a43","route":"/v1/tenants/:tenant_id/machines","method":"POST","status":201}
+{"request_id":"17aee276-1755-4cc5-b58c-f6fe9912912d","route":"/v1/cli-links/:link_id","method":"POST","status":200}
+{"request_id":"282959d1-894b-4ef4-a887-ff6c93beb70d","route":"/v1/cli-links/:link_id","method":"POST","status":503}
+{"request_id":"856215a1-096b-4e98-bf88-ab11343b8cfb","route":"/v1/workers/register","method":"POST","status":503}
+{"request_id":"24ced10b-3c39-4abd-8eb7-46e4143766b5","route":"/v1/cli-links/:link_id","method":"POST","status":503}
+✔ audit or database failures cannot partly enroll, consume or authorize machine identities (1232.414767ms)
+{"request_id":"d14ebd57-5c4d-491f-ac46-400218f2e28e","route":"/v1/auth/github","method":"GET","status":302}
+{"request_id":"404cb2e5-3a50-4523-977a-35cab353db4f","route":"/v1/auth/github/callback","method":"GET","status":302}
+{"request_id":"fb019cef-cd47-466e-aa25-2ad6ebd07039","route":"/v1/me","method":"GET","status":200}
+{"request_id":"2c289484-8ba9-4972-905a-8b10344ff1b3","route":"/v1/session","method":"GET","status":200}
+{"request_id":"a3d5b461-b76f-48ad-92d4-084ad211da0d","route":"/v1/tenants/:tenant_id/machines","method":"POST","status":201}
+{"request_id":"0f675a49-b8c0-4eea-8bf5-34221f37fb39","route":"/v1/workers/register","method":"POST","status":201}
+{"request_id":"6a721f99-39e3-4b4e-8290-678e2fc639fc","route":"/v1/cli-links","method":"POST","status":201}
+{"request_id":"61afa2df-3d79-41c3-ae56-1921e2cffac1","route":"/v1/cli-links/:link_id","method":"POST","status":200}
+{"request_id":"696718cd-6c02-48be-bd83-30da19c11916","route":"/v1/cli-links/:link_id","method":"POST","status":200}
+{"request_id":"f5885e76-39af-4433-8cf2-ec5363edd823","route":"/v1/tenants/:tenant_id/machines","method":"POST","status":201}
+{"request_id":"33b6531e-bd8c-40da-bdac-12003656d0bb","route":"/v1/workers/register","method":"POST","status":201}
+✔ admission happy path: browser 202 + frozen projection, execution-grant 202, read back (1608.409555ms)
+{"request_id":"5c8c6c48-a557-4762-ba25-c623bee8b53c","route":"/v1/auth/github","method":"GET","status":302}
+{"request_id":"863cdda5-7b02-4aaa-99ad-a190d8959aaf","route":"/v1/auth/github/callback","method":"GET","status":302}
+{"request_id":"374346c6-3bbe-4ddc-b040-08a0b4542656","route":"/v1/me","method":"GET","status":200}
+{"request_id":"33476663-87df-4a61-afa5-daf1180763d3","route":"/v1/session","method":"GET","status":200}
+{"request_id":"17c5d3be-6a4f-40c2-bbd5-0fbad00bdc7b","route":"/v1/tenants/:tenant_id/machines","method":"POST","status":201}
+{"request_id":"c3589f96-3e45-4bb9-9fbd-8351308dfb1d","route":"/v1/workers/register","method":"POST","status":201}
+✔ submission validation: controlled-only, bounds, strict unknown fields, key required (1004.877722ms)
+{"request_id":"fb15e8a0-c8ec-453e-9ed5-973160dca1cf","route":"/v1/auth/github","method":"GET","status":302}
+{"request_id":"bfc006b9-0785-430e-a78d-447ae23ce9d8","route":"/v1/auth/github/callback","method":"GET","status":302}
+{"request_id":"c6a706dd-9bca-4d4a-ab12-ed40b9a6ca2a","route":"/v1/me","method":"GET","status":200}
+{"request_id":"b2df9028-0503-40c6-ba2b-645bfbec4d64","route":"/v1/session","method":"GET","status":200}
+{"request_id":"741d7790-4ad5-42f4-b9ce-d30fd8a587ad","route":"/v1/tenants/:tenant_id/machines","method":"POST","status":201}
+{"request_id":"57120fa5-a8ea-4a2a-b08d-64ed4844375e","route":"/v1/workers/register","method":"POST","status":201}
+{"request_id":"9784ab36-b5a1-4056-a38d-abe93900aebe","route":"/v1/cli-links","method":"POST","status":201}
+{"request_id":"ed93356e-1f25-467b-8a56-cfb7ceb30c26","route":"/v1/cli-links/:link_id","method":"POST","status":200}
+{"request_id":"80263e5a-d600-4476-b8a1-21499bd1621d","route":"/v1/cli-links/:link_id","method":"POST","status":200}
+{"request_id":"3d3e5611-5a0a-44c1-aa8d-353b795fb3d0","route":"/v1/tenants/:tenant_id/machines","method":"POST","status":201}
+{"request_id":"dd24c525-cc15-4c92-a11c-91c305c8aef9","route":"/v1/workers/register","method":"POST","status":201}
+{"request_id":"58d16391-15e2-44b0-a37d-2dfc250dcfb4","route":"/v1/auth/github","method":"GET","status":302}
+{"request_id":"a2554bad-5fa3-4fcd-879e-433d3be7c91b","route":"/v1/auth/github/callback","method":"GET","status":302}
+{"request_id":"77b990fb-97ea-49e2-9837-b63375c286d4","route":"/v1/me","method":"GET","status":200}
+{"request_id":"7b143056-02b2-409c-ad5b-e5b62f13ecf8","route":"/v1/session","method":"GET","status":200}
+{"request_id":"60f779f9-7e25-49e0-aa5d-1794fec311ba","route":"/v1/tenants/:tenant_id/machines","method":"POST","status":201}
+{"request_id":"f61ed778-aadb-4e26-83b8-7ffc46ddae1f","route":"/v1/workers/register","method":"POST","status":201}
+✔ auth matrix: sfcli/sfworker/global rejected, cross-tenant grant 404, CSRF required (1133.037177ms)
+{"request_id":"2ed73cc7-7eba-4e32-883c-205496c34c13","route":"/v1/auth/github","method":"GET","status":302}
+{"request_id":"583893f9-3bbe-4238-bb94-ea563b708fc6","route":"/v1/auth/github/callback","method":"GET","status":302}
+{"request_id":"40367563-cfbf-4c72-839d-332a4419d638","route":"/v1/me","method":"GET","status":200}
+{"request_id":"6d9bcf6b-b18d-451b-bdc1-c27dc093b5fb","route":"/v1/session","method":"GET","status":200}
+{"request_id":"4f7e4c86-2e06-47b6-bc43-5103dba8fbf5","route":"/v1/tenants/:tenant_id/machines","method":"POST","status":201}
+{"request_id":"b4acff02-e672-41a2-a6bb-3225844eb2cc","route":"/v1/tenants/:tenant_id/machines","method":"POST","status":201}
+{"request_id":"849fb0dc-d924-4dd0-8da1-a742e7b059b4","route":"/v1/tenants/:tenant_id/machines","method":"POST","status":201}
+{"request_id":"e348534c-9dfb-47ff-b33c-a536da38c081","route":"/v1/tenants/:tenant_id/machines","method":"POST","status":201}
+{"request_id":"634fc463-435b-40d8-967b-66f9139850f2","route":"/v1/tenants/:tenant_id/machines","method":"POST","status":201}
+{"request_id":"307a1aa7-79fb-4dbe-914c-8ea4008acdd1","route":"/v1/tenants/:tenant_id/machines","method":"POST","status":201}
+{"request_id":"72d0748c-ab67-4397-ade5-1b346efec49e","route":"/v1/tenants/:tenant_id/machines","method":"POST","status":201}
+{"request_id":"2d0cd865-b0aa-4c3e-b8f5-55d925e3b4f4","route":"/v1/tenants/:tenant_id/machines","method":"POST","status":201}
+{"request_id":"682a7f7b-a5f8-4735-91a5-560ed07c0468","route":"/v1/workers/register","method":"POST","status":201}
+{"request_id":"11af12d2-d40f-4eef-b7c9-908b919b9ad9","route":"/v1/workers/register","method":"POST","status":201}
+{"request_id":"338a769d-5526-4a40-b4fb-f49b84996df1","route":"/v1/workers/register","method":"POST","status":201}
+{"request_id":"d1d0c50c-67fb-461b-b64e-67a3baaf3d32","route":"/v1/workers/register","method":"POST","status":201}
+{"request_id":"0d1a536c-1fbc-490e-a0e6-b7be0573b5c3","route":"/v1/workers/register","method":"POST","status":201}
+{"request_id":"08df23c4-145b-4bf1-aa8f-1a61e13a0bee","route":"/v1/workers/register","method":"POST","status":201}
+{"request_id":"9dd1de93-639e-49ce-9050-42b0390c5a29","route":"/v1/workers/register","method":"POST","status":201}
+{"request_id":"fadd3b33-98ce-410a-8f55-6e8a66d272b7","route":"/v1/workers/register","method":"POST","status":201}
+✔ concurrency: N racers at max_active_tasks=3 admit exactly 3 (persisted counts agree) (1218.260739ms)
+{"request_id":"9486a86f-b827-4aca-ba3f-e1620d0cd3c0","route":"/v1/auth/github","method":"GET","status":302}
+{"request_id":"761fbb6c-4267-43f3-ba75-7c50651c1dc6","route":"/v1/auth/github/callback","method":"GET","status":302}
+{"request_id":"01735ba1-2cfb-403a-96cf-d72f7b97bd4b","route":"/v1/me","method":"GET","status":200}
+{"request_id":"8307cd2a-1141-4726-b374-9e7b40e7bc9d","route":"/v1/session","method":"GET","status":200}
+{"request_id":"27e3a978-67a6-4cb3-9c70-3e93c699ba0d","route":"/v1/tenants/:tenant_id/machines","method":"POST","status":201}
+{"request_id":"193026d5-b45e-49ca-b448-15ba962da031","route":"/v1/workers/register","method":"POST","status":201}
+✔ worker exclusivity: same worker racers admit exactly 1 (1132.502705ms)
+{"request_id":"ae4de4d3-ab0c-4b27-bb56-e5a6ef960545","route":"/v1/auth/github","method":"GET","status":302}
+{"request_id":"6c0cd86e-b412-45c6-ba22-80f08f6f586a","route":"/v1/auth/github/callback","method":"GET","status":302}
+{"request_id":"7b9b020a-7d95-446f-b8d7-3cde93db694f","route":"/v1/me","method":"GET","status":200}
+{"request_id":"3a2a9c94-f5e1-41a2-a89b-c95d0c639de6","route":"/v1/session","method":"GET","status":200}
+{"request_id":"72c9e033-896a-4977-a47b-89f9e293eaa0","route":"/v1/auth/github","method":"GET","status":302}
+{"request_id":"e32dde10-4b74-4b00-a7b0-92acdf6385dd","route":"/v1/auth/github/callback","method":"GET","status":302}
+{"request_id":"8b9d6c2c-1182-4133-9698-2ea75a1e0c33","route":"/v1/me","method":"GET","status":200}
+{"request_id":"d1c336f2-af50-43e3-b8e1-54d16bfb6840","route":"/v1/session","method":"GET","status":200}
+{"request_id":"08be3a0a-2285-4137-9a6a-ded8ced85271","route":"/v1/cli-links","method":"POST","status":201}
+{"request_id":"f6c71a52-2996-4835-be2b-de606c708b8a","route":"/v1/cli-links/:link_id","method":"POST","status":200}
+{"request_id":"fd2aecc0-bfd6-4ed7-a21a-b70abbd9e0af","route":"/v1/cli-links/:link_id","method":"POST","status":200}
+{"request_id":"32a706ed-6a34-4f29-8143-3a3cefb35196","route":"/v1/cli-links","method":"POST","status":201}
+{"request_id":"c53f6725-660e-4c98-a5df-72d4d2ea432a","route":"/v1/cli-links/:link_id","method":"POST","status":200}
+{"request_id":"6a020187-2bed-4e0e-a454-117be55bbd1c","route":"/v1/cli-links/:link_id","method":"POST","status":200}
+{"request_id":"36b1f837-ad90-46d8-a7ea-a926d72f6f52","route":"/v1/tenants/:tenant_id/machines","method":"POST","status":201}
+{"request_id":"a312c243-e02a-4c28-9cda-f64363e97f00","route":"/v1/tenants/:tenant_id/machines","method":"POST","status":201}
+{"request_id":"27ddfe06-0fbe-459a-b025-20f510cb3f7f","route":"/v1/tenants/:tenant_id/machines","method":"POST","status":201}
+{"request_id":"28ff60ba-2e94-4968-8189-024909ea7304","route":"/v1/tenants/:tenant_id/machines","method":"POST","status":201}
+{"request_id":"d9b70d9d-418c-429b-a4d7-014854c8b3f2","route":"/v1/workers/register","method":"POST","status":201}
+{"request_id":"7ccbe418-b8e7-4c7f-a29a-04a360b2a775","route":"/v1/workers/register","method":"POST","status":201}
+{"request_id":"a7bd0cf0-272a-454c-b42d-d62e007d4ef0","route":"/v1/workers/register","method":"POST","status":201}
+{"request_id":"90124151-58d3-4d79-8a1b-0ec8906d5da0","route":"/v1/workers/register","method":"POST","status":201}
+{"request_id":"a93330b6-490a-42ff-a8a3-fc7f715d7436","route":"/v1/tenants/:tenant_id/machines","method":"POST","status":201}
+{"request_id":"0e45811b-b2be-4087-bce7-b975e3860d19","route":"/v1/tenants/:tenant_id/machines","method":"POST","status":201}
+{"request_id":"70586b4b-411f-4bc4-8a08-87d930a18ab8","route":"/v1/tenants/:tenant_id/machines","method":"POST","status":201}
+{"request_id":"060fd300-6c0a-40c8-8b8c-5004f1151a7d","route":"/v1/workers/register","method":"POST","status":201}
+{"request_id":"d6287a14-542d-48bf-8cd0-27057aeb3ac6","route":"/v1/workers/register","method":"POST","status":201}
+{"request_id":"93c9c8b0-5186-4dbd-a49c-88b60bca3455","route":"/v1/workers/register","method":"POST","status":201}
+✔ multi-user + multi-CLI + cross-org races respect per-tenant caps (1396.680913ms)
+{"request_id":"f27e1cb4-fd90-48eb-8fea-37cd2be3199b","route":"/v1/auth/github","method":"GET","status":302}
+{"request_id":"4480e3f8-ec39-4e7a-9df6-15af814256de","route":"/v1/auth/github/callback","method":"GET","status":302}
+{"request_id":"337c01f9-bc76-4e3b-8c3e-156892da3d27","route":"/v1/me","method":"GET","status":200}
+{"request_id":"d5fc2677-dedd-493d-9824-6494d2cf7bc9","route":"/v1/session","method":"GET","status":200}
+{"request_id":"c2beb44d-8128-4358-a3b1-d4f2f39fe1bf","route":"/v1/tenants/:tenant_id/machines","method":"POST","status":201}
+{"request_id":"9b5aab9f-f0e1-41c5-b595-5bb974e45c91","route":"/v1/workers/register","method":"POST","status":201}
+✔ idempotency: same-key race one row + identical replies; retry safe; changed payload 409 (1122.635289ms)
+{"request_id":"b5c75bef-c00d-4ee1-ae1f-a868b3625a92","route":"/v1/auth/github","method":"GET","status":302}
+{"request_id":"5d4066cf-e6d4-46a4-8133-5573026e690b","route":"/v1/auth/github/callback","method":"GET","status":302}
+{"request_id":"d556e68c-0376-4cd5-9e39-ada6ad69ae7d","route":"/v1/me","method":"GET","status":200}
+{"request_id":"3e9b2514-3bd9-4e89-a772-d076d25c8e18","route":"/v1/session","method":"GET","status":200}
+{"request_id":"7c996277-cf4e-450f-b82c-a2b341b98325","route":"/v1/tenants/:tenant_id/machines","method":"POST","status":201}
+{"request_id":"a3a891e6-86ff-48b8-85a0-ef423a7372eb","route":"/v1/workers/register","method":"POST","status":201}
+{"request_id":"74f553b6-20cc-458b-b175-41de45a71cb7","route":"/v1/tenants/:tenant_id/machines","method":"POST","status":201}
+{"request_id":"422bd987-03d8-4938-b9bf-6bfb79f7775e","route":"/v1/workers/register","method":"POST","status":201}
+✔ request-id uniqueness: alternate key with same request_id is 409, no orphan task (985.727769ms)
+{"request_id":"14e48907-e141-4ff4-9dfa-9ac9ae4249a9","route":"/v1/auth/github","method":"GET","status":302}
+{"request_id":"f6af48d7-d56e-4a4a-a544-6c4540764736","route":"/v1/auth/github/callback","method":"GET","status":302}
+{"request_id":"48ef8e10-a978-4ed0-9dd6-0f48c57b452f","route":"/v1/me","method":"GET","status":200}
+{"request_id":"9ec93d44-4764-4b43-b911-182c515160f3","route":"/v1/session","method":"GET","status":200}
+{"request_id":"57746b76-4f95-4882-801e-e1b6ae17e583","route":"/v1/tenants/:tenant_id/machines","method":"POST","status":201}
+{"request_id":"38a83b91-8097-4a23-aa96-007306f1cd50","route":"/v1/workers/register","method":"POST","status":201}
+{"request_id":"3799d7d8-3806-44e8-a9f4-a4e33978ceaa","route":"/v1/auth/github","method":"GET","status":302}
+{"request_id":"f5ecff26-acf3-405e-8277-caf654439d20","route":"/v1/auth/github/callback","method":"GET","status":302}
+{"request_id":"11f0db8a-308e-4a4b-bebb-8e64e163d11d","route":"/v1/me","method":"GET","status":200}
+{"request_id":"95d1137c-5a42-48d9-9ff1-6e4df4bb7a83","route":"/v1/session","method":"GET","status":200}
+{"request_id":"19a51a3e-0431-4601-8281-be5b5c2ba309","route":"/v1/tenants/:tenant_id/machines","method":"POST","status":201}
+{"request_id":"40ee7980-2270-411f-aec2-0c6c680b8be5","route":"/v1/workers/register","method":"POST","status":201}
+{"request_id":"509b13a5-ef19-4063-8265-93ac0d76931e","route":"/v1/auth/github","method":"GET","status":302}
+{"request_id":"3e7951c0-ffc3-4765-b38b-15d425459970","route":"/v1/auth/github/callback","method":"GET","status":302}
+{"request_id":"716ccc81-09a9-4977-a312-ad8d8b4d2262","route":"/v1/me","method":"GET","status":200}
+{"request_id":"806e3189-9c02-42a0-b21e-7d85191ff7f6","route":"/v1/session","method":"GET","status":200}
+{"request_id":"b77d54bc-0e8b-4ab0-b463-cf2391817b11","route":"/v1/cli-links","method":"POST","status":201}
+{"request_id":"8a8bb188-cc9a-4125-bfef-f1824c398737","route":"/v1/cli-links/:link_id","method":"POST","status":200}
+{"request_id":"3b4dd44e-7813-4194-b770-05a93a35a2ec","route":"/v1/cli-links/:link_id","method":"POST","status":200}
+{"request_id":"c9cec48d-691f-4aa6-9813-ddb07bf09436","route":"/v1/tenants/:tenant_id/machines","method":"POST","status":201}
+{"request_id":"55025df7-1748-463c-9cbd-38937ac00165","route":"/v1/workers/register","method":"POST","status":201}
+{"request_id":"ff0ebbfb-20c0-4fa2-bfa9-e119b7f82dd2","route":"/v1/cli/me/rotate","method":"POST","status":200}
+✔ entitlement gates: missing/expired/revoked caps, stale grant, stale worker deny without rows (1395.397605ms)
+{"request_id":"4a47a0aa-72cd-4e15-8508-49ee3f74b449","route":"/v1/auth/github","method":"GET","status":302}
+{"request_id":"b0f50f42-7236-4a14-96a9-e09241a8c914","route":"/v1/auth/github/callback","method":"GET","status":302}
+{"request_id":"1e2e4cbe-caae-48ca-bb54-ecbfc15a03e0","route":"/v1/me","method":"GET","status":200}
+{"request_id":"12dc295a-d13d-4b04-bc61-7635be09612a","route":"/v1/session","method":"GET","status":200}
+{"request_id":"0995c1cf-d6a6-4e96-a4b2-20e98cfa101d","route":"/v1/tenants/:tenant_id/machines","method":"POST","status":201}
+{"request_id":"0f92922d-d6a4-4c75-b4a8-f74912687e20","route":"/v1/workers/register","method":"POST","status":201}
+✔ database failure rolls back: dropped outbox table denies 503 with no partial task/meter (1070.978462ms)
+{"request_id":"0fe8f950-a946-4688-a6d2-6475966c5544","route":"/v1/auth/github","method":"GET","status":302}
+{"request_id":"ca5e80dc-bae0-4fd0-bb6b-437d85e6156e","route":"/v1/auth/github/callback","method":"GET","status":302}
+{"request_id":"a385d540-3270-462d-a7b3-1eacc0e75950","route":"/v1/me","method":"GET","status":200}
+{"request_id":"2cf53c18-a408-4fbf-a6e7-12a43ef34277","route":"/v1/session","method":"GET","status":200}
+{"request_id":"47a98fd3-cab0-417b-b2d2-f86970660ea0","route":"/v1/tenants/:tenant_id/machines","method":"POST","status":201}
+{"request_id":"6f26b8f5-f51e-43fd-9df0-adc7fc019305","route":"/v1/workers/register","method":"POST","status":201}
+{"request_id":"89c2e1c8-779e-4eba-b05b-ec1c2223e69f","route":"/v1/tenants/:tenant_id/machines","method":"POST","status":201}
+{"request_id":"f2be5fac-0fc5-4a0d-a689-cde8b48282b6","route":"/v1/workers/register","method":"POST","status":201}
+{"request_id":"1260607a-fce9-4680-892f-dfcfe3a0dfd2","route":"/v1/auth/github","method":"GET","status":302}
+{"request_id":"371ae9f4-3873-424d-a3c3-a761647e1f22","route":"/v1/auth/github/callback","method":"GET","status":302}
+{"request_id":"00e3b010-437a-4b23-8bcd-447c0fec7696","route":"/v1/me","method":"GET","status":200}
+{"request_id":"0c092379-04be-4c99-b3ca-8f77c7ea1327","route":"/v1/session","method":"GET","status":200}
+{"request_id":"5ea07a7d-2bba-40eb-b4b0-477d14d4fc26","route":"/v1/tenants/:tenant_id/machines","method":"POST","status":201}
+{"request_id":"db42ddba-5b21-4196-af4a-248fae2ec4ed","route":"/v1/workers/register","method":"POST","status":201}
+✔ metering: exact reserve of full runtime; exhausted allowance 403; unrelated meter ignored (1159.950516ms)
+{"request_id":"45326ad6-b38c-4940-9099-8a9f641cdc08","route":"/v1/auth/github","method":"GET","status":302}
+{"request_id":"ca586391-3031-4ed9-8bb9-b1c16fb2b25f","route":"/v1/auth/github/callback","method":"GET","status":302}
+{"request_id":"2e763e5a-4282-426f-92f4-4f430ae923e3","route":"/v1/me","method":"GET","status":200}
+{"request_id":"822f5156-d21c-4dd4-8e4e-4bfeb16049c1","route":"/v1/session","method":"GET","status":200}
+{"request_id":"68863444-0352-4ba1-97c8-e25b525c1171","route":"/v1/tenants/:tenant_id/machines","method":"POST","status":201}
+{"request_id":"9d312a04-cdcc-436c-abee-130e1a753117","route":"/v1/workers/register","method":"POST","status":201}
+✔ cancel unclaimed: durable 200 terminal + release + outbox dead + meter decrement (1007.36103ms)
+{"request_id":"5c97fa84-5555-4ae7-b71a-89062bba5b1c","route":"/v1/auth/github","method":"GET","status":302}
+{"request_id":"7dfa9396-35b5-4db9-a927-4a61a461e328","route":"/v1/auth/github/callback","method":"GET","status":302}
+{"request_id":"8085574b-0f22-4a6f-8987-46a421fb1404","route":"/v1/me","method":"GET","status":200}
+{"request_id":"e219de94-e416-4144-9c60-13a68925a3e2","route":"/v1/session","method":"GET","status":200}
+{"request_id":"59cdc6c0-9b03-4c9f-8af7-8f4173491217","route":"/v1/tenants/:tenant_id/machines","method":"POST","status":201}
+{"request_id":"4a035d8d-579f-47c8-ab31-552f60132236","route":"/v1/workers/register","method":"POST","status":201}
+✔ cancel assigned: stop_requested + quarantined, fence/lease retained, no meter release (1026.841765ms)
+{"request_id":"732ebe9a-e3b3-4ac1-9a80-5dc144e549ce","route":"/v1/auth/github","method":"GET","status":302}
+{"request_id":"e9cfdda9-8af3-4efb-a830-e84af1aec27f","route":"/v1/auth/github/callback","method":"GET","status":302}
+{"request_id":"195c37ec-8c7e-446d-adc2-84c779376141","route":"/v1/me","method":"GET","status":200}
+{"request_id":"a504448c-a17b-4f11-aaab-6e4a76bb9204","route":"/v1/session","method":"GET","status":200}
+{"request_id":"d8802699-fec4-475d-a0c3-e7973b6a6d82","route":"/v1/tenants/:tenant_id/machines","method":"POST","status":201}
+{"request_id":"842017da-5de1-44a2-85c6-e1e69a60efd6","route":"/v1/workers/register","method":"POST","status":201}
+{"request_id":"b46f7924-b3d8-457d-8f96-cfed991253a1","route":"/v1/tenants/:tenant_id/machines","method":"POST","status":201}
+{"request_id":"454d9585-c05f-4d8e-9102-88fda250e1eb","route":"/v1/workers/register","method":"POST","status":201}
+{"request_id":"b3bac8ad-3dd7-4b0f-b1bd-71d14377c5bf","route":"/v1/auth/github","method":"GET","status":302}
+{"request_id":"90e806fd-3c02-41e3-ba5b-18a9c98d0241","route":"/v1/auth/github/callback","method":"GET","status":302}
+{"request_id":"126e7fee-e50c-48a4-9392-4844c4fb1b83","route":"/v1/me","method":"GET","status":200}
+{"request_id":"bea3e951-b181-45b4-96ad-2e166c423605","route":"/v1/session","method":"GET","status":200}
+✔ cancel replay + fingerprint: changed-key duplicate task cancels; replayed key with different binding 409; cross-tenant 404 (1074.482005ms)
+{"request_id":"22cc3e4f-18c3-4454-b15f-f98f533d6740","route":"/v1/auth/github","method":"GET","status":302}
+{"request_id":"5e6dbaa9-712b-4d69-aa1f-7f5e974a7908","route":"/v1/auth/github/callback","method":"GET","status":302}
+{"request_id":"a6f742bf-d21c-4023-8a51-8ae9842b3365","route":"/v1/me","method":"GET","status":200}
+{"request_id":"90948191-248a-4b51-a19d-e828d49c9ca8","route":"/v1/session","method":"GET","status":200}
+{"request_id":"9049e1d8-459c-4c8e-af69-e84dc1a28714","route":"/v1/tenants/:tenant_id/machines","method":"POST","status":201}
+{"request_id":"1774fcd8-2505-43ec-af32-dc70915b93f4","route":"/v1/workers/register","method":"POST","status":201}
+✔ cancel never claims stop on uncertainty: assigned task response is 202 with retained lease, not a silent release (1028.974787ms)
+{"request_id":"ffa1076c-b4b6-4c88-8675-c3dce88d9adc","route":"/v1/auth/github","method":"GET","status":302}
+{"request_id":"c4955c42-385c-438e-8dd1-d2feb7b17551","route":"/v1/auth/github/callback","method":"GET","status":302}
+{"request_id":"4d29ddbb-96e9-40ec-8480-4e1cca35ad86","route":"/v1/me","method":"GET","status":200}
+{"request_id":"73c46c15-4efe-447f-acce-9eedeee68c69","route":"/v1/session","method":"GET","status":200}
+{"request_id":"bfbd63d6-c745-419f-a9a6-334b1c4f7a81","route":"/v1/cli-links","method":"POST","status":201}
+{"request_id":"85f96870-e27c-486c-933a-b75d383c7b6a","route":"/v1/cli-links/:link_id","method":"POST","status":200}
+{"request_id":"1d89bfc5-a113-4f70-a4de-38560ab912cd","route":"/v1/cli-links/:link_id","method":"POST","status":200}
+✔ execution grant issuance: browser-only own installation, fixed scopes, idempotent encrypted replay (1204.37293ms)
+{"request_id":"4ddd668f-be50-4d06-a21a-fa16d15d7db7","route":"/v1/auth/github","method":"GET","status":302}
+{"request_id":"1d2010c0-2fec-4bc8-a673-7a78fd6b169a","route":"/v1/auth/github/callback","method":"GET","status":302}
+{"request_id":"df4086d5-f03b-4be7-9d9a-1aba22449468","route":"/v1/me","method":"GET","status":200}
+{"request_id":"ee6529e8-dba4-4c85-9666-9ff60597ff80","route":"/v1/session","method":"GET","status":200}
+{"request_id":"daa7ca79-cf61-43ab-bd37-edc6bc0271e1","route":"/v1/cli-links","method":"POST","status":201}
+{"request_id":"174f6b8a-326e-4bca-a437-703480503e3e","route":"/v1/cli-links/:link_id","method":"POST","status":200}
+{"request_id":"d6b24d6f-3de2-4876-82d2-b26b9e072306","route":"/v1/cli-links/:link_id","method":"POST","status":200}
+✔ concurrent same-key issuance serializes: one grant, identical replay bodies (1106.609268ms)
+{"request_id":"53997c70-2ac6-4e27-8cd2-958dfbd1270b","route":"/v1/auth/github","method":"GET","status":302}
+{"request_id":"65d45adc-b8fd-456e-8585-12e45de788c8","route":"/v1/auth/github/callback","method":"GET","status":302}
+{"request_id":"a29c92db-e5e9-418c-86ef-202b9a143b4f","route":"/v1/me","method":"GET","status":200}
+{"request_id":"e44226b5-b72e-4ec4-a06c-09cff2e352f0","route":"/v1/session","method":"GET","status":200}
+{"request_id":"effad848-397e-4eed-bf02-1dd6d65dc09b","route":"/v1/cli-links","method":"POST","status":201}
+{"request_id":"31d522b5-adb4-475d-a194-49081bfd4fb3","route":"/v1/cli-links/:link_id","method":"POST","status":200}
+{"request_id":"a3b3f544-c57f-40d2-a9cf-122558d0490d","route":"/v1/cli-links/:link_id","method":"POST","status":200}
+✔ issuance race loser is handled cleanly: revoked-winner forces the loser batch path to 409, never 500/503, one row, no phantom audit (993.287374ms)
+{"request_id":"ddd1bc47-c113-48a8-b314-37cb25db77c6","route":"/v1/auth/github","method":"GET","status":302}
+{"request_id":"e419cafc-e6a8-4dbb-a079-aceaf309146b","route":"/v1/auth/github/callback","method":"GET","status":302}
+{"request_id":"b6bb3a02-28bc-4d8c-b48b-51dd21136860","route":"/v1/me","method":"GET","status":200}
+{"request_id":"b328ef53-9b4c-45a3-9ee8-610b34c325d8","route":"/v1/session","method":"GET","status":200}
+{"request_id":"00a4b7e5-91b9-4e17-845c-16b6d46a6dec","route":"/v1/auth/github","method":"GET","status":302}
+{"request_id":"e738f820-a758-407d-a26c-703297470e55","route":"/v1/auth/github/callback","method":"GET","status":302}
+{"request_id":"1da21390-731a-4c01-a79b-eed40f0469e0","route":"/v1/me","method":"GET","status":200}
+{"request_id":"8760ddba-69e4-4c2d-9192-7ec294bb9be8","route":"/v1/session","method":"GET","status":200}
+{"request_id":"2de52ad9-0d86-4db0-9340-af987a7610f2","route":"/v1/cli-links","method":"POST","status":201}
+{"request_id":"10960b49-ed53-47fb-b8d3-8612432e9b1d","route":"/v1/cli-links/:link_id","method":"POST","status":200}
+{"request_id":"0c8e0d80-3ef8-44cd-97b4-5838d8db5f58","route":"/v1/cli-links/:link_id","method":"POST","status":200}
+✔ execution grant denial: wrong installation/user/tenant, missing CSRF, machine credentials (991.008066ms)
+{"request_id":"06266f15-8c14-4218-910a-c6989c4238af","route":"/v1/auth/github","method":"GET","status":302}
+{"request_id":"b816a1ea-809a-477f-99a1-5b4fe3fef609","route":"/v1/auth/github/callback","method":"GET","status":302}
+{"request_id":"aeec960a-f319-4374-9c5b-4a5d38aa7be5","route":"/v1/me","method":"GET","status":200}
+{"request_id":"18f37925-0232-4992-9c97-8d4e2a9d0d9a","route":"/v1/session","method":"GET","status":200}
+{"request_id":"a14fe06c-9182-4ca0-ae59-3ea0a3d38bf8","route":"/v1/cli-links","method":"POST","status":201}
+{"request_id":"b43ad6a5-2922-491e-9777-c4904ba33101","route":"/v1/cli-links/:link_id","method":"POST","status":200}
+{"request_id":"b79b9612-ecd1-42eb-9d18-3b791cd5547e","route":"/v1/cli-links/:link_id","method":"POST","status":200}
+{"request_id":"9248cc34-58ae-4e93-9391-a4b3f7b7bd9e","route":"/v1/cli/me/rotate","method":"POST","status":200}
+{"request_id":"be4291f6-1b1e-411f-bcf8-7b0c6f44b2cf","route":"/v1/cli/me","method":"DELETE","status":200}
+✔ execution grant lifecycle: CLI rotation and revocation invalidate grants (981.913301ms)
+{"request_id":"8bc453af-c2d6-4928-b81b-abeaa0ff1e7b","route":"/v1/auth/github","method":"GET","status":302}
+{"request_id":"d106fcdf-ddc4-4473-922b-2d7f4a3bddb1","route":"/v1/auth/github/callback","method":"GET","status":302}
+{"request_id":"c10aba19-a068-495f-9886-5b9a93d2e1ae","route":"/v1/me","method":"GET","status":200}
+{"request_id":"263fc920-1d03-4be2-ae90-93149bd88903","route":"/v1/session","method":"GET","status":200}
+{"request_id":"71c6df4d-9323-4064-9095-420e20c21195","route":"/v1/cli-links","method":"POST","status":201}
+{"request_id":"d8f7b0bd-9f18-497d-9e5f-01cf47a8475a","route":"/v1/cli-links/:link_id","method":"POST","status":200}
+{"request_id":"34c30da6-35b0-465c-b76b-ffb599441caa","route":"/v1/cli-links/:link_id","method":"POST","status":200}
+{"request_id":"c29756b3-f808-4236-8f39-35902f1449c1","route":"/v1/tenants/:tenant_id/machines","method":"POST","status":201}
+{"request_id":"6e7bad34-ca20-408c-be51-68b73231970a","route":"/v1/workers/register","method":"POST","status":201}
+✔ execution grant audience isolation: legacy sfcli_/sfworker_ rejected on hosted paths (1051.58389ms)
+✔ cleanup statements guard hosted grant/task session references without disabling FKs (1.258271ms)
+{"request_id":"025bcd68-e6f0-46bf-819d-8ab4e7d1345f","route":"/v1/auth/github","method":"GET","status":302}
+{"request_id":"57ebe455-756d-4667-9bb1-0b8dc2816ae6","route":"/v1/auth/github/callback","method":"GET","status":302}
+{"request_id":"54742b68-bb51-4cb2-b2cc-ed14d7d09a11","route":"/v1/me","method":"GET","status":200}
+{"request_id":"f240421e-489d-4fa3-879f-fa3efb0b5f0d","route":"/v1/session","method":"GET","status":200}
+{"request_id":"fbbe2c74-ae97-4df5-9bf3-a84be7292531","route":"/v1/cli-links","method":"POST","status":201}
+{"request_id":"bec0814c-7763-4fa4-8212-cb02842abd64","route":"/v1/cli-links/:link_id","method":"POST","status":200}
+{"request_id":"4b433719-764d-4db0-9dda-f0fec206e2c4","route":"/v1/cli-links/:link_id","method":"POST","status":200}
+{"request_id":"ac3ca3f4-60e2-4e64-bc75-8c171164414b","route":"/v1/tenants/:tenant_id/machines","method":"POST","status":201}
+{"request_id":"02c55d13-5e4b-42bc-9e82-3818400dc284","route":"/v1/workers/register","method":"POST","status":201}
+{"request_id":"e1f181df-6e97-433e-9e65-7ee0cfb5e903","route":"/v1/auth/github","method":"GET","status":302}
+{"request_id":"d68519bf-7d6d-4833-8c1e-fd2cd4d49fb9","route":"/v1/auth/github/callback","method":"GET","status":302}
+{"request_id":"8eab2a6e-4433-46f1-a505-c1506d19a514","route":"/v1/me","method":"GET","status":200}
+{"request_id":"413fd4b9-7137-490c-8656-ae50c998e2a2","route":"/v1/session","method":"GET","status":200}
+{"request_id":"f4e890b1-e4d8-48b0-b840-7f093cec25c1","route":"/v1/auth/github","method":"GET","status":302}
+{"request_id":"ff4969ce-82ce-4d55-b507-f96fa7fb9234","route":"/v1/auth/github/callback","method":"GET","status":302}
+{"request_id":"c12c41a1-9a5f-4825-98ce-7cd2cbca7d89","route":"/v1/me","method":"GET","status":200}
+{"request_id":"7059a426-a608-4317-9106-91294543528f","route":"/v1/session","method":"GET","status":200}
+{"request_id":"0a555d44-9843-4696-8f09-df834c9aaedc","route":"/v1/auth/github","method":"GET","status":302}
+{"request_id":"82e1120e-27fb-4ff9-858d-22ee165916ee","route":"/v1/auth/github/callback","method":"GET","status":302}
+{"request_id":"b86e25f9-b9e2-4251-a41f-c20c92c71fc0","route":"/v1/me","method":"GET","status":200}
+{"request_id":"b25a449d-7794-4d02-a841-00f14284606c","route":"/v1/session","method":"GET","status":200}
+✔ hosted cleanup compatibility: legacy batch fails FK and rolls back; corrected cleanup preserves authorizer evidence (1691.52942ms)
+{"request_id":"267d526f-eb22-4c36-8f51-0af3912f2855","route":"/v1/auth/github","method":"GET","status":302}
+{"request_id":"1d10a3fc-4c49-462b-bef4-2fe14b2b5d57","route":"/v1/auth/github/callback","method":"GET","status":302}
+{"request_id":"ffe0a0ae-d142-487a-b670-e5d2bad0c0e6","route":"/v1/me","method":"GET","status":200}
+{"request_id":"7639c9cb-54b7-4257-b1b5-89fd2aea43d5","route":"/v1/session","method":"GET","status":200}
+{"request_id":"feda8027-a946-47c9-b208-e3b06cfdb11d","route":"/v1/tenants/:tenant_id/machines","method":"POST","status":201}
+{"request_id":"69533974-2852-4760-83de-e1e2ae261467","route":"/v1/workers/register","method":"POST","status":201}
+✔ dispatch real D1: ledger changes after settlement reads leave every persisted row unchanged (1523.019872ms)
+{"request_id":"8de72082-50c1-41fc-93df-cbc9902c38f5","route":"/v1/auth/github","method":"GET","status":302}
+{"request_id":"b2d6e436-1113-4e0f-9837-bad43d54cebe","route":"/v1/auth/github/callback","method":"GET","status":302}
+{"request_id":"270053b2-0733-4cca-b72b-877c27dc52bc","route":"/v1/me","method":"GET","status":200}
+{"request_id":"2740da31-cda0-48c7-80e5-99b2f7148b17","route":"/v1/session","method":"GET","status":200}
+{"request_id":"1d56e665-c08b-4f98-a34f-5cd2f376de5b","route":"/v1/tenants/:tenant_id/machines","method":"POST","status":201}
+{"request_id":"d2f1243b-def8-41fe-80c7-ea3e4905f26b","route":"/v1/workers/register","method":"POST","status":201}
+{"request_id":"1ff347ad-424e-486a-8ba4-65cfaed5950c","route":"/v1/auth/github","method":"GET","status":302}
+{"request_id":"592edceb-2fc1-4fed-85ab-07fe87c7090c","route":"/v1/auth/github/callback","method":"GET","status":302}
+{"request_id":"d0ff7416-6bd6-4a63-9a18-1631e7e8b839","route":"/v1/me","method":"GET","status":200}
+{"request_id":"67be8f45-b1f8-4543-abed-cac431d0e96d","route":"/v1/session","method":"GET","status":200}
+{"request_id":"d7b7a4a0-c898-447b-aeb4-fcbf8ddd55e8","route":"/v1/tenants/:tenant_id/machines","method":"POST","status":201}
+{"request_id":"a03a5140-f4f1-4601-908d-e7bc721884fe","route":"/v1/workers/register","method":"POST","status":201}
+✔ dispatch: claim elects one supervisor, ack advances, renew extends finite lease (1190.563981ms)
+{"request_id":"d8ab3f71-a93f-40e5-be72-a5adb01b7e5e","route":"/v1/auth/github","method":"GET","status":302}
+{"request_id":"53d7ae79-a478-4d19-a8b5-3ea24a4e6d41","route":"/v1/auth/github/callback","method":"GET","status":302}
+{"request_id":"d9162885-636c-47c6-a01b-1382ef63e8d5","route":"/v1/me","method":"GET","status":200}
+{"request_id":"a42dcc62-1745-46a8-a0ac-1320aeb5022d","route":"/v1/session","method":"GET","status":200}
+{"request_id":"49ae2166-4857-4117-82dc-fa80155fbba6","route":"/v1/tenants/:tenant_id/machines","method":"POST","status":201}
+{"request_id":"8b2b6b80-4f2b-4d8c-81f4-0c8efb3935ae","route":"/v1/workers/register","method":"POST","status":201}
+✔ dispatch: duplicate claim elects exactly one supervisor (concurrent) (1035.36498ms)
+{"request_id":"ed45618e-7aa9-4c13-840b-ae08f80a6517","route":"/v1/auth/github","method":"GET","status":302}
+{"request_id":"7af50daa-3159-4413-b0a2-51a0cdf1dbac","route":"/v1/auth/github/callback","method":"GET","status":302}
+{"request_id":"bfe09617-5997-4f1d-86f5-5ec1a9a89705","route":"/v1/me","method":"GET","status":200}
+{"request_id":"b15e4ddc-5c77-4537-a699-c352bbd7d5ca","route":"/v1/session","method":"GET","status":200}
+{"request_id":"9025f7c6-76d5-4e01-8231-84b18aca5a7f","route":"/v1/tenants/:tenant_id/machines","method":"POST","status":201}
+{"request_id":"ecf0c08d-55ce-47ed-9820-e3ca3af81a88","route":"/v1/workers/register","method":"POST","status":201}
+✔ dispatch: lost ack reply returns same lease only while current (1022.98317ms)
+{"request_id":"245ee407-8df3-4cfe-9081-49fcc51b2dff","route":"/v1/auth/github","method":"GET","status":302}
+{"request_id":"9ccaef29-2324-4d82-9d52-79592406979b","route":"/v1/auth/github/callback","method":"GET","status":302}
+{"request_id":"ca26b92c-bc68-444d-ac2f-d81c3a5c6eb7","route":"/v1/me","method":"GET","status":200}
+{"request_id":"15645216-a399-4fff-8931-4f309a8bc9bc","route":"/v1/session","method":"GET","status":200}
+{"request_id":"6494748c-710b-4339-88f4-26f3eaeda33d","route":"/v1/tenants/:tenant_id/machines","method":"POST","status":201}
+{"request_id":"ed2400e3-f676-4eb5-a15e-845db7e53913","route":"/v1/workers/register","method":"POST","status":201}
+✔ dispatch: stale fence and expired renew denied (no lease extension) (1074.104667ms)
+{"request_id":"a087064c-b2b3-4244-b3ec-30cd86c5f9c9","route":"/v1/auth/github","method":"GET","status":302}
+{"request_id":"e48132de-3b26-4f68-9198-389ac8c939be","route":"/v1/auth/github/callback","method":"GET","status":302}
+{"request_id":"a6580a3c-b549-49b1-b8dd-889582cc12ae","route":"/v1/me","method":"GET","status":200}
+{"request_id":"12a752cc-94fa-41c6-8552-5e32cacc1a51","route":"/v1/session","method":"GET","status":200}
+{"request_id":"4039b324-4ab8-4709-ab28-5c9785341bf5","route":"/v1/tenants/:tenant_id/machines","method":"POST","status":201}
+{"request_id":"cc227c88-b59d-40e4-b357-06895be1d73f","route":"/v1/workers/register","method":"POST","status":201}
+{"request_id":"f4af9886-b000-46a9-b439-e40ac47ec37c","route":"/v1/tenants/:tenant_id/machines","method":"POST","status":201}
+{"request_id":"6d3802b8-f8ea-430f-8b9f-5b5712ab5353","route":"/v1/workers/register","method":"POST","status":201}
+✔ dispatch: worker revocation blocks claim/renew but cleanup settle survives (1183.926605ms)
+{"request_id":"592d7799-cb52-41ae-ad0a-6b58ce0fbe6f","route":"/v1/auth/github","method":"GET","status":302}
+{"request_id":"b6e3ff42-c29b-4cc1-a30d-6ebdc0b5644a","route":"/v1/auth/github/callback","method":"GET","status":302}
+{"request_id":"ceaf995c-1be5-452c-87ae-ba40c401b837","route":"/v1/me","method":"GET","status":200}
+{"request_id":"27f39f07-4828-46e0-9962-697552a4ab22","route":"/v1/session","method":"GET","status":200}
+{"request_id":"55ec82ed-ee65-4423-8429-ccb96c706e27","route":"/v1/tenants/:tenant_id/machines","method":"POST","status":201}
+{"request_id":"6e175e43-b98e-4465-8795-87ddf26fa9a0","route":"/v1/workers/register","method":"POST","status":201}
+✔ dispatch: settlement consumes meter exactly once; duplicate same-payload idempotent, changed conflicts (1208.632823ms)
+{"request_id":"09afac4c-8a9c-4c36-b72e-6108889ce5d4","route":"/v1/auth/github","method":"GET","status":302}
+{"request_id":"ccd0cf06-1485-404a-89e9-7d4cd11c3465","route":"/v1/auth/github/callback","method":"GET","status":302}
+{"request_id":"74b51549-084e-4b9d-a621-a566cf758e28","route":"/v1/me","method":"GET","status":200}
+{"request_id":"15a57edc-2759-4f0b-bb8f-1f912e095cc4","route":"/v1/session","method":"GET","status":200}
+{"request_id":"91c7cf6c-29c0-4d4e-82aa-95aee232fdcf","route":"/v1/tenants/:tenant_id/machines","method":"POST","status":201}
+{"request_id":"ab0600f6-53f4-4b97-99b9-8207b61fa69a","route":"/v1/workers/register","method":"POST","status":201}
+✔ dispatch: settlement works after entitlement revocation/expiry/period end (1233.228333ms)
+{"request_id":"a2c1611f-cf73-4283-80e8-c0ede47cb3f3","route":"/v1/auth/github","method":"GET","status":302}
+{"request_id":"881a5927-fa3f-40e5-b5d0-12be52b87d92","route":"/v1/auth/github/callback","method":"GET","status":302}
+{"request_id":"f3c4ac90-eef3-4792-ad92-37dbaaf3bfb5","route":"/v1/me","method":"GET","status":200}
+{"request_id":"8ff1f172-718d-43d4-9a91-68b07fd13fa2","route":"/v1/session","method":"GET","status":200}
+{"request_id":"374649e8-edb6-4d08-b55e-2ec8445928dc","route":"/v1/tenants/:tenant_id/machines","method":"POST","status":201}
+{"request_id":"a2e29c6a-79be-474d-acb2-c7e5c80fa7c2","route":"/v1/workers/register","method":"POST","status":201}
+✔ dispatch: failed meter CAS rejects without partial terminal state (1247.817257ms)
+{"request_id":"ed498da3-4832-4efa-9587-b041ace68aca","route":"/v1/auth/github","method":"GET","status":302}
+{"request_id":"13b41f43-bf40-48bc-9a62-d6100cf66b1d","route":"/v1/auth/github/callback","method":"GET","status":302}
+{"request_id":"17dffd94-add0-4353-a800-60bb1e66a68b","route":"/v1/me","method":"GET","status":200}
+{"request_id":"2c340109-a59e-4235-8de8-f041196c40c8","route":"/v1/session","method":"GET","status":200}
+{"request_id":"08936358-19a6-4874-9de5-bdf4a8f83654","route":"/v1/tenants/:tenant_id/machines","method":"POST","status":201}
+{"request_id":"31f4e509-78b7-4b35-922a-e694f54b5be3","route":"/v1/workers/register","method":"POST","status":201}
+✔ dispatch: cancel race keeps stop discoverable; revoked supervisor cannot report (1162.061347ms)
+{"request_id":"0b8bd3b5-0a7d-43fe-9cab-ac32b49bed48","route":"/v1/auth/github","method":"GET","status":302}
+{"request_id":"e60196ce-e867-4e37-bc43-ac80a67b4373","route":"/v1/auth/github/callback","method":"GET","status":302}
+{"request_id":"1b9a105f-6950-481b-ae21-d2110932fb67","route":"/v1/me","method":"GET","status":200}
+{"request_id":"9eb24dea-66eb-4ace-bae4-2422db3b2d83","route":"/v1/session","method":"GET","status":200}
+{"request_id":"96cdbe63-0c97-45ab-91a3-114d451777ac","route":"/v1/tenants/:tenant_id/machines","method":"POST","status":201}
+{"request_id":"8eb2cf82-b37e-4044-8cf1-df85cb7ba6f8","route":"/v1/workers/register","method":"POST","status":201}
+✔ dispatch: DB/audit failure rolls back claim (no partial lease) (1115.645303ms)
+{"request_id":"8fe1ae7b-d7b8-468a-af0e-2fefd2c07cf5","route":"/v1/auth/github","method":"GET","status":302}
+{"request_id":"b45cbc76-83ef-4fd9-bbcd-0f7548d3e1ac","route":"/v1/auth/github/callback","method":"GET","status":302}
+{"request_id":"3e99da93-12fa-4c0a-af88-eeac6a428ec6","route":"/v1/me","method":"GET","status":200}
+{"request_id":"2971da0a-2b18-4583-a0ce-d7356892214b","route":"/v1/session","method":"GET","status":200}
+{"request_id":"7a78e70b-75d2-4e59-890d-6716c3a74085","route":"/v1/tenants/:tenant_id/machines","method":"POST","status":201}
+{"request_id":"bfe0512b-ac2d-407a-94fe-dfd7400eb7e8","route":"/v1/workers/register","method":"POST","status":201}
+{"request_id":"670f4f3c-098d-4415-b141-eebb83bbb622","route":"/v1/tenants/:tenant_id/machines","method":"POST","status":201}
+{"request_id":"0c4dd02d-f29b-465c-abe1-da14869118dd","route":"/v1/workers/register","method":"POST","status":201}
+✔ dispatch: expiry cleanup holds claimed work and releases unclaimed queues (1234.315964ms)
+{"request_id":"f94d3cae-376d-4a5c-94f7-4a4f2c227d77","route":"/v1/auth/github","method":"GET","status":302}
+{"request_id":"e983d87b-2a2b-40b8-87ce-bf2626090a38","route":"/v1/auth/github/callback","method":"GET","status":302}
+{"request_id":"4fc52824-3d37-4a72-b2e8-d66172c60194","route":"/v1/me","method":"GET","status":200}
+{"request_id":"5ad6e30d-dcbd-4127-b16e-9cdaef5a0d3c","route":"/v1/session","method":"GET","status":200}
+{"request_id":"a59c4918-310c-4099-9432-6ae4bca49aa1","route":"/v1/tenants/:tenant_id/machines","method":"POST","status":201}
+{"request_id":"322ff325-da49-4e0d-831c-92b25a648d3f","route":"/v1/workers/register","method":"POST","status":201}
+✔ dispatch: taskAuthorizerGuard pins account/cli/grant authority (964.708818ms)
+{"request_id":"17f64b3a-26ce-46a1-b083-1410cde28a93","route":"/v1/auth/github","method":"GET","status":302}
+{"request_id":"57240d39-9db7-41e3-9912-d277cfa4beae","route":"/v1/auth/github/callback","method":"GET","status":302}
+{"request_id":"a232dc3d-adb7-48d4-8ffd-41f2d38e2d7e","route":"/v1/me","method":"GET","status":200}
+{"request_id":"7ca302d9-9f19-4b5f-bedc-96101ba9fa7e","route":"/v1/session","method":"GET","status":200}
+{"request_id":"b11704d3-c084-4198-bbda-070e031ed7aa","route":"/v1/tenants/:tenant_id/machines","method":"POST","status":201}
+{"request_id":"3416465e-dbe6-4586-9c75-c4b60b9efd58","route":"/v1/workers/register","method":"POST","status":201}
+✔ dispatch: strict schemas and safe envelope on every route (1003.950832ms)
+{"request_id":"83741931-73cc-4fa7-aecb-3b7c0fc37c36","route":"/v1/auth/github","method":"GET","status":302}
+{"request_id":"c87c3da2-766a-474c-a9d2-8d50c631f277","route":"/v1/auth/github/callback","method":"GET","status":302}
+{"request_id":"6cc7866c-5da3-4623-bd05-53e1a448a66e","route":"/v1/me","method":"GET","status":200}
+{"request_id":"8bbdd01b-0a5c-4ef6-bd5c-6cac2c97a0cc","route":"/v1/session","method":"GET","status":200}
+{"request_id":"31d75fe0-ca1e-4f0d-94bc-fa884338d133","route":"/v1/cli-links","method":"POST","status":201}
+{"request_id":"cb2f280e-526f-4cfa-a276-94ab0cb02e83","route":"/v1/cli-links/:link_id","method":"POST","status":200}
+{"request_id":"c64c7e2c-a23e-420e-9c01-1a505dbddca2","route":"/v1/cli-links/:link_id","method":"POST","status":200}
+{"request_id":"ca7099c5-cbca-4e72-a6b7-e39d7738e3cb","route":"/v1/auth/github","method":"GET","status":302}
+{"request_id":"1819aa97-2825-42a9-a29c-9e2cb6f91224","route":"/v1/auth/github/callback","method":"GET","status":302}
+{"request_id":"17bb9c29-fa02-41fd-90fb-2da3230f6707","route":"/v1/me","method":"GET","status":200}
+{"request_id":"b893b9de-8501-44b4-b173-e34810e0c022","route":"/v1/session","method":"GET","status":200}
+✔ policy defaults deny: absent, expired, revoked, wrong-org, disabled capability (1632.924495ms)
+{"request_id":"47c2821c-f746-439b-9a51-11d8d706298b","route":"/v1/auth/github","method":"GET","status":302}
+{"request_id":"c244a19b-b827-4353-8c1d-e759711dbbc8","route":"/v1/auth/github/callback","method":"GET","status":302}
+{"request_id":"4070b5f1-6dd4-43c3-8ecd-6089b9e3c4db","route":"/v1/me","method":"GET","status":200}
+{"request_id":"08fe6c4d-0444-4311-ace7-ea3b0a49e7cc","route":"/v1/session","method":"GET","status":200}
+✔ policy versions supersede atomically with audit; replay never duplicates (1075.885839ms)
+{"request_id":"be08ff8e-77aa-44c0-99f2-28c68969623d","route":"/v1/auth/github","method":"GET","status":302}
+{"request_id":"104b5c35-24a7-4f36-a00f-6a793c0665ff","route":"/v1/auth/github/callback","method":"GET","status":302}
+{"request_id":"be2b3319-1a5b-4edd-bf95-1fa7f3488eaa","route":"/v1/me","method":"GET","status":200}
+{"request_id":"16ff1f91-fce0-4490-9c4b-614fe7df986d","route":"/v1/session","method":"GET","status":200}
+{"request_id":"8b0d78ff-edab-41f4-9fd4-cf3345371741","route":"/v1/cli-links","method":"POST","status":201}
+{"request_id":"82eac062-b8b8-4879-b2c2-88d7b654538c","route":"/v1/cli-links/:link_id","method":"POST","status":200}
+{"request_id":"0fbb5cb5-a873-44f4-9887-3d7e29bbfebb","route":"/v1/cli-links/:link_id","method":"POST","status":200}
+✔ policy outage fails closed; evaluatePolicy is advisory-only (1009.258572ms)
+{"request_id":"e81b39aa-cf47-49c0-890b-106351173666","route":"/v1/auth/github","method":"GET","status":302}
+{"request_id":"7fff097f-8d5f-454a-9f8d-0dc043f8861a","route":"/v1/auth/github/callback","method":"GET","status":302}
+{"request_id":"a631cfaf-ecca-4f3a-8d9a-19c5df48dae3","route":"/v1/me","method":"GET","status":200}
+{"request_id":"ce143b24-d9c9-4afb-ba22-0c4736c28310","route":"/v1/session","method":"GET","status":200}
+✔ allowance arithmetic is exact BigInt, bounded, never Number/CAST (1041.844816ms)
+{"request_id":"b744f54e-2d8b-4344-bdcb-0547235eeaf6","route":"/v1/auth/github","method":"GET","status":302}
+{"request_id":"2749d372-978f-4612-b7cb-4cdb74c61b61","route":"/v1/auth/github/callback","method":"GET","status":302}
+{"request_id":"1afbcf97-8fad-47b6-be46-7032382af6de","route":"/v1/me","method":"GET","status":200}
+{"request_id":"1934c5fb-4576-47b9-a238-b9db3ba504a5","route":"/v1/session","method":"GET","status":200}
+{"request_id":"e2dbef69-6e7f-4133-9175-a2ae87b434f3","route":"/v1/tenants/:tenant_id/entitlements","method":"POST","status":405}
+{"request_id":"fecb556b-1000-45d5-b35d-59a2ca7fd5b6","route":"/v1/tenants/:tenant_id/entitlements","method":"other","status":405}
+{"request_id":"3ef805b3-43cf-4c01-bfdb-9abda55adda9","route":"unknown","method":"POST","status":404}
+{"request_id":"f8e58060-47cf-4de0-83e7-d3a485b061ab","route":"unknown","method":"POST","status":404}
+✔ no website policy-write route exists; audit failure rolls back (997.649989ms)
+{"request_id":"e6e6dd36-2e10-45a3-8eef-2b1e4ae15d47","route":"/v1/auth/github","method":"GET","status":302}
+{"request_id":"60f141bc-6b58-4126-a8d1-a25379dd118c","route":"/v1/auth/github/callback","method":"GET","status":302}
+{"request_id":"39fe7479-1ee9-4c11-b901-cbb04a000842","route":"/v1/me","method":"GET","status":200}
+{"request_id":"7054064f-50f4-4128-bd38-2ba8a4ef347f","route":"/v1/session","method":"GET","status":200}
+✔ pinned policy guard agrees with decision; stale versions/caps rejected, race safe (1248.784983ms)
+{"request_id":"7acab844-0bbd-418a-9969-c4d3811f86e8","route":"/v1/auth/github","method":"GET","status":302}
+{"request_id":"2a0005a4-363b-4750-b2ff-9749fd4d986e","route":"/v1/auth/github/callback","method":"GET","status":302}
+{"request_id":"3500b0bb-1065-4ae3-911e-d674866edeb9","route":"/v1/me","method":"GET","status":200}
+{"request_id":"5af1a2c3-60c4-4fcb-9b46-6b1f188b282f","route":"/v1/session","method":"GET","status":200}
+✔ concurrent putPolicy serializes versions; audit rolls back on conflict (1142.261695ms)
+{"request_id":"e0a6439e-4d18-4144-ab48-b0cfb3e710c5","route":"/v1/auth/github","method":"GET","status":302}
+{"request_id":"3ad5bd5b-167e-4b39-8ac8-f8697244c110","route":"/v1/auth/github/callback","method":"GET","status":302}
+{"request_id":"ad4e8f1a-d2b3-4550-8914-0069197f9d83","route":"/v1/me","method":"GET","status":200}
+{"request_id":"c78cbc65-7b38-404d-8cb4-1391632ca455","route":"/v1/session","method":"GET","status":200}
+✔ allowance CAS helper is exact; controlled meter mapping enforced (1251.512181ms)
+{"request_id":"219d2db2-756f-4a06-9301-3d38171902ce","route":"/v1/auth/github","method":"GET","status":302}
+{"request_id":"5e45eb87-b335-4cbd-a0d3-76a7a51a7945","route":"/v1/auth/github/callback","method":"GET","status":302}
+{"request_id":"3cf1f73b-8e96-4a43-aa5f-e504e70241c6","route":"/v1/me","method":"GET","status":200}
+{"request_id":"1d4da88b-4d41-4bea-9d05-965a889cedca","route":"/v1/session","method":"GET","status":200}
+{"request_id":"ca87b77d-e5e0-44e4-8751-13d26ee4eb49","route":"/v1/auth/github","method":"GET","status":302}
+{"request_id":"e7df6c83-32cb-49a9-9c19-a21e2eaffeae","route":"/v1/auth/github/callback","method":"GET","status":302}
+{"request_id":"8d4d08ae-8639-4d2e-902d-c65c10929dc9","route":"/v1/me","method":"GET","status":200}
+{"request_id":"44a1e516-6bbc-4614-aa21-730922d937c4","route":"/v1/session","method":"GET","status":200}
+✔ trusted settlement lands after policy expiry; reserve-only does not (1099.93796ms)
+{"request_id":"94ae45ee-c4a9-4134-a7be-9daa92f53d29","route":"/v1/auth/github","method":"GET","status":302}
+{"request_id":"73063b9a-9314-445d-9ad3-1086c8231ea6","route":"/v1/auth/github/callback","method":"GET","status":302}
+{"request_id":"13de3ed0-90a6-4202-819c-85a269cd3b99","route":"/v1/me","method":"GET","status":200}
+{"request_id":"dca7d7c1-1f75-4a6d-845f-734bedbc1221","route":"/v1/session","method":"GET","status":200}
+{"request_id":"8d6fd428-0656-4982-b35d-5f01bbffc453","route":"/v1/tenants/:tenant_id/machines","method":"POST","status":201}
+{"request_id":"c2397a7f-ea12-468c-bea3-503abb4b8083","route":"/v1/workers/register","method":"POST","status":201}
+{"request_id":"f46a1f20-a3ba-41b9-8b3c-47e86392b36d","route":"/v1/tenants/:tenant_id/supervisors/:supervisor_id","method":"POST","status":201}
+{"request_id":"3369cc8a-81f7-4acd-87d3-968fec8b83bb","route":"/v1/cli-links","method":"POST","status":201}
+{"request_id":"02d16278-bba1-4cc8-a4f4-bbf05aa9bedc","route":"/v1/cli-links/:link_id","method":"POST","status":200}
+{"request_id":"d0ce026a-5670-4998-96a6-07541350bc7c","route":"/v1/cli-links/:link_id","method":"POST","status":200}
+{"request_id":"985a798a-f68c-43d4-ab04-656d14360ef2","route":"/v1/tenants/:tenant_id/cli-installations/:installation_id/execution-authorizations","method":"POST","status":201}
+{"request_id":"4b856208-f7d3-4673-86fe-3e4df054e948","route":"/v1/supervisor/me","method":"GET","status":200}
+{"request_id":"61b630b0-20f9-4eec-a154-c79b33f78239","route":"/v1/tenants/:tenant_id/tasks","method":"POST","status":202}
+{"request_id":"f2972fbf-0bc1-45f9-aa72-31accdfc77d6","route":"/v1/supervisor/claim","method":"POST","status":200}
+{"request_id":"d267d0bd-31aa-4adb-9129-a33e3b8f99c7","route":"/v1/supervisor/tasks/:task_id/ack","method":"POST","status":200}
+{"request_id":"bdbbd435-1a90-4878-ad50-a56352645893","route":"/v1/supervisor/tasks/:task_id/ack","method":"POST","status":200}
+{"request_id":"3017273c-eec0-49eb-b55b-a93494d39d81","route":"/v1/supervisor/tasks/:task_id/renew","method":"POST","status":200}
+{"request_id":"c1e0c62c-8c94-4499-a208-7ea83ab0a3ec","route":"/v1/supervisor/tasks/:task_id/renew","method":"POST","status":200}
+{"request_id":"6fc40491-f819-4970-9c35-4de358018bd5","route":"/v1/supervisor/tasks/:task_id/settle","method":"POST","status":200}
+{"request_id":"97339e8d-2c5a-481f-b999-2b3feedbdace","route":"/v1/tenants/:tenant_id/tasks/:task_id","method":"GET","status":200}
+✔ hosted task completes across real workerd/D1 and a real Bun supervisor with multiple renewals and lost-ack recovery, with no duplicate execution (33879.398446ms)
+{"request_id":"1e1ce5c8-17bc-4641-9c85-f8de308bba5c","route":"/v1/auth/github","method":"GET","status":302}
+{"request_id":"07d3dbc6-bc33-44e6-92dd-6b517f43fa1c","route":"/v1/auth/github/callback","method":"GET","status":302}
+{"request_id":"6c299ef6-13e9-4180-994d-9e8b66c70ba5","route":"/v1/me","method":"GET","status":200}
+{"request_id":"337927d7-ec29-473a-885f-6bdb3d099723","route":"/v1/session","method":"GET","status":200}
+{"request_id":"b58b052f-a3cd-486e-b01a-7a5f793fa71f","route":"/v1/tenants/:tenant_id/machines","method":"POST","status":201}
+{"request_id":"47aa95c5-35ce-4218-908d-f5bc956a4c0d","route":"/v1/workers/register","method":"POST","status":201}
+{"request_id":"8617f40d-006c-4e2c-a57c-99f04cb92c4e","route":"/v1/tenants/:tenant_id/supervisors/:supervisor_id","method":"POST","status":201}
+{"request_id":"afd52d1c-1f53-4c7b-b8a1-f9c682c92155","route":"/v1/cli-links","method":"POST","status":201}
+{"request_id":"c8fd5d1a-da99-4b54-a6db-97a7f7ae808a","route":"/v1/cli-links/:link_id","method":"POST","status":200}
+{"request_id":"88b3f208-33c3-4f1b-a9e2-3da0c4a54dac","route":"/v1/cli-links/:link_id","method":"POST","status":200}
+{"request_id":"255abebb-d4b1-4edc-856d-8d451f042bff","route":"/v1/tenants/:tenant_id/cli-installations/:installation_id/execution-authorizations","method":"POST","status":201}
+{"request_id":"47ccb408-8fa2-467a-b9e5-972c783caf57","route":"/v1/supervisor/me","method":"GET","status":200}
+{"request_id":"ca93cd0b-6f79-40f7-93e7-20bb9f0e833c","route":"/v1/tenants/:tenant_id/tasks","method":"POST","status":202}
+{"request_id":"0cebc83a-2a27-4542-83dc-b458aed9fb12","route":"/v1/supervisor/claim","method":"POST","status":200}
+{"request_id":"73a96e2e-0b25-4839-bd4a-f3908f1ae306","route":"/v1/supervisor/tasks/:task_id/ack","method":"POST","status":200}
+{"request_id":"2369b167-31db-480a-8f8b-3f896489abd2","route":"/v1/tenants/:tenant_id/tasks/:task_id/cancel","method":"POST","status":202}
+{"request_id":"fbc720af-e57f-4ec9-9e59-4fe96bcf64cb","route":"/v1/supervisor/tasks/:task_id/renew","method":"POST","status":409}
+{"request_id":"775e3c45-f523-4141-bda4-5f87eeafea5b","route":"/v1/supervisor/tasks/:task_id/settle","method":"POST","status":200}
+{"request_id":"001338e3-7221-4e2e-93d9-a79f7c8af62e","route":"/v1/tenants/:tenant_id/tasks/:task_id","method":"GET","status":200}
+✔ cloud cancellation stops the real child and releases the reservation only on verified stop (17046.652926ms)
+{"request_id":"f1f55a0b-c381-499f-a033-c3720b6cf9bc","route":"/v1/auth/github","method":"GET","status":302}
+{"request_id":"1c3e627f-0ad1-4198-b9b1-3a777849cb52","route":"/v1/auth/github/callback","method":"GET","status":302}
+{"request_id":"26da7a80-aed4-4bc3-8825-f243f1a0f04f","route":"/v1/me","method":"GET","status":200}
+{"request_id":"c402c476-5416-4a96-a50f-2502a29be9ab","route":"/v1/session","method":"GET","status":200}
+{"request_id":"0d9f5415-c773-472b-8a46-ca084bdced12","route":"/v1/tenants/:tenant_id/machines","method":"POST","status":201}
+{"request_id":"455db4dc-df6e-4abf-8f7b-a95cc2a1fdef","route":"/v1/workers/register","method":"POST","status":201}
+{"request_id":"c7402c05-76c0-4df3-8a75-75ec482b2613","route":"/v1/tenants/:tenant_id/supervisors/:supervisor_id","method":"POST","status":201}
+{"request_id":"b4b4c048-e7d7-45e1-ad0b-8678c611d983","route":"/v1/cli-links","method":"POST","status":201}
+{"request_id":"8a15c776-9bee-4e18-82b1-8d050ea9f91e","route":"/v1/cli-links/:link_id","method":"POST","status":200}
+{"request_id":"b634ab4e-0673-4f97-bf49-ddb9f693d171","route":"/v1/cli-links/:link_id","method":"POST","status":200}
+{"request_id":"a4c42f85-9965-44b1-889c-eb0b6b419415","route":"/v1/tenants/:tenant_id/cli-installations/:installation_id/execution-authorizations","method":"POST","status":201}
+{"request_id":"f115c1b5-d18b-42cc-a9c0-ec839e3a4fe9","route":"/v1/supervisor/me","method":"GET","status":200}
+{"request_id":"3e78a3df-2935-4780-aae0-d8d3df397313","route":"/v1/tenants/:tenant_id/tasks","method":"POST","status":202}
+{"request_id":"573463f0-5626-4c10-9fb0-7c1960dd1005","route":"/v1/supervisor/claim","method":"POST","status":200}
+{"request_id":"a3874547-6e49-48c1-94d1-bc4d4767d0b6","route":"/v1/tenants/:tenant_id/tasks/:task_id","method":"GET","status":200}
+✔ network loss at ack holds uncertain durable state without execution and expired supervisor authority is rejected (8495.38987ms)
+{"request_id":"c7e67bfa-3b19-4ff5-92b8-cf5000299602","route":"/v1/auth/github","method":"GET","status":302}
+{"request_id":"798e5254-2069-410a-aa0d-2d9fd06e111e","route":"/v1/auth/github/callback","method":"GET","status":302}
+{"request_id":"3d662f04-9475-4bcb-bf44-8be33aede4a3","route":"/v1/me","method":"GET","status":200}
+{"request_id":"bc93c256-8e39-4a47-90e7-8b92c19547f9","route":"/v1/session","method":"GET","status":200}
+{"request_id":"2e3fb7dd-3a16-453b-bc28-1fb035cd9ceb","route":"/v1/tenants/:tenant_id/machines","method":"POST","status":201}
+{"request_id":"7383962b-6626-4524-bb6f-c6f3d23aed0c","route":"/v1/workers/register","method":"POST","status":201}
+{"request_id":"e1a25cc5-f25a-4598-b769-5df449e3afea","route":"/v1/tenants/:tenant_id/supervisors/:supervisor_id","method":"POST","status":201}
+{"request_id":"9a1ca262-8da5-4162-80c7-700b64cc855f","route":"/v1/cli-links","method":"POST","status":201}
+{"request_id":"1dbf0075-1905-4697-b607-45170404ecea","route":"/v1/cli-links/:link_id","method":"POST","status":200}
+{"request_id":"2b16d141-6590-4589-9182-22e69fc0a93e","route":"/v1/cli-links/:link_id","method":"POST","status":200}
+{"request_id":"d71b0049-14ba-4b07-b213-acb460d93b58","route":"/v1/tenants/:tenant_id/cli-installations/:installation_id/execution-authorizations","method":"POST","status":201}
+{"request_id":"8685f728-bf75-4e34-af23-f6a85b4721cf","route":"/v1/supervisor/me","method":"GET","status":200}
+{"request_id":"3b06dd8a-6d1e-4795-aefc-077c6f04911c","route":"/v1/tenants/:tenant_id/tasks","method":"POST","status":202}
+{"request_id":"57b2f378-d7af-4a8a-aafd-7ad3980246b2","route":"/v1/supervisor/claim","method":"POST","status":200}
+{"request_id":"e1c04daa-0376-4478-824d-1b3f87cd7911","route":"/v1/supervisor/tasks/:task_id/ack","method":"POST","status":200}
+✔ driver failure while the real child is alive stops the runtime through production cleanup and retains the durable journal (3322.631365ms)
+{"request_id":"faf1d90c-e995-4405-aec3-4c5b0c9986f2","route":"/v1/auth/github","method":"GET","status":302}
+{"request_id":"2a389972-7951-46f5-b16a-d277c294c147","route":"/v1/auth/github/callback","method":"GET","status":302}
+{"request_id":"6f035715-b96b-43ff-a77f-1f1f3316f728","route":"/v1/me","method":"GET","status":200}
+{"request_id":"b7ebeafc-c2ed-46f5-8b0c-be8efe88f64e","route":"/v1/session","method":"GET","status":200}
+{"request_id":"dd9033f9-1586-49d5-b2ad-a5e52cba4bd2","route":"/v1/tenants/:tenant_id/machines","method":"POST","status":201}
+{"request_id":"afb834ba-6e22-48ea-8170-b8c749397e17","route":"/v1/workers/register","method":"POST","status":201}
+{"request_id":"4338f4a4-8419-4cf6-ad48-c48ddf832846","route":"/v1/tenants/:tenant_id/supervisors/:supervisor_id","method":"POST","status":201}
+{"request_id":"bead5c65-c36a-47ae-85c9-53fb69b53ccb","route":"/v1/cli-links","method":"POST","status":201}
+{"request_id":"ef32968f-f056-4d46-8cd3-30b842968690","route":"/v1/cli-links/:link_id","method":"POST","status":200}
+{"request_id":"bd785ad5-16de-4514-84c6-111199adc278","route":"/v1/cli-links/:link_id","method":"POST","status":200}
+{"request_id":"059b4a17-99cc-4a19-a18d-7fef03666b70","route":"/v1/tenants/:tenant_id/cli-installations/:installation_id/execution-authorizations","method":"POST","status":201}
+✔ unparsable or early-exiting driver is rejected cleanly with bounded diagnostics (1205.480488ms)
+✔ hosted schema checkpoint: frozen DTOs expose exact protocol names (17.860303ms)
+{"request_id":"2a75b4e9-a131-4a99-b969-f385fec6c28b","route":"/v1/auth/github","method":"GET","status":302}
+{"request_id":"4a8b8326-00ea-415c-aba9-ffb2fef7acca","route":"/v1/auth/github/callback","method":"GET","status":302}
+{"request_id":"f31edfa0-66e0-4ea9-baa5-009e57fc57de","route":"/v1/me","method":"GET","status":200}
+{"request_id":"0272a94f-1c41-4ca6-b640-8645d50e256e","route":"/v1/session","method":"GET","status":200}
+{"request_id":"e5d773c6-2bc3-4a3a-812d-e252c1b62385","route":"/v1/cli-links","method":"POST","status":201}
+{"request_id":"4b69e8b6-c791-4d58-bcb2-bc7e812f48fa","route":"/v1/cli-links/:link_id","method":"POST","status":200}
+{"request_id":"c4464919-862a-4711-ae80-bee486db382c","route":"/v1/cli-links/:link_id","method":"POST","status":200}
+{"request_id":"907774ee-98e5-4b94-84d2-f7af6ebffc04","route":"/v1/tenants/:tenant_id/machines","method":"POST","status":201}
+{"request_id":"c6b2ff5d-7ea3-4205-bf80-b51eefa5cdc3","route":"/v1/workers/register","method":"POST","status":201}
+✔ hosted schema checkpoint: FK orphans rejected direct and batch with valid other fields (1338.384195ms)
+{"request_id":"047a5dca-a35f-47e1-ac0c-2a3d66b23d6d","route":"/v1/auth/github","method":"GET","status":302}
+{"request_id":"64b5a127-46df-4019-acf9-131501fbb328","route":"/v1/auth/github/callback","method":"GET","status":302}
+{"request_id":"546e7b1f-abba-44ed-8d26-a4bbfdc072c0","route":"/v1/me","method":"GET","status":200}
+{"request_id":"a24d73f9-ff0b-4451-b38e-4e75ab786eaa","route":"/v1/session","method":"GET","status":200}
+{"request_id":"db4278a6-d513-4ae5-984a-aded2a20159b","route":"/v1/cli-links","method":"POST","status":201}
+{"request_id":"65a1928b-4160-4208-86d7-71b1704d156c","route":"/v1/cli-links/:link_id","method":"POST","status":200}
+{"request_id":"e2368b0d-ee6a-4533-af36-dac5f1630d25","route":"/v1/cli-links/:link_id","method":"POST","status":200}
+{"request_id":"b5e1d6d5-6393-4bf6-aba8-283159659e54","route":"/v1/tenants/:tenant_id/machines","method":"POST","status":201}
+{"request_id":"aabf7d30-32ca-4890-9fd0-b8a55bc92136","route":"/v1/workers/register","method":"POST","status":201}
+{"request_id":"48caefcf-c4df-4cf5-bf2b-bce511575f94","route":"/v1/tenants/:tenant_id/machines","method":"POST","status":201}
+{"request_id":"92b3e32c-6ea9-478e-8fc0-19ea6a63772c","route":"/v1/workers/register","method":"POST","status":201}
+{"request_id":"3f9d8753-415f-4c1e-8fc1-bef03852a3bc","route":"/v1/tenants/:tenant_id/machines","method":"POST","status":201}
+{"request_id":"28d8d566-9e6e-4657-bf27-05c85c09723f","route":"/v1/workers/register","method":"POST","status":201}
+{"request_id":"caff5d5b-7dcc-400b-b628-d7855ddc1299","route":"/v1/tenants/:tenant_id/machines","method":"POST","status":201}
+{"request_id":"82d3c7f8-74dd-4326-abda-79ed500baa5d","route":"/v1/workers/register","method":"POST","status":201}
+{"request_id":"9062780b-abce-477c-bd24-b68e42e65ab3","route":"/v1/tenants/:tenant_id/machines","method":"POST","status":201}
+{"request_id":"186c66de-8d4c-464d-b31b-ca6770cae21f","route":"/v1/workers/register","method":"POST","status":201}
+✔ hosted schema checkpoint: quantity CHECKs fire on valid-parent rows (1408.888508ms)
+{"request_id":"d6e6b081-e094-4dec-9604-f9f8d0103683","route":"/v1/auth/github","method":"GET","status":302}
+{"request_id":"929ce838-cb6e-431a-ba9d-cf233389b0d7","route":"/v1/auth/github/callback","method":"GET","status":302}
+{"request_id":"7169fc16-e60b-4bc1-b6b2-a0342da8adcf","route":"/v1/me","method":"GET","status":200}
+{"request_id":"8a867493-25fa-4a70-bd6c-0de55040fed8","route":"/v1/session","method":"GET","status":200}
+{"request_id":"52c56502-b6bc-4d22-b1c0-829517df6816","route":"/v1/cli-links","method":"POST","status":201}
+{"request_id":"070ea94f-1840-4b31-87ee-b1f3af2f9453","route":"/v1/cli-links/:link_id","method":"POST","status":200}
+{"request_id":"2f4c7675-9802-483f-8124-70d50ecbebf5","route":"/v1/cli-links/:link_id","method":"POST","status":200}
+{"request_id":"d39dfe0d-0f53-4872-a152-2e261d5da8c8","route":"/v1/tenants/:tenant_id/machines","method":"POST","status":201}
+{"request_id":"0c449e70-e2ab-4ff2-8f0f-16cf116f52f1","route":"/v1/workers/register","method":"POST","status":201}
+{"request_id":"f64c038e-dfc3-4e5b-b941-a78cd76e0eca","route":"/v1/auth/github","method":"GET","status":302}
+{"request_id":"59d21c19-1240-4ce1-87c1-ab21b04280e8","route":"/v1/auth/github/callback","method":"GET","status":302}
+{"request_id":"92c40f56-7279-4a75-8423-f60c7564514b","route":"/v1/me","method":"GET","status":200}
+{"request_id":"ab2c372f-d020-4c3e-a817-5252bf4878dd","route":"/v1/session","method":"GET","status":200}
+{"request_id":"68e47e3d-ed17-41db-b4b5-c2cc5c1f3670","route":"/v1/tenants/:tenant_id/machines","method":"POST","status":201}
+{"request_id":"591fe3bd-9165-4d90-81d1-742770923318","route":"/v1/workers/register","method":"POST","status":201}
+✔ hosted schema checkpoint: cross-org resource binding, worker exclusivity, rollback (1190.000492ms)
+{"request_id":"06f7afbc-fd82-4aa0-9594-9fc8b6489406","route":"/v1/auth/github","method":"GET","status":302}
+{"request_id":"ed9363b7-427a-420d-a851-0450618d721b","route":"/v1/auth/github/callback","method":"GET","status":302}
+{"request_id":"6d4a1761-10d2-4773-a970-ebd3e2205529","route":"/v1/me","method":"GET","status":200}
+{"request_id":"440cb7cb-1e3e-4a1d-905c-97c7bf75188b","route":"/v1/session","method":"GET","status":200}
+{"request_id":"5a6c7759-b6b4-4983-b4d4-80fd73654f83","route":"/v1/cli-links","method":"POST","status":201}
+{"request_id":"70905910-39be-4280-8546-06320298219d","route":"/v1/cli-links/:link_id","method":"POST","status":200}
+{"request_id":"692b8269-d5e1-4770-ad2f-e20755c33a7f","route":"/v1/cli-links/:link_id","method":"POST","status":200}
+{"request_id":"425c15af-91f3-4057-859f-da3d71987dae","route":"/v1/tenants/:tenant_id/machines","method":"POST","status":201}
+{"request_id":"e703813b-4a06-485b-9eda-9b78605f2f19","route":"/v1/workers/register","method":"POST","status":201}
+{"request_id":"c3ec718d-4e25-4669-8160-5ca254936281","route":"/v1/cli/me","method":"GET","status":200}
+{"request_id":"660067e8-b6c0-4cde-b84f-4f6e9fdc89cc","route":"/v1/workers/me","method":"GET","status":200}
+✔ hosted schema checkpoint: clean install and 2B.1 upgrade (1084.087899ms)
+{"request_id":"44754f9c-c2d4-46d9-aae3-a7ec35685c7f","route":"/v1/auth/github","method":"GET","status":302}
+{"request_id":"54e87dab-9af5-42e0-890a-d8f1ece8bf22","route":"/v1/auth/github/callback","method":"GET","status":302}
+{"request_id":"566b6027-d03b-4239-9f1b-26dd89534e3c","route":"/v1/me","method":"GET","status":200}
+{"request_id":"4b93faf2-abc3-4c4f-8665-dda8617cfc5f","route":"/v1/session","method":"GET","status":200}
+{"request_id":"7a0ca84e-34bd-48e3-86b7-f37ef06bdb53","route":"/v1/cli-links","method":"POST","status":201}
+{"request_id":"6d131a94-e02c-4d45-8bd1-7892ba842a2b","route":"/v1/cli-links/:link_id","method":"POST","status":200}
+{"request_id":"4e5af8c9-cd92-423c-afe5-48b22970b93e","route":"/v1/cli-links/:link_id","method":"POST","status":200}
+{"request_id":"d8f94d49-d1bf-4199-80fc-c25e3d8c290b","route":"/v1/tenants/:tenant_id/machines","method":"POST","status":201}
+{"request_id":"0914684a-4f63-430e-9beb-c321144853c9","route":"/v1/workers/register","method":"POST","status":201}
+{"request_id":"0647f6b4-4223-4339-affa-d51359386f76","route":"/v1/tenants/:tenant_id/machines","method":"POST","status":201}
+{"request_id":"36d5bb6e-1910-4f8e-a6af-c0b065ca6305","route":"/v1/workers/register","method":"POST","status":201}
+{"request_id":"46085499-a4b5-4061-a8e1-afce04415bab","route":"/v1/tenants/:tenant_id/machines","method":"POST","status":201}
+{"request_id":"16d22354-713a-4e79-b508-5cfced09b88e","route":"/v1/workers/register","method":"POST","status":201}
+{"request_id":"9766f781-eb34-4fc3-af85-c48755717b9e","route":"/v1/tenants/:tenant_id/machines","method":"POST","status":201}
+{"request_id":"37def7eb-e9ab-4aed-85ce-77ec92bf0d97","route":"/v1/workers/register","method":"POST","status":201}
+{"request_id":"6808edad-8c3f-41bc-ae77-6d3563959baf","route":"/v1/auth/github","method":"GET","status":302}
+{"request_id":"7741e2c0-5889-4059-a089-efcdbfcd1e67","route":"/v1/auth/github/callback","method":"GET","status":302}
+{"request_id":"01239d8f-2206-4e1b-94b2-842b1ef0aac7","route":"/v1/me","method":"GET","status":200}
+{"request_id":"5e874635-587c-49bb-83cf-472c043033cd","route":"/v1/session","method":"GET","status":200}
+{"request_id":"ee287e57-57b6-4b07-8df1-c9e02ca0b82b","route":"/v1/cli-links","method":"POST","status":201}
+{"request_id":"b8e6e127-d1ff-4d74-a968-6b09e1352d60","route":"/v1/cli-links/:link_id","method":"POST","status":200}
+{"request_id":"eac219ac-0348-4553-bd36-7c7d6e8e89a7","route":"/v1/cli-links/:link_id","method":"POST","status":200}
+{"request_id":"babfc638-1803-4a6e-9bc3-36b350a26dde","route":"/v1/tenants/:tenant_id/machines","method":"POST","status":201}
+{"request_id":"7077413a-dab4-4cda-8d68-83f034f7c243","route":"/v1/workers/register","method":"POST","status":201}
+✔ hosted-status: mixed states measure real counts across own/other org with missing policy then policy (1558.530212ms)
+{"request_id":"29cb8120-1637-499f-a092-431d5f824310","route":"/v1/auth/github","method":"GET","status":302}
+{"request_id":"33835d82-5225-42e4-8b07-74952cf8be33","route":"/v1/auth/github/callback","method":"GET","status":302}
+{"request_id":"fb8a4272-c9e7-401b-9ece-3b6e231939f0","route":"/v1/me","method":"GET","status":200}
+{"request_id":"b3cb730f-2dc8-44be-8394-69d14aa4aaaa","route":"/v1/session","method":"GET","status":200}
+{"request_id":"b9114844-f7bc-4012-8ac5-0425ac2a807c","route":"/v1/cli-links","method":"POST","status":201}
+{"request_id":"d9287777-767e-4941-b89f-34aabde6236e","route":"/v1/cli-links/:link_id","method":"POST","status":200}
+{"request_id":"5bf708d6-f490-418b-a6a5-dcacb7e4fd81","route":"/v1/cli-links/:link_id","method":"POST","status":200}
+{"request_id":"9192ec8c-9b80-4fb2-a0f6-bc298c3924ab","route":"/v1/tenants/:tenant_id/machines","method":"POST","status":201}
+{"request_id":"21f035aa-6038-4638-9d7c-9a2d27871fa5","route":"/v1/workers/register","method":"POST","status":201}
+{"request_id":"81bb8e8a-4242-46d2-9bdb-6b70d362721d","route":"/v1/auth/github","method":"GET","status":302}
+{"request_id":"18bc9fde-c8de-4f86-ab05-33b5b74e9c7b","route":"/v1/auth/github/callback","method":"GET","status":302}
+{"request_id":"58dd0e0d-cdf0-487f-b965-5619cd02c9fa","route":"/v1/me","method":"GET","status":200}
+{"request_id":"403b7389-a067-4609-8d0f-61a7135b7eaf","route":"/v1/session","method":"GET","status":200}
+✔ hosted-status: auth matrix, pagination, wrong audiences, DB failure (1110.664638ms)
+{"request_id":"7c71e041-dfae-4940-a585-fe53a33f5b44","route":"/v1/auth/github","method":"GET","status":302}
+{"request_id":"a6c6fa19-6ebe-468c-8179-807bf76c87de","route":"/v1/auth/github/callback","method":"GET","status":302}
+{"request_id":"debd28e2-dcbf-4ca2-8030-31d822c4b713","route":"/v1/me","method":"GET","status":200}
+{"request_id":"6ff0b2ce-fa8e-43e1-aef6-c6e7f33f4b10","route":"/v1/session","method":"GET","status":200}
+{"request_id":"bc455351-ec5c-4d0e-bd28-b10d4260a8d7","route":"/v1/cli-links","method":"POST","status":201}
+{"request_id":"01883e75-c30f-49dc-a092-36417fde1abe","route":"/v1/cli-links/:link_id","method":"POST","status":200}
+{"request_id":"68228f4b-46e6-4889-bcc4-79cf448f38fe","route":"/v1/cli-links/:link_id","method":"POST","status":200}
+✔ hosted-status: supervisor authority vs observed availability, ledger quantities, revoked/expired auth (990.053556ms)
+✔ supervisor identity: register then read identity (1106.772765ms)
+✔ supervisor identity: registration grants no capabilities or tasks (876.620902ms)
+✔ supervisor identity: cross-tenant registration is not found (937.054669ms)
+✔ supervisor identity: wrong audience credentials rejected (1080.870272ms)
+✔ supervisor identity: malformed scopes rejected by strict auth (1032.378543ms)
+✔ supervisor identity: non-admin browser cannot register or revoke (1055.727144ms)
+✔ supervisor identity: revoked credential and old replay after revoke rejected (1041.263565ms)
+✔ supervisor identity: expired credential rejected (966.295456ms)
+✔ supervisor identity: worker revoked blocks execution but permits cleanup (1113.891492ms)
+✔ supervisor identity: rotation issues successor and invalidates old key (1012.7966ms)
+✔ supervisor identity: rotation exact-key replay recovers successor only while valid (984.789397ms)
+✔ supervisor identity: rotation duplicate guard allows only one successor (concurrent keys) (980.866958ms)
+✔ supervisor identity: registration idempotency replays without duplicates, conflict on changed payload (950.218911ms)
+✔ supervisor identity: revocation holds assignments, retains reservations, never confirms stop (978.162754ms)
+✔ supervisor identity: DB failure rolls back registration (no partial rows, no audit) (928.805932ms)
+✔ supervisor identity: strict schemas and safe error envelope (967.59245ms)
+✔ supervisor identity: supervisorGuard mirrors execution/cleanup auth (1043.642919ms)
+{"request_id":"09af6863-8402-41a6-bf6f-31b89f80569e","route":"/v1/auth/github","method":"GET","status":302}
+{"request_id":"7ad14e6e-b8fc-4024-8681-8c49936a3c70","route":"/v1/auth/github/callback","method":"GET","status":302}
+{"request_id":"74511782-e4b5-4aa0-ba46-b186b0880a1c","route":"/v1/me","method":"GET","status":200}
+{"request_id":"961598e3-8cd4-4000-803b-9f5138a35807","route":"/v1/session","method":"GET","status":200}
+{"request_id":"b50d5708-0ac1-4794-bddf-a931264f5832","route":"/v1/cli-links","method":"POST","status":201}
+{"request_id":"f119e58b-3f92-448d-8470-3efd0e3f0bd9","route":"/cloud/connect","method":"GET","status":200}
+{"request_id":"dc829944-2677-475b-8a59-b7ca6965652f","route":"/v1/cli-links/:link_id","method":"POST","status":202}
+{"request_id":"f3da11c7-ec40-4bad-a9ce-1f96ff6f9416","route":"/v1/cli-links/:link_id","method":"POST","status":429}
+{"request_id":"d698a123-a3d8-4878-8e39-646551f14f27","route":"/v1/cli-links/:link_id","method":"POST","status":404}
+{"request_id":"a93ec0c6-6aaf-4c32-917e-a31c00d04aaf","route":"/v1/cli-links/:link_id","method":"POST","status":200}
+{"request_id":"69c74f19-d797-4a55-8c70-ffc8805fb100","route":"/v1/cli-links/:link_id","method":"POST","status":200}
+{"request_id":"f21cbc79-d85b-4716-8343-0e514eb079f0","route":"/v1/cli-links/:link_id","method":"POST","status":200}
+{"request_id":"36c1d0f4-dafe-455c-abdf-a5128ea7cec7","route":"/v1/cli/me","method":"GET","status":200}
+{"request_id":"4a47dd9e-a7ff-4723-8c1c-767ea8e3bd08","route":"/v1/cli/me","method":"GET","status":401}
+{"request_id":"4a83f424-e4c7-48aa-b2dc-0919d44653de","route":"/v1/me","method":"GET","status":401}
+{"request_id":"b37d7151-2a9d-49e9-b9d3-55c4c6fe950f","route":"/v1/cli-links/:link_id","method":"POST","status":409}
+✔ workerd complete browser pairing, proof-bound polling, atomic idempotent exchange and independent device identity (1609.126651ms)
+{"request_id":"0f8b1d71-c8dd-47ed-857e-47bfbea41c90","route":"/v1/auth/github","method":"GET","status":302}
+{"request_id":"dfaca02b-0808-4283-b161-455fb005959c","route":"/v1/auth/github/callback","method":"GET","status":302}
+{"request_id":"f06b503e-c900-4120-aa07-c70809ed76b9","route":"/v1/me","method":"GET","status":200}
+{"request_id":"5ef5ed93-2ab8-4a9a-9e83-33fdda04ad6e","route":"/v1/session","method":"GET","status":200}
+{"request_id":"d89e1284-b338-423c-a3f3-2f5669e63368","route":"/v1/cli-links","method":"POST","status":201}
+{"request_id":"22ef667a-5139-447b-ad05-e8c82aaa693e","route":"/v1/cli-links/:link_id","method":"POST","status":403}
+{"request_id":"a88f271b-32f9-4f4d-935e-1faab03c8a77","route":"/v1/cli-links/:link_id","method":"POST","status":200}
+{"request_id":"8750f451-1588-44c8-9fff-e5d4135317f7","route":"/v1/cli-links/:link_id","method":"POST","status":403}
+{"request_id":"096a7973-e8cd-49d9-a1cc-2807c74cdf4d","route":"/v1/cli-links","method":"POST","status":201}
+{"request_id":"08a6b018-b6c5-470e-8656-9a5a1fc80072","route":"/v1/cli-links/:link_id","method":"DELETE","status":200}
+{"request_id":"e74f438b-0546-4e4e-82c2-d3417b9fd2ea","route":"/v1/cli-links/:link_id","method":"POST","status":403}
+{"request_id":"dc2b165f-ee94-4802-9b45-64a644326989","route":"/v1/cli-links","method":"POST","status":201}
+{"request_id":"a8632bb2-1473-4cd8-96e7-dae21fffb96f","route":"/v1/cli-links/:link_id","method":"POST","status":410}
+{"request_id":"3f9da582-0b00-40d2-a7a9-1ee94d4f10c3","route":"/v1/cli-links/:link_id","method":"POST","status":410}
+{"request_id":"b83c3210-3a00-47ef-be0d-54bb627eaacc","route":"/v1/cli-links","method":"POST","status":401}
+✔ explicit denial/cancellation, expiration, CSRF and request validation (1100.805368ms)
+{"request_id":"0d58314f-0680-423b-ad70-fb101f911c85","route":"/v1/auth/github","method":"GET","status":302}
+{"request_id":"b0a3a3eb-3d8e-42c6-b5e0-3a1d4bee396e","route":"/v1/auth/github/callback","method":"GET","status":302}
+{"request_id":"81bc39bc-6f02-45d3-804b-723b2a95b088","route":"/v1/me","method":"GET","status":200}
+{"request_id":"ccf980a3-8594-4d75-acc7-af9a4cf10881","route":"/v1/session","method":"GET","status":200}
+{"request_id":"f1b321c0-6db9-446a-87cf-2a0deeda01ec","route":"/v1/auth/github","method":"GET","status":302}
+{"request_id":"e612d873-64fd-45b0-96aa-8e59f4fb8a81","route":"/v1/auth/github/callback","method":"GET","status":302}
+{"request_id":"6ebfdc59-50ee-4555-b503-43163c8de8d7","route":"/v1/me","method":"GET","status":200}
+{"request_id":"95794052-07a6-46bf-be0d-86001e03b5d6","route":"/v1/session","method":"GET","status":200}
+{"request_id":"3f0b6bdc-130c-4a29-972b-c9d51981930d","route":"/v1/cli-links","method":"POST","status":201}
+{"request_id":"0050fd5c-35e6-46b3-a191-4d2a2598d9c8","route":"/v1/cli-links/:link_id","method":"POST","status":404}
+{"request_id":"ccf992fc-c027-44a6-9ec0-8d566ecb315e","route":"/v1/cli-links/:link_id","method":"POST","status":403}
+{"request_id":"b1cb770f-5d52-4f77-8c29-a6728f25b291","route":"/v1/cli-links/:link_id","method":"POST","status":200}
+{"request_id":"f15dd662-52e1-4c43-b08d-0f72d0a06b40","route":"/v1/cli-links/:link_id","method":"POST","status":403}
+{"request_id":"89d0bb1d-9591-431f-bc2c-52283158e8b0","route":"/v1/cli-links/:link_id","method":"POST","status":403}
+{"request_id":"583d97e6-9817-4cbd-9e42-924858dc8a81","route":"/v1/cli-links","method":"POST","status":201}
+{"request_id":"c28c7812-1c5a-4eb5-b869-c9340eb0b737","route":"/v1/cli-links/:link_id","method":"POST","status":200}
+{"request_id":"c8bfe20b-40e0-414a-b764-e78f0609b880","route":"/v1/cli-links/:link_id","method":"POST","status":404}
+{"request_id":"0221cd0e-c309-4823-8446-272289ca4c13","route":"/v1/cli-links/:link_id","method":"POST","status":200}
+✔ cross-tenant approval, bound organization, membership loss and simultaneous competing approvals cannot reassign grants (1092.159966ms)
+{"request_id":"0d0281da-c1ca-46da-a908-1a6c7dc94be4","route":"/v1/auth/github","method":"GET","status":302}
+{"request_id":"33229e61-d917-41b0-af06-34fc44906936","route":"/v1/auth/github/callback","method":"GET","status":302}
+{"request_id":"4ae386a5-97df-41e4-ab6d-47a72373fe0c","route":"/v1/me","method":"GET","status":200}
+{"request_id":"dce5fb5f-7577-4064-aa6b-a3fbbb17223a","route":"/v1/session","method":"GET","status":200}
+{"request_id":"6d557228-b60f-45f0-8205-7b7d28d6a2e6","route":"/v1/auth/github","method":"GET","status":302}
+{"request_id":"55339f48-125d-4e0d-a370-e07761d36e09","route":"/v1/auth/github/callback","method":"GET","status":302}
+{"request_id":"b15e24d7-7dea-4bd4-9c1c-af030bb92ca3","route":"/v1/me","method":"GET","status":200}
+{"request_id":"3ef55d95-9952-44c3-898a-e9eb461a8bda","route":"/v1/session","method":"GET","status":200}
+{"request_id":"52fae1f2-be56-4438-8ab7-a5a3ed43d715","route":"/v1/cli-links","method":"POST","status":201}
+{"request_id":"8e0896e2-6637-4c1a-a5ad-c9f5b4895a21","route":"/v1/cli-links/:link_id","method":"POST","status":200}
+{"request_id":"6e301e78-1b50-4072-b2d8-ad47d0ecaa96","route":"/v1/cli-links/:link_id","method":"POST","status":200}
+{"request_id":"1612a376-f5ac-439f-b40e-f13e0f43f28b","route":"/v1/cli-links","method":"POST","status":201}
+{"request_id":"1719626e-4b49-491a-8433-6818ee20132e","route":"/v1/cli-links/:link_id","method":"POST","status":200}
+{"request_id":"57b1c167-63e2-41da-a00d-2a3dcc45a11f","route":"/v1/cli-links/:link_id","method":"POST","status":200}
+{"request_id":"db338ceb-c658-4320-9638-23c560f8a863","route":"/v1/cli-links","method":"POST","status":201}
+{"request_id":"8f0289ea-3dfb-4f32-9fb6-ac8481660508","route":"/v1/cli-links/:link_id","method":"POST","status":200}
+{"request_id":"7e85bec8-9001-4142-a4f1-fa70219f68cc","route":"/v1/cli-links/:link_id","method":"POST","status":200}
+{"request_id":"e87a265d-5fcc-42be-8194-d1e3c9158780","route":"/v1/tenants/:tenant_id/machines","method":"GET","status":200}
+{"request_id":"4abc50ce-8026-4fe7-9f3d-a49690d94fc5","route":"/v1/tenants/:tenant_id/machines","method":"GET","status":400}
+{"request_id":"bbcbf351-b008-4feb-8f70-d29d8b298d77","route":"/v1/tenants/:tenant_id/machines","method":"GET","status":404}
+{"request_id":"3492f419-68ba-4fc0-9361-d0b8dd168614","route":"/v1/tenants/:tenant_id/machines","method":"DELETE","status":404}
+{"request_id":"117e0fb7-f5f4-4cf3-ac4d-c62c12118996","route":"/v1/tenants/:tenant_id","method":"GET","status":401}
+{"request_id":"9dd972d7-6f08-4c49-8d19-c37a97bc0468","route":"/v1/cli/me","method":"GET","status":400}
+{"request_id":"60eddffb-9569-4b61-bdae-9146b3f7b991","route":"/v1/cli/me","method":"GET","status":200}
+{"request_id":"83a6b276-3639-4290-8a0a-c29177350546","route":"/v1/cli/me","method":"DELETE","status":200}
+{"request_id":"2f81b4fb-cd69-4bbc-a938-e6ad078403ae","route":"/v1/cli/me","method":"GET","status":401}
+{"request_id":"d720a0f3-6339-4ad1-82af-117b5f1f031c","route":"/v1/cli/me","method":"GET","status":200}
+{"request_id":"3270b87b-45f0-46f4-90c0-0616c42aa72d","route":"/v1/cli/me","method":"GET","status":401}
+✔ devices are isolated by tenant/user and cursor, organization selection needs re-pairing, revocation and disablement deny (1209.114868ms)
+{"request_id":"f44643ce-7818-4712-967b-f33744314615","route":"/v1/auth/github","method":"GET","status":302}
+{"request_id":"6a9ccca4-ab07-4524-a1bb-39ed07ad3a05","route":"/v1/auth/github/callback","method":"GET","status":302}
+{"request_id":"3f037fef-cc73-4404-8114-c75492d2185a","route":"/v1/me","method":"GET","status":200}
+{"request_id":"a5be7a49-6fe4-419b-ab8c-c26d786f4da8","route":"/v1/session","method":"GET","status":200}
+{"request_id":"9c3cbcb0-d008-4e3b-a94a-469ba519d3c5","route":"/v1/cli-links","method":"POST","status":201}
+{"request_id":"57865138-54a8-4fbf-9958-df90e9698644","route":"/v1/cli-links/:link_id","method":"POST","status":200}
+{"request_id":"7fcda6ab-aa72-45ed-bee4-1e19e9c43bdd","route":"/v1/cli-links/:link_id","method":"POST","status":200}
+{"request_id":"b21c14c2-eaa1-4643-99e6-6f6c80cacf7c","route":"/v1/cli/me/rotate","method":"POST","status":200}
+{"request_id":"2fcc9f38-a54c-4c40-b8a9-810daf13b0f8","route":"/v1/cli/me/rotate","method":"POST","status":200}
+{"request_id":"d7bb9cd0-6874-4a0b-acf8-43d686f04a72","route":"/v1/cli/me","method":"GET","status":401}
+{"request_id":"866c5279-b1ce-4a3d-b7db-640f5135c13c","route":"/v1/cli/me","method":"GET","status":200}
+{"request_id":"228e9c26-1611-4adf-9a40-864caefa81d2","route":"/v1/cli/me","method":"GET","status":401}
+{"request_id":"8ad7e283-f19e-4e39-9c32-e15b154daf7e","route":"/v1/cli-links","method":"POST","status":201}
+{"request_id":"0a23e549-d1eb-45d7-b2b5-4a053dc65af9","route":"/v1/cli-links/:link_id","method":"POST","status":200}
+{"request_id":"2c703176-afab-45fe-965b-279c5771641a","route":"/v1/cli-links/:link_id","method":"POST","status":200}
+{"request_id":"e11f7f1f-f402-4c26-8946-3dfcf6363add","route":"/v1/cli/me","method":"GET","status":401}
+✔ machine rotation has one winner, invalidates old epoch, expiry and organization suspension fail closed (1224.015326ms)
+✔ local cf migrations finish and can be repeated without reapplying schema (3960.409516ms)
+{"request_id":"da1552e3-c791-44a2-b650-7034fc7f61ef","route":"/v1/auth/github","method":"GET","status":302}
+{"request_id":"de7e3e53-fc62-45b6-9a63-0a0ae33de069","route":"/v1/auth/github/callback","method":"GET","status":302}
+{"request_id":"f5f73774-964a-4a94-b07f-ca6116936017","route":"/v1/me","method":"GET","status":200}
+{"request_id":"5a928400-8b48-404e-bcff-f6d5c2bcc479","route":"/v1/session","method":"GET","status":200}
+{"request_id":"c34ef05b-6d93-4678-a217-9f4fcc8969d2","route":"/v1/auth/github","method":"GET","status":302}
+{"request_id":"abb31400-c10e-4714-83ce-ec911f201ddc","route":"/v1/auth/github/callback","method":"GET","status":302}
+{"request_id":"79dfc271-ac4e-482f-aebf-74808846d0d6","route":"/v1/me","method":"GET","status":200}
+{"request_id":"ee948012-6327-4323-93c1-74c92466fb0e","route":"/v1/session","method":"GET","status":200}
+{"request_id":"861654e4-2d6b-4907-b08b-432672c45e8d","route":"/v1/cli-links","method":"POST","status":201}
+{"request_id":"20d8fcab-9f33-4ba7-a17d-829391ec2371","route":"/v1/cli-links/:link_id","method":"POST","status":200}
+{"request_id":"4b218add-7283-430d-87e2-df2bf71f0701","route":"/v1/cli-links/:link_id","method":"POST","status":409}
+{"request_id":"b42f0cec-a436-4173-939b-fd2485c7f0ee","route":"/v1/cli-links/:link_id","method":"POST","status":200}
+{"request_id":"18ab1d07-079d-43c5-80a3-189c2ca26b55","route":"/v1/cli-links","method":"POST","status":201}
+{"request_id":"74ddec45-3645-4201-8346-e38c9c40d95d","route":"/v1/cli-links","method":"POST","status":201}
+{"request_id":"c37aac06-042f-4186-8549-44374b20907e","route":"/v1/cli-links/:link_id","method":"POST","status":200}
+{"request_id":"67946257-3efb-41d0-bed0-c286de309a3d","route":"/v1/cli-links/:link_id","method":"POST","status":200}
+{"request_id":"b9708cb6-2d76-4c73-8e09-2b769cdb9792","route":"/v1/cli-links/:link_id","method":"POST","status":200}
+{"request_id":"e6478150-2e92-414a-b2d1-f5427e820644","route":"/v1/cli-links/:link_id","method":"POST","status":200}
+✔ simultaneous account approvals and separate linking exchanges cannot cross-bind accounts or organizations (1461.284282ms)
+{"request_id":"03a77f0c-3a98-4c61-bfa1-8256e45a35c0","route":"/v1/auth/github","method":"GET","status":302}
+{"request_id":"a7dd9c42-f8c7-49df-a9b2-65d2660aa724","route":"/v1/auth/github/callback","method":"GET","status":302}
+{"request_id":"afa6d707-4843-4d9a-bcb2-5c99ae0d594e","route":"/v1/me","method":"GET","status":200}
+{"request_id":"d41f89fc-3d44-41c8-909c-cd1d854045f8","route":"/v1/session","method":"GET","status":200}
+{"request_id":"22d8c27e-9264-44b6-81ae-b31d99400e67","route":"/v1/cli-links","method":"POST","status":201}
+{"request_id":"c3c2b963-2e48-4ce8-a45b-85eb73cfd1c7","route":"/v1/cli-links/:link_id","method":"POST","status":400}
+{"request_id":"a9dc2415-c915-471d-81cc-0678eb9415c1","route":"/v1/cli-links/:link_id","method":"POST","status":400}
+{"request_id":"88f7048e-97f9-43d5-bd3a-97e5cfddc203","route":"/v1/cli-links/:link_id","method":"POST","status":400}
+{"request_id":"0141f63d-4a96-4674-a7cb-eb6bc87e774e","route":"/v1/cli-links/:link_id","method":"POST","status":400}
+{"request_id":"6f517358-38cd-480b-a0af-49afc9ec31b7","route":"/v1/cli-links/:link_id","method":"POST","status":400}
+{"request_id":"9b5d644e-f7d3-4072-a652-ee0314b7b16c","route":"/v1/cli-links/:link_id","method":"POST","status":403}
+{"request_id":"fd89266a-89b9-40e5-ae98-6e12e61d12f8","route":"/v1/cli-links","method":"POST","status":409}
+{"request_id":"e85aabbe-fb70-4e57-9fec-f76bfacbfcaf","route":"/v1/cli-links","method":"POST","status":400}
+✔ approval code lock, idempotency conflict, unapproved scopes and cross-proof replay cannot mint credentials (1083.257992ms)
+{"request_id":"e0fc1eda-e4a7-479b-bec0-b02da3ec2f31","route":"/v1/auth/github","method":"GET","status":302}
+{"request_id":"cf8162da-8cce-41fd-b68c-0851d8e7a806","route":"/v1/auth/github/callback","method":"GET","status":302}
+{"request_id":"823e2fe5-5bd1-46fb-bb1b-6c43b548f2a6","route":"/v1/me","method":"GET","status":200}
+{"request_id":"02697ac8-870c-4f8f-8995-2f4081371702","route":"/v1/session","method":"GET","status":200}
+{"request_id":"d22768a8-777b-4ad5-8aaa-bb890e2ce02f","route":"/v1/cli-links","method":"POST","status":201}
+{"request_id":"9c931b21-d895-40bb-881c-c1559e71438a","route":"/v1/cli-links/:link_id","method":"POST","status":200}
+{"request_id":"f9523764-f0af-4c54-b0b0-dbe4c263729f","route":"/v1/cli-links/:link_id","method":"POST","status":200}
+{"request_id":"fce51005-105c-4be3-92fd-64b456e550de","route":"/v1/cli/me/rotate","method":"POST","status":200}
+{"request_id":"af70f133-3046-4f86-9c3b-5a19fe922205","route":"/v1/cli/me/rotate","method":"POST","status":200}
+{"request_id":"d87646bc-114b-4208-a149-e14a239a974b","route":"/v1/cli/me/rotate","method":"POST","status":401}
+{"request_id":"fb3bb9de-a74b-42bf-bf58-fe9fd4626a62","route":"/v1/workers/me/rotate","method":"POST","status":401}
+{"request_id":"9aaf62a7-6f9c-499a-adaa-7c89ded19752","route":"/v1/cli/me","method":"DELETE","status":200}
+{"request_id":"e06a701d-f5de-4c23-8467-190366dda428","route":"/v1/cli/me/rotate","method":"POST","status":401}
+✔ rotation retry is proof/idempotency/audience bound and cannot resurrect revoked credentials (1109.185532ms)
+{"request_id":"d282eaa7-c251-42c0-8235-f0d119c81ce3","route":"/v1/auth/github","method":"GET","status":302}
+{"request_id":"2f35e7fb-be84-4dd1-9fbb-60898b55fb79","route":"/v1/auth/github/callback","method":"GET","status":302}
+{"request_id":"292c9d4a-b453-48fd-b059-4b37a43052ce","route":"/v1/me","method":"GET","status":200}
+{"request_id":"0372d647-9d8c-456a-b61f-f9af69218386","route":"/v1/session","method":"GET","status":200}
+{"request_id":"113be6d1-3048-4b2d-a1a5-0a9908ccea97","route":"/v1/auth/github","method":"GET","status":302}
+{"request_id":"14d9c1fe-f627-463d-92a2-f974c11887f1","route":"/v1/auth/github/callback","method":"GET","status":302}
+{"request_id":"21481d95-cb7b-43e4-91b6-44888c6e625a","route":"/v1/me","method":"GET","status":200}
+{"request_id":"fbe21eb3-07be-400a-9004-b1e8343071b3","route":"/v1/session","method":"GET","status":200}
+{"request_id":"abb76c15-e0e0-4b85-992b-347be9c828d4","route":"/v1/cli-links","method":"POST","status":201}
+{"request_id":"9cb06b6f-d63f-4cfd-af0c-a7e069098260","route":"/v1/cli-links/:link_id","method":"POST","status":200}
+{"request_id":"cb974e0e-fa42-4dc6-947c-dee8894c260c","route":"/v1/cli-links/:link_id","method":"POST","status":200}
+{"request_id":"b2ef071a-3be0-43ef-b5f3-7fd9092df849","route":"/v1/cli/organizations","method":"GET","status":200}
+{"request_id":"20842600-0ddf-43e1-bfd9-6f2d8cce1c54","route":"/v1/cli/organizations","method":"GET","status":200}
+{"request_id":"6efbb9b2-d5e8-4868-b6c5-9774d876aa62","route":"/v1/cli-links","method":"POST","status":201}
+{"request_id":"464ce48d-6143-424b-bae7-081234713fbc","route":"/v1/cli-links/:link_id","method":"POST","status":200}
+{"request_id":"39e30b02-3d29-400c-934e-8644c8e5e5b5","route":"/v1/cli-links/:link_id","method":"POST","status":200}
+{"request_id":"01c6a6bb-1dd8-47ab-9a6f-7080797e645d","route":"/v1/cli/organizations","method":"GET","status":400}
+{"request_id":"dfc442e0-c89a-43cd-8c97-c6ac7101cfa7","route":"/v1/cli-links","method":"POST","status":201}
+{"request_id":"9052065f-7a1e-42b6-b212-272c8593facf","route":"/v1/cli-links/:link_id","method":"POST","status":200}
+{"request_id":"31cb1c39-8375-4b50-afdc-70912d7a0d81","route":"/v1/cli-links/:link_id","method":"POST","status":200}
+{"request_id":"36a05cfb-a2f4-46d5-96ec-c4c2b1618bb7","route":"/v1/cli/me","method":"GET","status":401}
+{"request_id":"78ec391c-a799-4d03-ac9a-77fff874811b","route":"/v1/cli-links","method":"POST","status":201}
+{"request_id":"bd3829ca-d4a0-4187-99c2-0e8dbb335ee4","route":"/v1/cli-links/:link_id","method":"POST","status":200}
+{"request_id":"3cfbdfe7-3d81-49c9-9d23-8d876efbdcf1","route":"/v1/auth/logout","method":"POST","status":200}
+{"request_id":"5f08b2e5-5395-4ab7-a83d-1d5e4b2f604a","route":"/v1/cli-links/:link_id","method":"POST","status":403}
+✔ multiple memberships require fresh browser authority; deleted membership and stale approval session deny grants (1092.104702ms)
+{"request_id":"6e961d1a-1ccf-4b9c-87b6-db5708a23486","route":"/v1/cli-links","method":"POST","status":201}
+{"request_id":"6923fdc6-bc35-4292-95c0-d80c9806f8d9","route":"/cloud/connect","method":"GET","status":302}
+{"request_id":"4759c3f3-df0d-4fd5-9cd9-530da24bfbaf","route":"/v1/auth/github","method":"GET","status":302}
+{"request_id":"d75686de-8dd3-4468-a8b8-abcd1180b966","route":"/v1/auth/github/callback","method":"GET","status":302}
+{"request_id":"11105f77-af9f-4d81-b182-1c6f139c2ffd","route":"/v1/auth/github","method":"GET","status":400}
+✔ approval page safely redirects through browser login, rejects open redirects and binds OAuth return target server-side (884.363281ms)
+✔ preview mutation scripts refuse other databases and disable automatic provisioning (357.803535ms)
+✔ provider rejects redirect responses and never sends a token to redirected hosts (26.510283ms)
+✔ provider rejects malformed, unsafe numeric identity and oversized responses (9.693909ms)
+{"request_id":"ea676f2c-4bf0-496b-a31a-e5a24e27f89c","route":"/v1/auth/github","method":"GET","status":302}
+{"request_id":"4655601d-ada9-4603-9139-3a0692802317","route":"/v1/auth/github/callback","method":"GET","status":302}
+{"request_id":"2210fdcb-6e06-4296-be25-7efa7a006a6c","route":"/v1/me","method":"GET","status":200}
+{"request_id":"002e7b4d-854c-479d-8214-83aee4eaea37","route":"/v1/auth/github/callback","method":"GET","status":400}
+✔ production Worker bundle completes confidential PKCE login against simulated GitHub with real D1 (1242.290748ms)
+{"request_id":"91a4a12f-926d-4692-a688-eeb537831de8","route":"/v1/auth/github","method":"GET","status":302}
+{"request_id":"5c3a8313-1c0d-4c5c-96fd-2f9ce3dfa904","route":"/v1/auth/github/callback","method":"GET","status":302}
+{"request_id":"9ef76648-6634-4e08-b594-ed9dcaf0bec8","route":"/v1/me","method":"GET","status":200}
+{"request_id":"07f56785-1945-4321-847b-80bf68eb180f","route":"/v1/session","method":"GET","status":200}
+{"request_id":"f95436b1-5b4c-45d6-a9ab-838192e9f58c","route":"/v1/tenants/:tenant_id/machines","method":"POST","status":201}
+{"request_id":"0ab4c983-02bf-42e8-bccd-eb9412d844ce","route":"/v1/workers/register","method":"POST","status":201}
+{"request_id":"02aab7be-e67c-40fa-8bdb-280833345bfb","route":"/v1/workers/me","method":"GET","status":200}
+{"request_id":"e691d204-f5f4-4cf2-a383-9ad996278ab2","route":"/v1/workers/me","method":"GET","status":200}
+{"request_id":"efdf01c0-56fd-4a0b-8b45-4f37c485119a","route":"/v1/workers/me/rotate","method":"POST","status":200}
+{"request_id":"2be18a1e-07e3-4af7-bb34-12ea817f5c29","route":"/v1/workers/me/rotate","method":"POST","status":200}
+{"request_id":"d2430234-9a04-4c0d-98c3-9adff0806dd8","route":"/v1/workers/me","method":"GET","status":401}
+{"request_id":"9204b3ad-f0ec-44ee-bc3f-4d692ee4b654","route":"/v1/tenants/:tenant_id/machines","method":"DELETE","status":200}
+{"request_id":"880a1a7c-913e-4d90-beec-b7ba3597563d","route":"/v1/workers/me","method":"GET","status":401}
+{"request_id":"d71b7a5c-4c17-4177-bb4a-6667147d56e1","route":"/v1/cli-links","method":"POST","status":201}
+{"request_id":"44af0f18-e9b3-40e8-8b62-7b21e9aeac24","route":"/v1/cli-links/:link_id","method":"POST","status":200}
+{"request_id":"564c122d-cce5-4de4-81d6-2136e3adcb7b","route":"/v1/cli-links/:link_id","method":"POST","status":200}
+{"request_id":"4d15c499-249e-4a10-9ba2-f662ca59801c","route":"/v1/cli/me","method":"GET","status":401}
+{"request_id":"e7b56213-2199-4f81-889d-399d74b7824c","route":"/v1/workers/me","method":"GET","status":401}
+✔ real Bun worker client enrolls, verifies identity, rotates with lost-reply recovery and is contained by revocation/expiry (2764.966204ms)
+ℹ tests 130
+ℹ suites 0
+ℹ pass 130
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 224195.929054

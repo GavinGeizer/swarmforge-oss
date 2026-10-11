@@ -1,0 +1,98 @@
+{
+  "original_inventory_preserved": "root-failure-inventory.json",
+  "code_commit": "0b06aeb77c4f9b3d30a1102bc3f092c9f0eaf5f3",
+  "review_candidate": "8abc7bdc58c2461bd067a5c860923b13f6e8b6cf",
+  "failures": [
+    {
+      "test": "root metrics-security module initialization",
+      "recorded_failure": "getifaddrs error before tests loaded",
+      "cause": "restricted original execution environment; current local TCP/provider test starts successfully",
+      "production_affected": "not demonstrated by original setup failure",
+      "historical_inventory": "root-failure-inventory.json",
+      "verification": "Lead unrestricted root full run a3f14dc: 788 passed, 0 failed, 2 existing skips; root sources/tests unchanged at integrated 0b06aeb and docs-only8abc7bd."
+    },
+    {
+      "test": "cloud infrastructure startup",
+      "recorded_failure": "19 test files failed and type generation could not bind listener",
+      "cause": "original listener EPERM; current actual workerd/D1 runner starts and reaches production assertions",
+      "production_affected": false,
+      "verification": "Lead actual Node Miniflare/workerd/D1 full infrastructure at0b06aeb:130/130; generated bindings and cf-built artifact local smoke passed."
+    },
+    {
+      "test": "runtime env and logs carry no bearer, provider, repo or model credentials",
+      "failure": "exact three-entry environment allowlist omitted two mandatory watchdog numeric variables",
+      "shared_dependency": "ControlledProcessProvider + child initial authority",
+      "cause": "stale pre-watchdog test contract",
+      "correction": "exact five-entry allowlist, raw numeric syntax + captured boot authority; secret poisoning and both secret rejection assertions retained",
+      "commits": [
+        "ddf1da81beb4df7e0de59bd34834869e1d6731df",
+        "1830b06fe5b17e0c3feb86c06f7717a3d8dd20bc"
+      ],
+      "verification": "Integrated final root788/0/2; exact five variables, raw syntax, boot ordering and one-hour absolute bound retained atb6d6e54."
+    },
+    {
+      "test": "single-use worker enrollment and encrypted retry are distinct from devices, sessions and task authority",
+      "failure": "400 !== 404 at enrollment.integration.ts:37",
+      "stack": "resumed-cloud-red.log:263-279",
+      "reproduction": "node --experimental-strip-types --test test/enrollment.integration.ts test/hosted-admission.integration.ts",
+      "shared_dependency": "new hosted task route validates JSON/idempotency before resolving execution audience",
+      "cause": "old Phase2B1 unknown-route fixture submits malformed{}; route now exists",
+      "production_affected": false,
+      "correction": "valid controlled payload + idempotency key, wrong worker audience401, zero tasks/reservations/outbox",
+      "verification": "Corrected1574331; real cloud full130/130, SQL90/90; wrong-audience401 and all four dependent tables zero."
+    },
+    {
+      "test": "metering: exact reserve of full runtime; exhausted allowance403; unrelated meter ignored",
+      "failure": "409 !== 403 at hosted-admission.integration.ts:544",
+      "stack": "resumed-cloud-red.log:281-297",
+      "reproduction": "node --experimental-strip-types --test test/enrollment.integration.ts test/hosted-admission.integration.ts",
+      "shared_dependency": "hosted-admission.ts advisory and post-batch diagnosis",
+      "cause": "HTTP status does not match cloud-api-contracts.md documented403 allowance_exhausted",
+      "production_affected": "HTTP contract; no demonstrated quota reservation invariant failure",
+      "correction": "403 for exhausted only in both paths; retain unavailable/concurrency409 and all transactional SQL",
+      "verification": "Corrected1574331, independentA/B/C contribution approval; REAL beforeBatch admission exhaustion403/unavailable409; no partial dependent writes; cloud130/130 and SQL90/90."
+    },
+    {
+      "test": "concurrent distinct tasks journal their own actual child identities before launch returns",
+      "failure": "5000ms timeout at1574331",
+      "cause": "count-based provider delay can gate firstLaunch while release requires firstLaunch: circular wait",
+      "production_affected": false,
+      "correction": "task identity gate + deterministic RED/GREEN; headb6d6e54",
+      "verification": "root788/0/2, independentA/B approval"
+    },
+    {
+      "test": "failure audit bounded budget",
+      "failure": "10 audits versus stale global8 expectation",
+      "cause": "minute boundary admits2+8 in two valid windows",
+      "production_affected": false,
+      "correction": "exact per-HMAC-window count and audit total; deterministic production budget under realD1 saturates8 per each of2minutes; c1e696a",
+      "verification": "cloud130/130; 64MB focused8/8; independentB approval"
+    },
+    {
+      "test": "clean install and Phase2B1 upgrade checkpoint",
+      "failure": "Response body already read under64MB migration burst",
+      "cause": "local unread Miniflare response disturbed across D1 calls; direct mechanism reproduced2/3, internal Undici trigger not fully traced",
+      "production_affected": false,
+      "correction": "consume response immediately; identity validated after migrations; c1e696a",
+      "verification": "cloud130/130, real clean/populated migration8/8 focused64MB, independentB approval"
+    },
+    {
+      "test": "production child transport and new real infrastructure lifecycle",
+      "historical_failure": "EPERM nonempty socket stdin write in restricted environment",
+      "cause": "historical process IPC permission restriction; same actual provider/child socket path executes in authorized resumed environment",
+      "production_affected": "historical environment blocks production execution there; no transport code defect reproduced",
+      "correction": "no transport rewrite; qualify actual production path, finite authority, trusted stop and durable private journals",
+      "verification": "31s successful renewal independentworker+lead; integrated defaultWorker/D1/TCP/Bun runtime5/5, then full130/130; independentB/C approval for605fa60"
+    },
+    {
+      "test": "new hosted-runtime integration failure teardown and malformed stdout",
+      "failure": "driver/child leak if harness failed; malformed event throw and discarded lostACK response",
+      "cause": "new test driver lacked failure cleanup/awaits and event error forwarding",
+      "production_affected": false,
+      "correction": "production cleanup in finally; awaitdrivers before fixture shutdown; explicit stop uncertainty; stdout/error handling; consume lostACK body;605fa60",
+      "verification": "independentB/C contribution approved; lead5/5 integrated and130/130 full"
+    }
+  ],
+  "historical_unclassified": "Unclassified original failures have not all received individual causal reproductions. Entire unchanged root suite now executes under authorized supported environment; no blanket inference of environmental causality is made. Original inventory includes a parser boundary anomaly for last hosted-cli entry. Preserve raw log as authority. The original44156cc worker run passed783/1/2; the sole observed then-current root failure was the stale env allowlist. B/C independently passed788/0/2 on integrated8abc7bd.",
+  "review_gap": "B recovered original125/124/1 summary; per-test output was discarded by grep at execution, so the earlier non-final failure identity and cause are irretrievable. Do not label flaky. B final review documents this gap and three exact8abc7bd full130/130 runs. A/B/C all approve their controlled-local scope."
+}

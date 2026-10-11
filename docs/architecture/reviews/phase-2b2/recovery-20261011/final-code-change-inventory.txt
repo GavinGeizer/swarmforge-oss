@@ -1,0 +1,7 @@
+M	apps/cloud/src/hosted-admission.ts
+M	apps/cloud/test/abuse.integration.ts
+M	apps/cloud/test/enrollment.integration.ts
+M	apps/cloud/test/hosted-admission-regressions.test.ts
+A	apps/cloud/test/hosted-runtime.integration.ts
+M	apps/cloud/test/hosted-schema.integration.ts
+M	tests/hosted-supervisor.test.ts

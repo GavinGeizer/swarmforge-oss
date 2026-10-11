@@ -13,3 +13,11 @@ shared row with a stub provider; it does not certify shared privileged runtime i
 
 All historical remote VMs are retained. Automatic45c checkout handoff metadata is
 not a source identifier for the recovered private contributions.
+
+All three final complete-scope reviews at exact8abc7bd are APPROVED for controlled
+local execution. B's final report corrects its earlier unconfirmed-flakiness label:
+one non-final125-test run's per-test output was never retained, so its failure
+identity is irretrievable. Current integrated suites are green; no cause is invented.
+A/C independent logs and the final failure-inventory companion are preserved here.
+The final docs-only delivery SHA and its exact reviewer confirmations are in the
+primary handoff and the separately checksummed recovery evidence archive.

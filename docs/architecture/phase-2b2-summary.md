@@ -1,11 +1,12 @@
-# Phase 2B.2 implementation and verification checkpoint
+# Phase 2B.2 implementation and controlled local acceptance
 
-**Status: recovery integration underway; final acceptance remains incomplete.**
+**Status: controlled local implementation accepted; pilot and untrusted launch remain blocked.**
 The original candidate `44156cc6ad7858059f0e45a659b63de81d258249` was recovered
 without losing accepted contributions. Production socket-based child lease renewal,
 real local workerd/D1, loopback HTTP and protected journals now execute successfully.
-All accepted code and test repairs are integrated. Full suites and build checks passed;
-final integrated independent reviews and durable delivery remain.
+All accepted code and test repairs are integrated. Full suites, production child
+renewal, build checks and independent A/B/C reviews passed. Final delivery identifiers
+and fresh-bundle restoration are recorded in the primary handoff.
 Untrusted customer execution remains disabled. No master merge, production deployment,
 Stripe, managed inference or production provisioning is introduced.
 
@@ -264,9 +265,11 @@ A final delivery build, if regenerated, carries its own actual commit/hash in th
 
 Both existing skips are retained: lifecycle-package-only finalization survival,
 and opt-in real Freestyle/OpenCode/model smoke. No test was skipped to obtain green
-results. B's contribution review records one earlier unattributed full-suite
-failure; final review must preserve/recover its evidence rather than label it flaky
-without a concrete identity. The current full130-test lead run passed.
+results. B recovered the stored summary of one earlier non-final cloud run:
+125 tests,124 passed,1 failed. The original command filtered out per-test details;
+its identity/stack is irretrievable. This is an explicit historical verification gap,
+not established flakiness or an established production defect. B's three fresh full
+130-test runs and the lead/A/C runs passed. The original report and correction are retained.
 
 Earlier live browser linking, organization selection, rotation, logout/revocation and
 reauthorization remain documented in [live verification](reviews/phase-2b2/live-linking-verification.md).
@@ -299,15 +302,33 @@ rejections without catching their own assertion failures.
 
 Previous content-filter interruptions, failed source preflights, public stand-in
 investigations and malformed results remain incomplete evidence; they are not approvals.
-No security filter or rejected publication was bypassed. Final overall A/B/C verdicts
-must inspect the final integrated commit; contribution approvals alone are insufficient.
+No security filter or rejected publication was bypassed. All three independently
+inspected the complete integrated implementation at
+`8abc7bdc58c2461bd067a5c860923b13f6e8b6cf`, tree
+`f3e0f746f56bf6c9c0b6a36799f947921c77e18b`, and approved their full assigned
+controlled-local scopes. These are complete-scope reviews, beyond contribution approvals.
 
-## 17. Remaining acceptance and launch gates
+| Reviewer | Final result and independent execution |
+| --- | --- |
+| [A: architecture/compatibility](reviews/phase-2b2/recovery-20261011/final-review-A-8abc7bd.md) | APPROVED; cloud130/130, SQL90/90, compatibility110/110, child/client23/23, root/cloud static checks |
+| [B: concurrency/recovery](reviews/phase-2b2/recovery-20261011/final-review-B-8abc7bd.md) | APPROVED; root788/0/2 existing skips, cloud130/130 three times, SQL90/90, runtime5/5, static checks, memory64 abuse3/3 |
+| [C: authentication/isolation](reviews/phase-2b2/recovery-20261011/final-review-C-8abc7bd.md) | APPROVED; root788/0/2 existing skips, cloud130/130, SQL90/90, static checks,15 cross-tenant guard checks |
+
+No introduced Critical/High defect remains unresolved. The unrecovered historical
+failure is retained as an evidence gap. The deliberate fivefold-load `/proc/environ`
+timing observation is recorded as a test robustness limitation; it did not recur in
+these final whole-root runs. Local workerd/D1, TCP and OS IPC are qualified in the
+resumed authorized environment; live deployed operations remain outside these reviews.
+The final delivery adds documentation and preserved evidence only. Reviewers verify
+that exact delivery commit and unchanged production/test source in follow-up reports
+preserved in the handoff/evidence archive; no passing source suite is altered.
+
+## 17. Deployment and untrusted launch gates
 
 The final combined root/cloud suites, builds, generated types, package verification,
-and clean/Phase 2B.1 migration checks passed. Complete exact-final A/B/C review,
-commit the delivery evidence and verify fresh bundle restoration. The controlled local fixture qualification is distinct from
-pilot deployment readiness. Live edge CPU, D1 scanned/written rows, larger retention
+clean/Phase 2B.1 migrations and exact integrated A/B/C reviews passed. The handoff
+records the final delivery commit, package and verified fresh bundle restoration.
+Controlled local fixture qualification is distinct from pilot deployment readiness. Live edge CPU, D1 scanned/written rows, larger retention
 storage growth and load fitness remain unmeasured. The cf build warning is a Docker detection restriction, not a failed Worker compile;
 the actual emitted artifact was booted against real local D1. Production bindings
 and live edge performance still require separately authorized qualification.
@@ -336,7 +357,7 @@ Additional local recovery evidence: `data/phase2b2/recovery-20261009/`, includin
 original/corrected reviews, hashes, failed attempts, RED reproductions and test logs.
 Source bundles preserve rejected and accepted intermediate commits. The original
 candidate summary and complete earlier evidence remain in44156cc Git history.
-The final handoff must identify the implementation/delivery commits, refreshed bundle
+The final handoff identifies the implementation/delivery commits, refreshed bundle
 hash and fresh-restore result, exact test commands/counts, remaining live-infrastructure
 restrictions and worker disposition. Automatic older-checkout publication metadata is
 not an accepted-source identifier.
