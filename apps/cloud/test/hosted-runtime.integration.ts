@@ -69,6 +69,8 @@ interface DriverInput {
   ackMode?: "none" | "once" | "always";
   submit?: boolean;
   expired?: boolean;
+  crash?: boolean;
+  exitEarly?: boolean;
 }
 
 function driverScript(): string {
@@ -96,6 +98,62 @@ const [
 
 const input = JSON.parse(await Bun.stdin.text());
 const out = {};
+
+// Test-only minimal hook: emit intentionally unparsable stdout and exit 0 so
+// the harness rejection path (malformed stdout / early exit) is exercised.
+if (input.exitEarly) {
+  process.stdout.write("synthetic malformed non-json driver output");
+  process.exit(0);
+}
+
+// Production objects live in these outer bindings so the finally block can
+// stop the actual grandchild through the production supervisor/provider (not
+// a bare parent kill) before the process exits.
+let supervisor = null;
+let coordinator = null;
+let store = null;
+let hostedStore = null;
+let provider = null;
+let taskClient = null;
+let childPid = null;
+let taskId = null;
+let cleaned = false;
+const cleanupErrors = [];
+const message = (error) => (error instanceof Error ? error.message : String(error));
+
+async function cleanup() {
+  if (cleaned) return;
+  cleaned = true;
+  try {
+    if (supervisor) await supervisor.close();
+  } catch (error) {
+    cleanupErrors.push("supervisor.close: " + message(error));
+  }
+  try {
+    if (coordinator) await coordinator.stop();
+  } catch (error) {
+    cleanupErrors.push("coordinator.stop: " + message(error));
+  }
+  try {
+    if (store) store.close();
+  } catch (error) {
+    cleanupErrors.push("store.close: " + message(error));
+  }
+}
+
+// Bounded graceful shutdown: a parent SIGTERM runs the production cleanup
+// (verified child stop) before exit. If the parent is SIGKILLed instead, the
+// child's stdin EOF/close handler still terminates the grandchild, so no
+// runtime is left executing.
+let terminating = false;
+const terminate = (code) => {
+  if (terminating) return;
+  terminating = true;
+  void cleanup().finally(() => process.exit(code));
+};
+process.on("SIGTERM", () => terminate(143));
+process.on("SIGINT", () => terminate(130));
+
 try {
   const config = loadConfig({
     FREESTYLE_API_TOKEN: "synthetic-hosted-test-token",
@@ -109,11 +167,11 @@ try {
     SWARMFORGE_METRICS_ENABLED: "false",
     SWARMFORGE_TOKEN_IDLE_TIMEOUT_SECONDS: "0",
   });
-  const store = new Store(input.dbPath);
-  const hostedStore = new HostedStore(input.statePath);
-  const provider = new ControlledProcessProvider();
+  store = new Store(input.dbPath);
+  hostedStore = new HostedStore(input.statePath);
+  provider = new ControlledProcessProvider();
   const agent = new ControlledAgent();
-  const coordinator = new Coordinator(config, store, provider, agent);
+  coordinator = new Coordinator(config, store, provider, agent);
 
   let ackCalls = 0;
   let renewCalls = 0;
@@ -139,7 +197,7 @@ try {
     { preconnect() {} },
   );
   const active = mode !== "none";
-  const taskClient = new HostedTaskClient(
+  taskClient = new HostedTaskClient(
     input.origin,
     input.taskCredential,
     input.tenant,
@@ -155,7 +213,7 @@ try {
     const identity = await client.identity();
     out.identity_ok = identity.supervisor_id === input.supervisor.supervisor_id;
   }
-  const supervisor = new HostedSupervisor({
+  supervisor = new HostedSupervisor({
     config,
     store,
     hostedStore,
@@ -173,11 +231,25 @@ try {
       input.runtimeMs,
       input.controlledDurationMs,
     );
-    out.submitted_task_id = submitted.task.task_id;
+    taskId = submitted.task.task_id;
+    out.submitted_task_id = taskId;
+  }
+  // Failure-path regression: start the real child, then throw while it is
+  // alive. The finally block must stop it through the production supervisor.
+  if (input.crash) {
+    const task = await supervisor.claimOnce();
+    if (!task) throw new Error("crash mode expected a claimable task");
+    taskId = task.task_id;
+    out.submitted_task_id = taskId;
+    const run = await supervisor.ackAndStart(task);
+    void run;
+    const mapping = hostedStore.get(taskId);
+    childPid = mapping ? mapping.child_pid : null;
+    out.child_pid = childPid;
+    throw new Error("synthetic in-flight failure while real child is alive");
   }
   const result = await runSupervisorLoop(supervisor, { maxTasks: 1 });
   out.loop_result = result;
-  const taskId = submitted ? submitted.task.task_id : null;
   if (taskId) {
     out.task_state = (await taskClient.readTask(taskId)).state;
     const mapping = hostedStore.get(taskId);
@@ -191,27 +263,25 @@ try {
           child_pid: mapping.child_pid,
         }
       : null;
-    if (mapping && mapping.child_pid) {
-      // Child absence is only proven by a real ESRCH. EPERM (alive but not
-      // signalable) or any other/unknown error must fail the qualification
-      // rather than be reported as a confirmed dead child.
-      try {
-        process.kill(mapping.child_pid, 0);
-        out.pid_dead = false;
-      } catch (error) {
-        if (error && error.code === "ESRCH") out.pid_dead = true;
-        else throw error;
-      }
-    }
+    if (mapping && mapping.child_pid) childPid = mapping.child_pid;
   }
-  out.spawned = provider.spawnedCommands.slice();
   out.ack_calls = ackCalls;
   out.renew_calls = renewCalls;
-  await supervisor.close();
-  await coordinator.stop();
-  store.close();
-  // Durability evidence: the journal is reopened from the protected temp file
-  // after the supervisor closed it, and the same mapping/stop proof is read.
+  out.ok = true;
+} catch (error) {
+  out.ok = false;
+  out.error = message(error);
+  out.errorName = error instanceof Error ? error.constructor.name : typeof error;
+} finally {
+  await cleanup();
+}
+
+if (provider) out.spawned = provider.spawnedCommands.slice();
+
+// Durability evidence: the journal is reopened from the protected temp file
+// after the production cleanup closed it, and the same mapping/stop proof is
+// read. Retained on both the success and the failure path.
+try {
   const reopened = new HostedStore(input.statePath);
   if (taskId) {
     const row = reopened.get(taskId);
@@ -225,23 +295,43 @@ try {
       : null;
   }
   reopened.close();
-  out.ok = true;
 } catch (error) {
-  out.ok = false;
-  out.error = error instanceof Error ? error.message : String(error);
-  out.errorName = error instanceof Error ? error.constructor.name : typeof error;
+  out.reopen_error = message(error);
 }
+
+// Child absence is only proven by a real ESRCH AFTER production cleanup.
+// EPERM (alive but not signalable) or any other/unknown error must fail the
+// qualification rather than be reported as a confirmed dead child.
+if (childPid) {
+  if (!out.child_pid) out.child_pid = childPid;
+  try {
+    process.kill(childPid, 0);
+    out.pid_dead = false;
+  } catch (error) {
+    if (error && error.code === "ESRCH") out.pid_dead = true;
+    else throw error;
+  }
+}
+if (cleanupErrors.length) out.cleanup_errors = cleanupErrors;
 process.stdout.write(JSON.stringify(out) + "\\n");
 `;
+}
+
+interface DriverHandle {
+  child: ReturnType<typeof spawn>;
+  result: Promise<Record<string, unknown>>;
+  exited: Promise<number | null>;
+}
+
+function clip(text: string, limit = 2000): string {
+  return text.length <= limit ? text : `...${text.slice(-limit)}`;
 }
 
 async function runDriver(
   directory: string,
   input: DriverInput,
-): Promise<{
-  child: ReturnType<typeof spawn>;
-  result: Promise<Record<string, unknown>>;
-}> {
+  drivers: Set<DriverHandle>,
+): Promise<DriverHandle> {
   const child = spawn(
     BUN,
     ["--no-env-file", "--config=/dev/null", "-e", driverScript()],
@@ -253,30 +343,79 @@ async function runDriver(
   );
   let stdout = "";
   let stderr = "";
+  let stdinError: Error | null = null;
   child.stdout!.on("data", (chunk) => {
     stdout += chunk;
   });
   child.stderr!.on("data", (chunk) => {
     stderr += chunk;
   });
+  // Report stdin failures instead of swallowing them (a noop listener would
+  // hide EPIPE). The error is recorded and surfaced through `result`.
+  child.stdin!.on("error", (error) => {
+    stdinError = error;
+  });
+  const exited = new Promise<number | null>((resolve, reject) => {
+    child.once("error", reject);
+    child.once("close", resolve);
+  });
+  const result = exited.then((code) => {
+    if (stdinError)
+      throw new Error(
+        `Bun driver stdin error: ${stdinError.message}; stderr=${clip(stderr)}`,
+      );
+    if (code !== 0)
+      throw new Error(
+        `Bun driver exited ${code}: stderr=${clip(stderr)} stdout=${clip(stdout)}`,
+      );
+    const lastLine = stdout.trim().split("\n").at(-1) ?? "";
+    try {
+      return JSON.parse(lastLine) as Record<string, unknown>;
+    } catch {
+      throw new Error(
+        `Bun driver produced unparsable result (early exit/malformed stdout): stdout=${clip(stdout)} stderr=${clip(stderr)}`,
+      );
+    }
+  });
+  // Never leave an unobserved rejection while a test is waiting elsewhere.
+  void result.catch(() => {});
+  const handle: DriverHandle = { child, result, exited };
+  drivers.add(handle);
+  void exited.finally(() => drivers.delete(handle));
   child.stdin!.write(JSON.stringify(input));
   child.stdin!.end();
-  const result = new Promise<Record<string, unknown>>((resolve, reject) => {
-    child.once("error", reject);
-    child.once("close", (code) => {
-      if (code !== 0) {
-        reject(new Error(`Bun driver exited ${code}: ${stderr}`));
-        return;
-      }
-      resolve(
-        JSON.parse(stdout.trim().split("\n").at(-1)!) as Record<
-          string,
-          unknown
-        >,
-      );
-    });
-  });
-  return { child, result };
+  return handle;
+}
+
+// Bounded graceful teardown: SIGTERM lets the driver run its production
+// cleanup (verified child stop) and exit; we await that exit BEFORE the
+// harness closes the bridge/D1 or removes the temp dir. If the driver does not
+// exit within the bound it is SIGKILLed and the uncertainty is recorded;
+// the grandchild still exits on stdin EOF once the parent stdio is gone.
+async function stopDriver(handle: DriverHandle): Promise<string | null> {
+  if (handle.child.exitCode !== null || handle.child.signalCode !== null) {
+    await handle.exited.catch(() => {});
+    return null;
+  }
+  try {
+    handle.child.kill("SIGTERM");
+  } catch {}
+  const graceful = await Promise.race([
+    handle.exited.then(
+      () => true,
+      () => true,
+    ),
+    new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 15000)),
+  ]);
+  if (graceful) return null;
+  try {
+    handle.child.kill("SIGKILL");
+  } catch {}
+  await Promise.race([
+    handle.exited.catch(() => {}),
+    new Promise<void>((resolve) => setTimeout(resolve, 5000)),
+  ]);
+  return "driver did not exit after SIGTERM+SIGKILL within bound; runtime state uncertain";
 }
 
 type CloudFixture = Awaited<ReturnType<typeof fixture>>;
@@ -374,9 +513,11 @@ async function withHarness(
     directory: string;
     origin: string;
     setup: Setup;
+    drivers: Set<DriverHandle>;
   }) => Promise<void>,
 ): Promise<void> {
   const directory = await mkdtemp(join(tmpdir(), "swarmforge-hosted-runtime-"));
+  const drivers = new Set<DriverHandle>();
   const server = createServer(async (req, res) => {
     try {
       const chunks: Buffer[] = [];
@@ -409,17 +550,39 @@ async function withHarness(
   assert.ok(address && typeof address === "object");
   const origin = `http://127.0.0.1:${address.port}`;
   // The fixture is created after the server so its origin matches the bridge.
-  const context = { directory, origin, setup: undefined as unknown as Setup };
+  const context = {
+    directory,
+    origin,
+    setup: undefined as unknown as Setup,
+    drivers,
+  };
+  let failure: unknown;
+  let cleanupUncertainty: string | null = null;
   try {
     context.setup = await setup(origin);
     await run(context);
+  } catch (error) {
+    failure = error;
   } finally {
+    // Stop and await every driver (and therefore its production-stopped child)
+    // BEFORE closing the bridge, disposing D1, or removing the journals.
+    const uncertainties: string[] = [];
+    for (const handle of [...drivers]) {
+      const uncertainty = await stopDriver(handle).catch(
+        (error) => `driver stop failed: ${String(error)}`,
+      );
+      if (uncertainty) uncertainties.push(uncertainty);
+    }
     await new Promise<void>((resolve, reject) =>
       server.close((error) => (error ? reject(error) : resolve())),
     );
     await context.setup?.h.mf.dispose();
     await rm(directory, { recursive: true, force: true });
+    if (uncertainties.length) cleanupUncertainty = uncertainties.join("; ");
   }
+  if (failure) throw failure;
+  if (cleanupUncertainty)
+    throw new Error(`Driver cleanup uncertainty: ${cleanupUncertainty}`);
 }
 
 function driverInput(context: {
@@ -450,13 +613,17 @@ test(
   { timeout: 120000 },
   async () => {
     await withHarness(async (context) => {
-      const { child, result } = await runDriver(context.directory, {
-        ...driverInput(context),
-        runtimeMs: 60000,
-        controlledDurationMs: 31000,
-        ackMode: "once",
-      });
-      const out = await result;
+      const handle = await runDriver(
+        context.directory,
+        {
+          ...driverInput(context),
+          runtimeMs: 60000,
+          controlledDurationMs: 31000,
+          ackMode: "once",
+        },
+        context.drivers,
+      );
+      const out = await handle.result;
       assert.equal(out.ok, true, JSON.stringify(out));
       assert.equal(out.identity_ok, true);
       assert.ok(String(out.submitted_task_id));
@@ -511,7 +678,6 @@ test(
         const info = await stat(join(context.directory, file));
         assert.equal(info.mode & 0o777, 0o600);
       }
-      void child;
     });
   },
 );
@@ -521,11 +687,15 @@ test(
   { timeout: 90000 },
   async () => {
     await withHarness(async (context) => {
-      const { result } = await runDriver(context.directory, {
-        ...driverInput(context),
-        runtimeMs: 60000,
-        controlledDurationMs: 31000,
-      });
+      const handle = await runDriver(
+        context.directory,
+        {
+          ...driverInput(context),
+          runtimeMs: 60000,
+          controlledDurationMs: 31000,
+        },
+        context.drivers,
+      );
       const taskId = await waitForTaskState(context, "running");
       const cancelled = await context.setup.h.request(
         `/v1/tenants/${context.setup.account.tenant}/tasks/${taskId}/cancel`,
@@ -537,7 +707,7 @@ test(
         {},
       );
       assert.ok([200, 202].includes(cancelled.status));
-      const out = await result;
+      const out = await handle.result;
       assert.equal(out.ok, true, JSON.stringify(out));
       assert.deepEqual(out.loop_result, {
         claimed: 1,
@@ -573,13 +743,17 @@ test(
   { timeout: 90000 },
   async () => {
     await withHarness(async (context) => {
-      const { result } = await runDriver(context.directory, {
-        ...driverInput(context),
-        runtimeMs: 60000,
-        controlledDurationMs: 5000,
-        ackMode: "always",
-      });
-      const out = await result;
+      const handle = await runDriver(
+        context.directory,
+        {
+          ...driverInput(context),
+          runtimeMs: 60000,
+          controlledDurationMs: 5000,
+          ackMode: "always",
+        },
+        context.drivers,
+      );
+      const out = await handle.result;
       assert.equal(out.ok, true, JSON.stringify(out));
       assert.equal((out.spawned as unknown[]).length, 0);
       assert.deepEqual((out.loop_result as { held: string[] }).held, [
@@ -614,13 +788,17 @@ test(
       assert.equal(meter!.reserved_quantity, "60000");
 
       // Stale/expired supervisor authority never reaches claim or execution.
-      const expired = await runDriver(context.directory, {
-        ...driverInput(context),
-        runtimeMs: 60000,
-        controlledDurationMs: 5000,
-        expired: true,
-        submit: false,
-      });
+      const expired = await runDriver(
+        context.directory,
+        {
+          ...driverInput(context),
+          runtimeMs: 60000,
+          controlledDurationMs: 5000,
+          expired: true,
+          submit: false,
+        },
+        context.drivers,
+      );
       const staleOut = await expired.result;
       assert.equal(staleOut.ok, true, JSON.stringify(staleOut));
       assert.equal(
@@ -628,6 +806,64 @@ test(
         true,
       );
       assert.equal((staleOut.spawned as unknown[]).length, 0);
+    });
+  },
+);
+
+test(
+  "driver failure while the real child is alive stops the runtime through production cleanup and retains the durable journal",
+  { timeout: 90000 },
+  async () => {
+    await withHarness(async (context) => {
+      const handle = await runDriver(
+        context.directory,
+        {
+          ...driverInput(context),
+          runtimeMs: 60000,
+          controlledDurationMs: 31000,
+          crash: true,
+        },
+        context.drivers,
+      );
+      const out = await handle.result;
+      assert.equal(out.ok, false, JSON.stringify(out));
+      assert.match(String(out.error), /synthetic in-flight failure/);
+      // A real child was actually started, then production cleanup stopped it.
+      assert.ok(Number(out.child_pid) > 0, JSON.stringify(out));
+      assert.equal(out.pid_dead, true);
+      assert.ok((out.spawned as unknown[]).length >= 1);
+      const reopened = out.reopened_mapping as {
+        state: string;
+        stop_confirmed: boolean;
+      } | null;
+      assert.ok(reopened, JSON.stringify(out));
+      assert.equal(reopened.stop_confirmed, true);
+      assert.equal(out.cleanup_errors, undefined);
+    });
+  },
+);
+
+test(
+  "unparsable or early-exiting driver is rejected cleanly with bounded diagnostics",
+  { timeout: 30000 },
+  async () => {
+    await withHarness(async (context) => {
+      const handle = await runDriver(
+        context.directory,
+        {
+          ...driverInput(context),
+          runtimeMs: 60000,
+          controlledDurationMs: 5000,
+          exitEarly: true,
+        },
+        context.drivers,
+      );
+      await assert.rejects(
+        () => handle.result,
+        (error: unknown) =>
+          error instanceof Error &&
+          /unparsable result|exited/.test(error.message),
+      );
     });
   },
 );
