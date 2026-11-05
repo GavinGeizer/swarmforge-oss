@@ -2,7 +2,7 @@
 
 **SwarmForge is a self-hosted orchestrator for parallel AI coding agents running in isolated remote VMs.** Your AI lead assigns tasks through the Model Context Protocol (MCP); SwarmForge runs OpenCode workers in Freestyle VMs, tracks their progress, and preserves their results and files.
 
-[Website](https://getswarmforge.tech) · [Setup guide](https://getswarmforge.tech/docs/) · [Releases](https://github.com/GavinGeizer/swarmforge-oss/releases) · [Developer onboarding](CONTRIBUTING.md)
+[Website](https://getswarmforge.tech) · [Setup guide](https://getswarmforge.tech/docs/) · [Releases](https://github.com/GavinGeizer/swarmforge-oss/releases) · [Release verification](docs/RELEASE-VERIFICATION.md) · [Security policy](SECURITY.md) · [Developer onboarding](CONTRIBUTING.md)
 
 The coordinator runs on your Linux machine. Each worker gets a separate VM, workspace, and OpenCode session. You supply the VM snapshot, model endpoint, and Git repository. The CLI provides initialization, readiness checks, a terminal dashboard, and artifact retrieval. SwarmForge is [source-available under PolyForm Small Business 1.0.0](#license), which restricts permitted business use.
 
@@ -73,7 +73,7 @@ swarmforge doctor --config ./config.toml
 swarmforge serve --config ./config.toml
 ```
 
-You can [inspect the installer](https://getswarmforge.tech/install) before executing it. It downloads versioned GitHub assets, verifies both archive and executable checksums, and installs at `~/.local/bin/swarmforge`. These flags keep installation separate from initialization and leave shell profiles unchanged. `--version` should print `0.1.3`. To persist PATH, follow [these shell instructions](#make-the-command-available-in-your-terminal-and-workspace).
+You can [inspect the installer](https://getswarmforge.tech/install) before executing it. It downloads versioned GitHub assets, verifies both archive and executable checksums, and installs at `~/.local/bin/swarmforge`. This v0.1.3 release is checksum-only; the installer does not verify signed provenance. See [release verification](docs/RELEASE-VERIFICATION.md) for the limits and verification steps for future signed releases. These flags keep installation separate from initialization and leave shell profiles unchanged. `--version` should print `0.1.3`. To persist PATH, follow [these shell instructions](#make-the-command-available-in-your-terminal-and-workspace).
 
 `init` asks for your real infrastructure settings and creates a private `.env` plus `config.toml` here. Keep passing this `--config` to select the deployment independently of global configuration. Exported SwarmForge/provider environment variables still take precedence; inspect `swarmforge config show --config ./config.toml` if settings differ from what you entered. If `.env` already exists, skip `init` and follow [the existing-environment instructions](#if-you-already-have-an-environment-file).
 

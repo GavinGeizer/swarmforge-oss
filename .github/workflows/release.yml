@@ -10,8 +10,8 @@ on:
       - "v*"
   workflow_dispatch:
 
-# The default is read-only: the build job only needs the source. Writing is
-# granted to the single job that can create a draft release.
+# The default is read-only. The build job only needs the source; signing and
+# draft creation receive their separate, narrowly scoped permissions below.
 permissions:
   contents: read
 
@@ -24,11 +24,12 @@ jobs:
     name: Build and verify the executable
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           fetch-depth: 0
+          persist-credentials: false
 
-      - uses: oven-sh/setup-bun@v2
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
         with:
           bun-version: "1.4.2"
 
@@ -103,7 +104,7 @@ jobs:
       - name: Upload build artifacts
         # The same assets on every trigger: the draft release is created from
         # exactly these files, never from a second build.
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: ${{ env.ARTIFACT_NAME }}
           path: |
@@ -116,23 +117,94 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+  provenance:
+    name: Attest the verified release assets
+    needs: build
+    if: github.event_name == 'push' && github.repository == 'GavinGeizer/swarmforge-oss' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - name: Download the build output
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: ${{ env.ARTIFACT_NAME }}
+          path: release-assets
+
+      - name: Verify paths, checksums, tag, and source metadata
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          version="${RELEASE_TAG#v}"
+          test "$RELEASE_TAG" = "v$version"
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          test "$GITHUB_REPOSITORY" = "GavinGeizer/swarmforge-oss"
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          archive="swarmforge-v${version}-linux-x64-glibc.tar.gz"
+          archive_sha="${archive}.sha256"
+          metadata="metadata-${version}.json"
+          expected="LICENSE SHA256SUMS ${archive} ${archive_sha} ${metadata} swarmforge"
+          actual="$(find release-assets -mindepth 1 -maxdepth 1 -type f -printf '%f\n' | LC_ALL=C sort | tr '\n' ' ')"
+          wanted="$(printf '%s\n' $expected | LC_ALL=C sort | tr '\n' ' ')"
+          test "$actual" = "$wanted"
+          (cd release-assets && sha256sum -c "$archive_sha" && sha256sum -c SHA256SUMS)
+          jq -e --arg version "$version" --arg commit "$SOURCE_SHA" \
+            '.version == $version and .commit == $commit and .platform == "linux-x64-glibc"' \
+            "release-assets/$metadata" >/dev/null
+
+      - name: Generate keyless SLSA provenance
+        id: attest
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
+        with:
+          subject-path: |
+            release-assets/swarmforge
+            release-assets/SHA256SUMS
+            release-assets/metadata-*.json
+            release-assets/LICENSE
+            release-assets/swarmforge-v*-linux-x64-glibc.tar.gz
+            release-assets/swarmforge-v*-linux-x64-glibc.tar.gz.sha256
+          create-storage-record: false
+
+      - name: Preserve the versioned Sigstore bundle
+        env:
+          BUNDLE_PATH: ${{ steps.attest.outputs.bundle-path }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          test -s "$BUNDLE_PATH"
+          cp "$BUNDLE_PATH" "release-assets/swarmforge-${RELEASE_TAG}-provenance.sigstore.json"
+
+      - name: Upload the versioned Sigstore bundle
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: swarmforge-${{ github.ref_name }}-provenance-bundle
+          path: release-assets/swarmforge-${{ github.ref_name }}-provenance.sigstore.json
+          if-no-files-found: error
+          retention-days: 14
+
   draft-release:
     name: Draft the release for a matching tag
-    needs: build
+    needs: [build, provenance]
     # Only a pushed v* tag can create a release, and only when the tag names the
     # packaged version. Nothing here publishes a release: the draft is created
     # for a human to review and publish.
-    if: github.event_name == 'push'
+    if: github.event_name == 'push' && github.repository == 'GavinGeizer/swarmforge-oss' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-24.04
-    # The only job that needs to write, and only to create the draft.
+    # The only job that can write release contents, and only to create a draft.
     permissions:
       contents: write
+      attestations: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           fetch-depth: 0
+          persist-credentials: false
 
-      - uses: oven-sh/setup-bun@v2
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
         with:
           bun-version: "1.4.2"
 
@@ -142,7 +214,7 @@ jobs:
         run: bun scripts/package.ts tag "$RELEASE_TAG"
 
       - name: Download the verified build artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           name: ${{ env.ARTIFACT_NAME }}
           path: release-assets
@@ -154,10 +226,18 @@ jobs:
           RELEASE_TAG: ${{ github.ref_name }}
         run: bun scripts/package.ts release-assets release-assets --tag "$RELEASE_TAG"
 
-      - name: Verify the external archive checksum
-        run: |
-          version="$(bun -e 'console.log(require("./package.json").version)')"
-          (cd release-assets && sha256sum -c "swarmforge-v${version}-linux-x64-glibc.tar.gz.sha256")
+      - name: Download the versioned provenance bundle
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: swarmforge-${{ github.ref_name }}-provenance-bundle
+          path: release-assets
+
+      - name: Verify keyless provenance for every release asset
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          SOURCE_SHA: ${{ github.sha }}
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/verify-release-provenance.sh release-assets
 
       - name: Create a draft release
         env:
@@ -173,4 +253,5 @@ jobs:
             "release-assets/swarmforge-v${version}-linux-x64-glibc.tar.gz.sha256" \
             "release-assets/SHA256SUMS" \
             "release-assets/metadata-${version}.json" \
-            "release-assets/LICENSE"
+            "release-assets/LICENSE" \
+            "release-assets/swarmforge-v${version}-provenance.sigstore.json"
