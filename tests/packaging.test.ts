@@ -1048,24 +1048,37 @@ describe("packaging declarations", () => {
     expect(await Bun.file(join(workspace, "injected")).exists()).toBe(false);
   }, 120000);
 
-  test("the workflow grants write access only to the draft job", async () => {
+  test("the workflow isolates signing permissions from draft-release writes", async () => {
     const workflow = await readFile(
       join(repositoryRoot, ".github", "workflows", "release.yml"),
       "utf8",
     );
     expect(workflow).toContain("permissions:\n  contents: read");
+    const signing = workflow.slice(
+      workflow.indexOf("  provenance:"),
+      workflow.indexOf("draft-release:"),
+    );
+    expect(signing).toContain(
+      "permissions:\n      contents: read\n      id-token: write\n      attestations: write",
+    );
+    expect(signing).not.toContain("contents: write");
+    expect(signing).toContain(
+      "if: github.event_name == 'push' && github.repository == 'GavinGeizer/swarmforge-oss'",
+    );
     const draft = workflow.slice(workflow.indexOf("draft-release:"));
     expect(draft).toContain("permissions:\n      contents: write");
+    expect(draft).toContain("attestations: read");
     const build = workflow.slice(
       workflow.indexOf("  build:"),
-      workflow.indexOf("draft-release:"),
+      workflow.indexOf("  provenance:"),
     );
     expect(build).not.toContain("contents: write");
     expect(build).not.toContain("github.token");
-    // No tag value is ever interpolated into a run script.
+    // Shell commands receive the tag through an environment variable rather
+    // than interpolating it into the script text.
     for (const match of workflow.matchAll(/^.*github\.ref_name.*$/gm))
       expect((match[0] ?? "").trim()).toMatch(
-        /^RELEASE_TAG: \$\{\{ github\.ref_name \}\}$/,
+        /^(RELEASE_TAG: \$\{\{ github\.ref_name \}\}|name: swarmforge-\$\{\{ github\.ref_name \}\}-provenance-bundle|path: release-assets\/swarmforge-\$\{\{ github\.ref_name \}\}-provenance\.sigstore\.json)$/,
       );
     expect(workflow).toContain(
       'run: bun scripts/package.ts tag "$RELEASE_TAG"',
@@ -1131,15 +1144,34 @@ describe("packaging declarations", () => {
     expect(workflow).toContain("run: bun run package");
     expect(workflow).toContain("bun run package:verify");
     expect(workflow).toContain("workflow_dispatch");
-    expect(workflow).toContain("uses: actions/upload-artifact@v4");
+    expect(workflow).toContain(
+      "uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
+    );
+    expect(workflow).toContain(
+      "actions/checkout@11d5960a326750d5838078e36cf38b85af677262",
+    );
+    expect(workflow).toContain("persist-credentials: false");
+    expect(workflow).toContain(
+      "oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6",
+    );
+    expect(workflow).toContain(
+      "actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6",
+    );
+    expect(workflow).toContain("create-storage-record: false");
     // The draft is cut from the artifacts the build job uploaded and verified,
     // so it can never carry a second, unreviewed build.
     const draft = workflow.slice(workflow.indexOf("draft-release:"));
-    expect(draft).toContain("uses: actions/download-artifact@v4");
+    expect(draft).toContain(
+      "uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093",
+    );
     expect(draft).not.toContain("run: bun run build");
     expect(draft).not.toContain("run: bun run package");
     expect(draft).toContain(
       "bun scripts/package.ts release-assets release-assets --tag",
+    );
+    expect(draft).toContain("verify-release-provenance.sh release-assets");
+    expect(draft).toContain(
+      `"release-assets/swarmforge-v\${version}-provenance.sigstore.json"`,
     );
     // A release is a draft for a human to publish, and only for a matching tag.
     expect(workflow).toContain("--draft");

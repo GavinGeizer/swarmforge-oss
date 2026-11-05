@@ -128,6 +128,50 @@ test("release workflow gates signing on pushed tags and narrowly scopes permissi
   );
 });
 
+test("verification instructions match the assets attached to the draft release", async () => {
+  const workflow = await readFile(
+    join(repositoryRoot, ".github/workflows/release.yml"),
+    "utf8",
+  );
+  const docs = await readFile(
+    join(repositoryRoot, "docs/RELEASE-VERIFICATION.md"),
+    "utf8",
+  );
+  const deploymentDocs = await readFile(
+    join(repositoryRoot, "docs/WEBSITE-DEPLOYMENT.md"),
+    "utf8",
+  );
+  const releaseCreate = workflow.slice(workflow.indexOf("gh release create"));
+  for (const asset of [
+    `"release-assets/swarmforge-v\${version}-linux-x64-glibc.tar.gz"`,
+    `"release-assets/swarmforge-v\${version}-linux-x64-glibc.tar.gz.sha256"`,
+    '"release-assets/SHA256SUMS"',
+    `"release-assets/metadata-\${version}.json"`,
+    '"release-assets/LICENSE"',
+    `"release-assets/swarmforge-v\${version}-provenance.sigstore.json"`,
+  ])
+    expect(releaseCreate).toContain(asset);
+  const firstLoopStart = docs.indexOf("for file in");
+  const firstLoop = docs.slice(
+    firstLoopStart,
+    docs.indexOf("\ndone", firstLoopStart),
+  );
+  expect(firstLoop).toContain(`"swarmforge-\${tag}-linux-x64-glibc.tar.gz"`);
+  expect(firstLoop).toContain(
+    `"swarmforge-\${tag}-linux-x64-glibc.tar.gz.sha256"`,
+  );
+  expect(firstLoop).toContain("  SHA256SUMS \\");
+  expect(firstLoop).toContain(`"metadata-\${version}.json"`);
+  expect(firstLoop).toContain("  LICENSE");
+  expect(firstLoop).not.toMatch(/^ {2}swarmforge \\$/m);
+  expect(docs).toContain(
+    "Do not take the expected commit solely from the downloaded metadata file.",
+  );
+  expect(deploymentDocs).toContain(
+    "[Release Verification](RELEASE-VERIFICATION.md)",
+  );
+});
+
 test("accepts exact release assets and enforces the verifier policy", async () => {
   const f = await fixture();
   const result = await verify(f);

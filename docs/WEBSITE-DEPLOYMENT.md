@@ -22,9 +22,11 @@ Publish these assets together for a stable `vMAJOR.MINOR.PATCH` release:
 - `swarmforge-vVERSION-linux-x64-glibc.tar.gz.sha256`
 - `SHA256SUMS`
 - `metadata-VERSION.json`
+- `LICENSE`
+- `swarmforge-vVERSION-provenance.sigstore.json` for releases created under the signed provenance workflow
 
-The archive checksum is external and verified before extraction. The archive includes exactly the executable, its internal SHA256SUMS, and build metadata. The existing release workflow now generates and verifies the external archive checksum and attaches it to the draft. It continues to create drafts for human review; it does not automatically publish.
+The archive checksum is external and verified before extraction. The archive includes exactly the executable, its internal SHA256SUMS, and build metadata. The release workflow verifies the build assets and signed provenance before attaching them to a draft; it continues to require human review and does not automatically publish. The signed provenance workflow attests the executable and each attached release asset.
 
-At website implementation start there were no releases. Installation cannot succeed until the first draft has been reviewed and published. SHA-256 detects corruption; signature/attestation verification is not currently part of this installer.
+The published v0.1.3 release remains checksum-only. The installer checks checksums but does not automatically verify signed provenance. See [Release Verification](RELEASE-VERIFICATION.md) for the current release status and instructions for future signed releases.
 
 Website content changes deploy independently of application releases. Keep `/install` stable, keep website credentials out of Git, and update both repositories' documentation when the release contract changes. The website's README and PLAN.md track deployment details and delivery status.
